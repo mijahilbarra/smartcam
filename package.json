@@ -1,0 +1,15 @@
+{
+  "name": "iot-camera-catcher",
+  "version": "1.0.0",
+  "description": "IOT Camera Catcher serverless service for remote snapshot capture, Gemini visual analysis, Storage, and Firestore recording",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "firebase": "^12.19.0",
+    "firebase-admin": "^12.0.0"
+  }
+}

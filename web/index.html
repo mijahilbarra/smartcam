@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>IOT Camera Catcher - Skip Bigotes</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css?v=2">
+  <!-- Firebase SDKs via CDN -->
+  <script type="module" src="app.js?v=2"></script>
+</head>
+<body>
+  <div class="app-container">
+    <header class="header">
+      <div class="header-brand">
+        <div class="brand-icon">📸</div>
+        <div>
+          <h1>IOT Camera Catcher</h1>
+          <p class="subtitle">Monitoreo y Análisis Visual con Gemini Vision • Barbería</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button id="captureBtn" class="btn btn-primary">
+          <span class="btn-icon">⚡</span>
+          <span class="btn-text">Capturar Ahora</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Dynamic Configuration Card (Prompt & Interval) -->
+    <section class="card prompt-card">
+      <div class="card-header">
+        <div class="card-title">
+          <span class="card-icon">⚙️</span>
+          <h2>Configuración del Capturador (Prompt e Intervalo)</h2>
+        </div>
+        <span class="tag">camera_catcher/prompt</span>
+      </div>
+      <div class="prompt-body">
+        <div class="config-grid" style="display: grid; grid-template-columns: 1fr auto; gap: 16px; align-items: end;">
+          <div class="config-field">
+            <label for="promptInput" class="help-text" style="display: block; font-weight: 500; margin-bottom: 6px;">
+              🧠 Instrucción para Gemini Vision:
+            </label>
+            <textarea id="promptInput" rows="2" placeholder="Escribe el prompt aquí..."></textarea>
+          </div>
+          <div class="config-field" style="min-width: 220px;">
+            <label for="intervalInput" class="help-text" style="display: block; font-weight: 500; margin-bottom: 6px;">
+              ⏱️ Intervalo de captura (minutos):
+            </label>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <input type="number" id="intervalInput" min="0.1" step="0.1" value="15" 
+                     style="width: 90px; padding: 10px 12px; background: #0f172a; border: 1px solid var(--border); border-radius: 8px; color: var(--text-main); font-size: 0.9rem; font-weight: 600;">
+              <span style="font-size: 0.85rem; color: var(--text-muted);">min</span>
+              <button id="savePromptBtn" class="btn btn-secondary" style="margin-left: auto;">
+                Guardar
+              </button>
+            </div>
+            <small class="text-muted" style="display: block; margin-top: 6px; font-size: 0.75rem;">
+              Ej: 15 (15 min), 0.5 (30 seg), 1 (1 min)
+            </small>
+          </div>
+        </div>
+        <div id="promptStatus" class="status-badge hidden"></div>
+      </div>
+    </section>
+
+    <!-- Photos Table Card -->
+    <section class="card table-card">
+      <div class="card-header">
+        <div class="card-title">
+          <span class="card-icon">🖼️</span>
+          <h2>Registro de Fotogramas y Análisis</h2>
+        </div>
+        <div class="table-meta">
+          <span id="photoCount" class="badge">0 capturas</span>
+          <span id="liveIndicator" class="live-dot" title="Sincronización en tiempo real activa"></span>
+        </div>
+      </div>
+
+      <div class="table-responsive">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th style="width: 130px;">Miniatura</th>
+              <th style="width: 180px;">Fecha y Hora</th>
+              <th>Análisis de Gemini Vision</th>
+              <th style="width: 120px;">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="photosTableBody">
+            <tr>
+              <td colspan="4" class="text-center py-8 text-muted">
+                <div class="spinner-small"></div>
+                <span>Cargando capturas en tiempo real...</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <!-- Image Modal Viewer -->
+  <div id="imageModal" class="modal hidden">
+    <div class="modal-overlay"></div>
+    <div class="modal-content">
+      <button id="closeModalBtn" class="modal-close">&times;</button>
+      <img id="modalImage" src="" alt="Fotograma en alta resolución">
+      <div class="modal-info">
+        <div id="modalTimestamp" class="modal-time"></div>
+        <div id="modalAnalysis" class="modal-text"></div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

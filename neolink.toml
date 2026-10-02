@@ -1,0 +1,8 @@
+bind = "0.0.0.0"
+bind_port = 8554
+
+[[cameras]]
+name = "barberia"
+username = "admin"
+password = "l@lloque237"
+uid = "9527000K49FGY65H"

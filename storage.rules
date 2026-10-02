@@ -1,0 +1,12 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /camera_catcher/{allPaths=**} {
+      allow read: if true;
+      allow write: if false; // Only admin SDK can write
+    }
+    match /{allPaths=**} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}
