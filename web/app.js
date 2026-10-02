@@ -55,6 +55,8 @@ const closeModalBtn = document.getElementById("closeModalBtn");
 const modalImage = document.getElementById("modalImage");
 const modalTimestamp = document.getElementById("modalTimestamp");
 const modalAnalysis = document.getElementById("modalAnalysis");
+const modalClientsContainer = document.getElementById("modalClientsContainer");
+const modalClientsList = document.getElementById("modalClientsList");
 
 /**
  * Format timestamp into local Spanish readable format
@@ -225,6 +227,24 @@ async function renderTableRows(docs) {
       `</div>`;
     }
 
+    // Render client crop preview chips if present
+    let clientChipsHtml = "";
+    if (docData.clients && Array.isArray(docData.clients) && docData.clients.length > 0) {
+      clientChipsHtml = `
+        <div class="clients-container" style="display: flex; align-items: center; gap: 8px; margin-top: 8px;">
+          <span style="font-size: 0.75rem; color: #32DC32; font-weight: 600;">👤 Cliente(s) en sillón:</span>
+          <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+            ${docData.clients.map((c, cIdx) => `
+              <div class="client-chip" style="display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px; background: rgba(50, 220, 50, 0.12); border: 1px solid rgba(50, 220, 50, 0.35); border-radius: 6px;">
+                <img id="thumb-client-${index}-${cIdx}" class="hidden" style="width: 28px; height: 28px; object-fit: cover; border-radius: 4px; border: 1px solid #32DC32; cursor: pointer;" alt="Cliente sentado" />
+                <span style="font-size: 0.70rem; color: #32DC32; font-weight: 600;">Cliente #${cIdx + 1}</span>
+              </div>
+            `).join("")}
+          </div>
+        </div>
+      `;
+    }
+
     const storagePath = docData.annotatedStoragePath || docData.imageStoragePath || "";
 
     return `
@@ -241,7 +261,7 @@ async function renderTableRows(docs) {
           <div class="timestamp-cell">${dateStr}</div>
         </td>
         <td>
-          <div class="analysis-cell">${analysisText}${mlTagsHtml}${promptUsed}</div>
+          <div class="analysis-cell">${analysisText}${mlTagsHtml}${clientChipsHtml}${promptUsed}</div>
         </td>
         <td>
           <button class="btn btn-secondary view-btn" style="padding: 6px 10px; font-size: 0.75rem;" data-index="${index}">
@@ -272,7 +292,7 @@ async function renderTableRows(docs) {
       };
       
       const openModalHandler = () => {
-        openModal(url, formatDateTime(docData.timestamp || docData.createdAt, docData.epoch), docData.analysis, docData.promptUsed);
+        openModal(url, formatDateTime(docData.timestamp || docData.createdAt, docData.epoch), docData.analysis, docData.promptUsed, docData.clients || []);
       };
 
       wrapEl?.addEventListener("click", openModalHandler);
@@ -282,14 +302,55 @@ async function renderTableRows(docs) {
     } else {
       if (loadEl) loadEl.innerHTML = `<span style="font-size: 0.65rem; color: var(--danger)">Error</span>`;
     }
+
+    // Resolve client crop thumbnails
+    if (docData.clients && Array.isArray(docData.clients)) {
+      docData.clients.forEach(async (c, cIdx) => {
+        const clientImgEl = document.getElementById(`thumb-client-${index}-${cIdx}`);
+        if (clientImgEl && c.storagePath) {
+          const clientUrl = await resolveStorageUrl(c.storagePath);
+          if (clientUrl) {
+            clientImgEl.src = clientUrl;
+            clientImgEl.classList.remove("hidden");
+            clientImgEl.addEventListener("click", (e) => {
+              e.stopPropagation();
+              openModal(clientUrl, `${formatDateTime(docData.timestamp || docData.createdAt, docData.epoch)} • Cliente #${cIdx + 1}`, `Recorte de cliente sentado en sillón de barbero.`, null, []);
+            });
+          }
+        }
+      });
+    }
   });
 }
 
-function openModal(imgUrl, dateStr, analysis, promptUsed) {
+async function openModal(imgUrl, dateStr, analysis, promptUsed, clients = []) {
   modalImage.src = imgUrl;
   modalTimestamp.textContent = `📅 ${dateStr}`;
-  modalAnalysis.innerHTML = `<strong>Análisis de Gemini:</strong><br>${escapeHtml(analysis)}` +
+  modalAnalysis.innerHTML = `<strong>Detalles de Captura y ML:</strong><br>${escapeHtml(analysis)}` +
     (promptUsed ? `<br><br><small class="text-muted">Prompt utilizado: "${escapeHtml(promptUsed)}"</small>` : "");
+
+  // Populate client crops in modal if available
+  if (modalClientsContainer && modalClientsList) {
+    if (clients && clients.length > 0) {
+      modalClientsContainer.classList.remove("hidden");
+      modalClientsList.innerHTML = `<div class="spinner-small"></div>`;
+      
+      const itemsHtml = await Promise.all(clients.map(async (c, i) => {
+        const cUrl = c.storagePath ? await resolveStorageUrl(c.storagePath) : "";
+        return `
+          <div style="text-align: center; background: #0f172a; padding: 8px; border-radius: 8px; border: 1px solid var(--border);">
+            <img src="${cUrl}" style="max-width: 140px; max-height: 140px; object-fit: cover; border-radius: 6px; border: 2px solid #32DC32;" alt="Cliente en corte" />
+            <div style="margin-top: 4px; font-size: 0.72rem; color: #32DC32; font-weight: 600;">Cliente #${i + 1}</div>
+          </div>
+        `;
+      }));
+      modalClientsList.innerHTML = itemsHtml.join("");
+    } else {
+      modalClientsContainer.classList.add("hidden");
+      modalClientsList.innerHTML = "";
+    }
+  }
+
   imageModal.classList.remove("hidden");
 }
 

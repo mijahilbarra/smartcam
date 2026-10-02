@@ -111,6 +111,7 @@ export async function executeCaptureProcess() {
     console.log(`[ML] Inferencia completada en ${mlResult.inferenceMs} ms. Cuadrantes detectados: ${mlResult.quadrants.length}`);
 
     // 4. Upload original and annotated images to Firebase Storage
+    // 4. Upload original, annotated, and client crop images to Firebase Storage
     const storagePath = `camera_catcher/photos/${docId}.jpg`;
     const annotatedStoragePath = `camera_catcher/photos/${docId}_annotated.jpg`;
     console.log(`[4/6] Subiendo a Firebase Storage: ${storagePath} y ${annotatedStoragePath}...`);
@@ -141,6 +142,38 @@ export async function executeCaptureProcess() {
       }
     });
 
+    // Upload client crops if any seated clients were detected
+    const clientRecords = [];
+    if (mlResult.clientCrops && mlResult.clientCrops.length > 0) {
+      for (let i = 0; i < mlResult.clientCrops.length; i++) {
+        const crop = mlResult.clientCrops[i];
+        const clientStoragePath = `camera_catcher/photos/${docId}_client_${i + 1}.jpg`;
+        console.log(`[Storage] Subiendo recorte de cliente sentado (${i + 1}/${mlResult.clientCrops.length}): ${clientStoragePath}...`);
+
+        const fileClient = bucket.file(clientStoragePath);
+        await fileClient.save(crop.buffer, {
+          metadata: {
+            contentType: "image/jpeg",
+            metadata: {
+              capturedAt: new Date().toISOString(),
+              camera: "barberia",
+              source: "gcp-e2-micro",
+              type: "client_seated_crop"
+            }
+          }
+        });
+
+        clientRecords.push({
+          id: crop.id || `client_${i + 1}`,
+          storagePath: clientStoragePath,
+          box: crop.box,
+          confidence: crop.confidence,
+          status: crop.status || "en_corte",
+          detectedAt: new Date().toISOString()
+        });
+      }
+    }
+
     // Clean temp local file
     try {
       await fs.unlink(localOutputPath);
@@ -148,7 +181,8 @@ export async function executeCaptureProcess() {
 
     // 5. Config / Summary
     console.log(`[5/6] Preparando resumen analítico...`);
-    const summaryText = `ML Local: ${mlResult.quadrants.map(q => `${q.label} [${q.status}]`).join(", ")}`;
+    const clientsCountStr = clientRecords.length > 0 ? ` (${clientRecords.length} cliente(s) sentado(s) extraído(s))` : "";
+    const summaryText = `ML Local: ${mlResult.quadrants.map(q => `${q.label} [${q.status}]`).join(", ")}${clientsCountStr}`;
     console.log(`[Resumen] ${summaryText}`);
 
     // 6. Save in Firestore: camera_catcher/photos/photos/<docId>
@@ -157,6 +191,7 @@ export async function executeCaptureProcess() {
       id: docId,
       imageStoragePath: storagePath,
       annotatedStoragePath: annotatedStoragePath,
+      clients: clientRecords, // Array estructurado de clientes sentados extraídos
       timestamp: admin.firestore.FieldValue.serverTimestamp(),
       createdAt: new Date().toISOString(),
       epoch: timestamp,
@@ -166,7 +201,8 @@ export async function executeCaptureProcess() {
         inferenceMs: mlResult.inferenceMs,
         imageDimensions: mlResult.imageDimensions,
         quadrants: mlResult.quadrants,
-        rawDetections: mlResult.rawDetections
+        rawDetections: mlResult.rawDetections,
+        clientCount: clientRecords.length
       },
       camera: "barberia",
       source: "gcp-e2-micro"

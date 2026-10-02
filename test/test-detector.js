@@ -39,6 +39,17 @@ async function main() {
     caja: q.box.join(", ")
   })));
 
+  // Verify client crops
+  console.log(`\nClientes Sentados Extraídos (${result.clientCrops ? result.clientCrops.length : 0}):`);
+  if (result.clientCrops && result.clientCrops.length > 0) {
+    for (let i = 0; i < result.clientCrops.length; i++) {
+      const crop = result.clientCrops[i];
+      const cropSavePath = path.join(__dirname, `test-client-${i + 1}-crop.jpg`);
+      await fs.writeFile(cropSavePath, crop.buffer);
+      console.log(`- Cliente #${i + 1}: Caja [${crop.box.join(", ")}], Confianza: ${crop.confidence}, Guardado en: ${cropSavePath}`);
+    }
+  }
+
   await fs.writeFile(outputImagePath, result.annotatedBuffer);
   console.log(`\nImagen anotada guardada en: ${outputImagePath}`);
 

@@ -438,6 +438,30 @@ export async function detectObjectsAndQuadrants(imageBuffer, options = {}) {
   // Map to barber shop quadrants
   const quadrants = mapDetectionsToBarbershopQuadrants(detections, origWidth, origHeight);
 
+  // Extract cropped images for seated clients
+  const clientCrops = [];
+  const clientQuadrants = quadrants.filter(q => q.category === "cliente" || q.id.startsWith("cliente_sentado"));
+
+  for (let i = 0; i < clientQuadrants.length; i++) {
+    const q = clientQuadrants[i];
+    const [x1, y1, x2, y2] = q.box;
+    const cropW = Math.max(10, Math.min(origWidth - x1, x2 - x1));
+    const cropH = Math.max(10, Math.min(origHeight - y1, y2 - y1));
+
+    const cropBuffer = await sharp(imageBuffer)
+      .extract({ left: x1, top: y1, width: cropW, height: cropH })
+      .jpeg({ quality: 92 })
+      .toBuffer();
+
+    clientCrops.push({
+      id: `client_${i + 1}`,
+      box: q.box,
+      confidence: q.confidence || 0.85,
+      status: q.status || "en_corte",
+      buffer: cropBuffer
+    });
+  }
+
   // Generate annotated image
   const annotatedBuffer = await generateAnnotatedImage(imageBuffer, quadrants, origWidth, origHeight);
 
@@ -446,6 +470,7 @@ export async function detectObjectsAndQuadrants(imageBuffer, options = {}) {
     imageDimensions: { width: origWidth, height: origHeight },
     rawDetections: detections,
     quadrants,
+    clientCrops,
     annotatedBuffer,
     diffPercent: diff.diffPercent,
     skippedDueToNoChange: false
