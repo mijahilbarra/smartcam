@@ -119,6 +119,7 @@ sequenceDiagram
 | **Media Storage** | Firebase Storage (GCS) | Almacenamiento seguro de imágenes y distribución CDN de miniaturas | [04-firebase-storage.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/04-firebase-storage.md) |
 | **Inteligencia Visual** | Google Gemini Vision API | Análisis contextual y descripción visual de fotogramas de la barbería | [05-gemini-vision-ai.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/05-gemini-vision-ai.md) |
 | **Frontend Web** | Firebase Hosting + Vanilla JS | Dashboard reactivo en tiempo real sin backend server-rendered | [06-firebase-hosting-web-dashboard.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/06-firebase-hosting-web-dashboard.md) |
+| **CI/CD Automatizado** | GitHub Actions | Despliegue continuo selectivo por carpetas hacia GCP VM y Hosting | [07-github-actions-cicd.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/07-github-actions-cicd.md) |
 
 ---
 

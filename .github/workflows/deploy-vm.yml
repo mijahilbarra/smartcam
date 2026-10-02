@@ -1,0 +1,48 @@
+name: Deploy to GCP VM (Camera Catcher)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'src/**'
+      - 'neolink.toml'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/deploy-vm.yml'
+
+jobs:
+  deploy:
+    name: Sync Code to Compute Engine e2-micro
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VM_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H ${{ secrets.VM_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy Code to VM via Rsync
+        run: |
+          echo "Sincronizando archivos hacia /opt/camera-catcher..."
+          rsync -avz --delete \
+            --exclude 'node_modules' \
+            --exclude '.git' \
+            src package.json neolink.toml \
+            ${{ secrets.VM_USER || 'deploy' }}@${{ secrets.VM_HOST }}:/opt/camera-catcher/
+
+      - name: Install Dependencies & Restart Service
+        run: |
+          echo "Actualizando dependencias e iniciando el servicio systemd..."
+          ssh ${{ secrets.VM_USER || 'deploy' }}@${{ secrets.VM_HOST }} "
+            cd /opt/camera-catcher && \
+            npm install --omit=dev && \
+            sudo systemctl restart camera-catcher.service && \
+            sudo systemctl is-active camera-catcher.service
+          "
+          echo "✅ Despliegue en la VM completado exitosamente y servicio activo!"

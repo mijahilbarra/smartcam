@@ -1,0 +1,36 @@
+name: Deploy Firebase Hosting & Storage Rules
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'web/**'
+      - 'firebase.json'
+      - 'storage.rules'
+      - '.github/workflows/deploy-hosting.yml'
+
+jobs:
+  deploy_hosting:
+    name: Deploy Web Dashboard
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Deploy to Firebase Hosting & Storage
+        env:
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+        run: |
+          if [ -n "$FIREBASE_TOKEN" ]; then
+            npx firebase-tools deploy --only hosting,storage --token "$FIREBASE_TOKEN" --project skip-bigotes
+          else
+            echo "Aviso: FIREBASE_TOKEN no está configurado en GitHub Secrets."
+            echo "Para habilitar el despliegue automático del frontend, agrega FIREBASE_TOKEN."
+          fi
