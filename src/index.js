@@ -6,6 +6,7 @@ import path from "path";
 import util from "util";
 import { fileURLToPath } from "url";
 import { analyzeImageWithGemini } from "./gemini.js";
+import { detectObjectsAndQuadrants } from "./detector.js";
 
 const execPromise = util.promisify(exec);
 const __filename = fileURLToPath(import.meta.url);
@@ -104,17 +105,38 @@ export async function executeCaptureProcess() {
     const buffer = await fs.readFile(localOutputPath);
     console.log(`[2/5] Fotograma capturado: ${buffer.length} bytes.`);
 
-    // 3. Upload to Firebase Storage
+    // 3. Run Local Machine Learning (ONNX Runtime / YOLO)
+    console.log(`[3/6] Analizando fotograma con Machine Learning local (ONNX Runtime)...`);
+    const mlResult = await detectObjectsAndQuadrants(buffer);
+    console.log(`[ML] Inferencia completada en ${mlResult.inferenceMs} ms. Cuadrantes detectados: ${mlResult.quadrants.length}`);
+
+    // 4. Upload original and annotated images to Firebase Storage
     const storagePath = `camera_catcher/photos/${docId}.jpg`;
-    console.log(`[3/5] Subiendo a Firebase Storage: ${storagePath}...`);
-    const file = bucket.file(storagePath);
-    await file.save(buffer, {
+    const annotatedStoragePath = `camera_catcher/photos/${docId}_annotated.jpg`;
+    console.log(`[4/6] Subiendo a Firebase Storage: ${storagePath} y ${annotatedStoragePath}...`);
+
+    const fileOriginal = bucket.file(storagePath);
+    await fileOriginal.save(buffer, {
       metadata: {
         contentType: "image/jpeg",
         metadata: {
           capturedAt: new Date().toISOString(),
           camera: "barberia",
-          source: "gcp-e2-micro"
+          source: "gcp-e2-micro",
+          type: "raw"
+        }
+      }
+    });
+
+    const fileAnnotated = bucket.file(annotatedStoragePath);
+    await fileAnnotated.save(mlResult.annotatedBuffer, {
+      metadata: {
+        contentType: "image/jpeg",
+        metadata: {
+          capturedAt: new Date().toISOString(),
+          camera: "barberia",
+          source: "gcp-e2-micro",
+          type: "annotated_quadrants"
         }
       }
     });
@@ -124,33 +146,34 @@ export async function executeCaptureProcess() {
       await fs.unlink(localOutputPath);
     } catch (_) {}
 
-    // 4. Fetch dynamic prompt and interval
-    console.log(`[4/5] Leyendo configuración dinámica de camera_catcher/prompt...`);
-    const config = await getDynamicConfig();
-    const promptText = config.prompt || DEFAULT_PROMPT;
-    console.log(`[Prompt] "${promptText}"`);
-
-    // 5. Call Gemini Vision
-    console.log(`[5/5] Analizando con Gemini Vision (gemini-flash-latest)...`);
-    const analysis = await analyzeImageWithGemini(buffer, promptText, GEMINI_API_KEY, "gemini-flash-latest");
-    console.log(`[Gemini] Análisis obtenido (${analysis.length} caracteres).`);
+    // 5. Config / Summary
+    console.log(`[5/6] Preparando resumen analítico...`);
+    const summaryText = `ML Local: ${mlResult.quadrants.map(q => `${q.label} [${q.status}]`).join(", ")}`;
+    console.log(`[Resumen] ${summaryText}`);
 
     // 6. Save in Firestore: camera_catcher/photos/photos/<docId>
     const docRef = db.doc(`camera_catcher/photos/photos/${docId}`);
     const record = {
       id: docId,
       imageStoragePath: storagePath,
+      annotatedStoragePath: annotatedStoragePath,
       timestamp: admin.firestore.FieldValue.serverTimestamp(),
       createdAt: new Date().toISOString(),
       epoch: timestamp,
-      promptUsed: promptText,
-      analysis: analysis,
+      analysis: summaryText,
+      ml: {
+        engine: "onnxruntime-node",
+        inferenceMs: mlResult.inferenceMs,
+        imageDimensions: mlResult.imageDimensions,
+        quadrants: mlResult.quadrants,
+        rawDetections: mlResult.rawDetections
+      },
       camera: "barberia",
       source: "gcp-e2-micro"
     };
 
     await docRef.set(record);
-    console.log(`[Firestore] Documento guardado exitosamente en camera_catcher/photos/photos/${docId}`);
+    console.log(`[6/6] [Firestore] Documento guardado exitosamente en camera_catcher/photos/photos/${docId}`);
     console.log(`========================================\n`);
 
     return record;

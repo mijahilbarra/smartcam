@@ -77,3 +77,26 @@ Para el botón "Capturar Ahora" de la web, exponer el servidor Express de la VM 
 * El navegador web escribe `{ action: "capture", requestedAt: Date.now() }` en Firestore.
 * La VM escucha ese documento mediante `onSnapshot` por una conexión WebSocket saliente segura.
 * Se logra comunicación bidireccional en menos de 100 ms **sin abrir un solo puerto de entrada en el firewall de la VM**.
+
+---
+
+## 5. TensorFlow.js (`@tensorflow/tfjs` + COCO-SSD) para Detección Local en la VM
+
+### ¿Qué se intentó?
+Utilizar TensorFlow para JavaScript (`@tensorflow/tfjs` y el modelo `@tensorflow-models/coco-ssd` con MobileNet v2) para ejecutar inferencia de detección de personas y objetos directamente en el daemon de Node.js.
+
+### ¿Por qué se descartó?
+1. **Consumo Crítico de Memoria en la VM `e2-micro`**:
+   * En pruebas empíricas reales sobre la captura de la barbería, `@tensorflow/tfjs` consumió **431.6 MB de memoria RAM (RSS)** para una sola inferencia.
+   * La VM cuenta con solo 1.0 GB de RAM total (con ~400 MB ocupados por Ubuntu, systemd y Docker). Sumar 431 MB eleva el consumo a más del 83%, provocando que el kernel de Linux active el **OOM-killer (Out-of-Memory)** y cierre inesperadamente el proceso de Node.js.
+2. **Latencia Inaceptable en CPU**:
+   * La inferencia en JS puro tardó **5,328 ms (~5.3 segundos)** al 100% de uso de CPU, agotando rápidamente los créditos burstables de la máquina virtual (0.25 vCPU baseline).
+   * La alternativa `@tensorflow/tfjs-node` requería binarios nativos de C++ con `libtensorflow` pesados (>150 MB de descarga) con alto riesgo de fallo de compilación o incompatibilidad de libc.
+3. **Baja Precisión en Entorno de Vigilancia Real**:
+   * COCO-SSD falló en detectar a la persona en tránsito y al cliente sentado en la silla de barbero (clasificó erróneamente solo el auto exterior y la banca de espera).
+
+### Reemplazo adoptado:
+Se adoptó **ONNX Runtime para Node.js (`onnxruntime-node`) con YOLOv8** (ADR 08).
+* Inferencia en **96 a 110 ms** (50 veces más veloz).
+* Consumo de memoria controlado de **~180-230 MB** (seguro para 1 GB de RAM).
+* Mapeo de cuadrantes geométricos (CCTV ROI) con alta sensibilidad para personas, sillas y clientes.

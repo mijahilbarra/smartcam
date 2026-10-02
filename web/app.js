@@ -213,7 +213,19 @@ async function renderTableRows(docs) {
     const dateStr = formatDateTime(docData.timestamp || docData.createdAt, docData.epoch);
     const analysisText = escapeHtml(docData.analysis || "Sin análisis");
     const promptUsed = docData.promptUsed ? `<div class="analysis-prompt-used">Prompt: "${escapeHtml(docData.promptUsed)}"</div>` : "";
-    const storagePath = docData.imageStoragePath || "";
+    
+    // Render ML quadrant tags if present
+    let mlTagsHtml = "";
+    if (docData.ml?.quadrants && Array.isArray(docData.ml.quadrants)) {
+      mlTagsHtml = `<div class="ml-quadrants-tags" style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px;">` +
+        docData.ml.quadrants.map(q => {
+          const bg = q.color || "#007BFF";
+          return `<span style="display: inline-block; font-size: 0.70rem; font-weight: 600; padding: 2px 6px; border-radius: 4px; background: ${bg}22; color: ${bg}; border: 1px solid ${bg}66;">${escapeHtml(q.label)}: ${escapeHtml(q.status || 'ok')}</span>`;
+        }).join("") +
+      `</div>`;
+    }
+
+    const storagePath = docData.annotatedStoragePath || docData.imageStoragePath || "";
 
     return `
       <tr data-id="${docData.id}" data-path="${storagePath}">
@@ -229,7 +241,7 @@ async function renderTableRows(docs) {
           <div class="timestamp-cell">${dateStr}</div>
         </td>
         <td>
-          <div class="analysis-cell">${analysisText}${promptUsed}</div>
+          <div class="analysis-cell">${analysisText}${mlTagsHtml}${promptUsed}</div>
         </td>
         <td>
           <button class="btn btn-secondary view-btn" style="padding: 6px 10px; font-size: 0.75rem;" data-index="${index}">
@@ -248,9 +260,10 @@ async function renderTableRows(docs) {
     const loadEl = document.getElementById(`thumb-load-${index}`);
     const wrapEl = document.getElementById(`thumb-wrap-${index}`);
 
-    if (!imgEl || !docData.imageStoragePath) return;
+    const displayPath = docData.annotatedStoragePath || docData.imageStoragePath;
+    if (!imgEl || !displayPath) return;
 
-    const url = await resolveStorageUrl(docData.imageStoragePath);
+    const url = await resolveStorageUrl(displayPath);
     if (url) {
       imgEl.src = url;
       imgEl.onload = () => {

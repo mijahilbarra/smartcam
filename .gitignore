@@ -16,3 +16,7 @@ npm-debug.log*
 .env
 .env.*
 !.env.example
+
+# Test outputs
+test/*-output.jpg
+
