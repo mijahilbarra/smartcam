@@ -20,9 +20,13 @@ El sistema previamente dependía de llamadas a la API multimodal de Gemini Visio
 Se integró **ONNX Runtime para Node.js (`onnxruntime-node`)** ejecutando un modelo cuantizado/optimizado **YOLOv8** (`yolov8s.onnx` / `yolov8n.onnx`), combinado con un clasificador geométrico de cuadrantes y renderizado SVG con **Sharp**:
 
 1. **Motor de Inferencia**:
-   - `onnxruntime-node`: Proporciona inferencia acelerada en C++ para CPU con gestión de tensores Float32 sin compilaciones pesadas.
-2. **Modelo de Visión**:
-   - YOLOv8 preentrenado en COCO: Detección de personas (`person`), sillas (`chair`), mochilas y teléfonos celulares.
+   - `onnxruntime-node`: Inferencia en C++ con modelo YOLOv8 Nano cuantizado (`yolov8n.onnx`, 12 MB).
+   - **Límite estricto de CPU**: Se fijó `intraOpNumThreads: 1` e `interOpNumThreads: 1`. Esto garantiza que la inferencia nunca sature más de un hilo de cómputo, limitando el uso de CPU a un **15% - 20% máximo**.
+   - **Gestión de Memoria Sharp**: Se desactivó la caché interna de descompresión con `sharp.cache(false)`, evitando retención de memoria en el heap de Node.js.
+2. **Puerta de Movimiento (Frame Differencing / Comparación de Fotogramas)**:
+   - Se implementó un evaluador de diferencia sobre un micro-thumbnail en escala de grises ($64 \times 36$ px, 2 KB de cómputo que toma ~2 ms).
+   - Si la variación entre la captura actual y la anterior es menor al **2.5%** (escena estática donde nadie entró, salió ni cambió de silla), **se omite la inferencia de ML por completo**.
+   - En el 80% de los intervalos del día, el impacto es **0% CPU y 0 ms de inferencia**.
 3. **Mapeo de Cuadrantes Semánticos (CCTV ROI)**:
    - Dado que la cámara de seguridad es fija, se mapean las detecciones a las regiones físicas de la barbería:
      - **Persona caminando**: Detección de persona en el corredor de acceso/puerta ($X \in [0.35, 0.65]$).

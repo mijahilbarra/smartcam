@@ -46,6 +46,15 @@ async function main() {
   console.log(`\nConsumo de Memoria:`);
   console.log(`- RSS: ${(mem.rss / 1024 / 1024).toFixed(1)} MB`);
   console.log(`- Heap Usado: ${(mem.heapUsed / 1024 / 1024).toFixed(1)} MB`);
+
+  console.log(`\n--- Prueba 2: Fotograma Estático (Verificación de Frame Differencing) ---`);
+  const t2Start = Date.now();
+  const result2 = await detectObjectsAndQuadrants(buffer);
+  const t2Elapsed = Date.now() - t2Start;
+
+  console.log(`- ¿Omitió inferencia por falta de cambio?: ${result2.skippedDueToNoChange ? "SÍ (0% CPU / 0ms inferencia)" : "NO"}`);
+  console.log(`- Variación calculada: ${result2.diffPercent}%`);
+  console.log(`- Tiempo total de respuesta: ${t2Elapsed} ms`);
   console.log(`======================================================`);
 }
 

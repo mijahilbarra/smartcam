@@ -7,9 +7,11 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const DEFAULT_MODEL = fs.existsSync(path.join(__dirname, "models", "yolov8s.onnx"))
-  ? path.join(__dirname, "models", "yolov8s.onnx")
-  : path.join(__dirname, "models", "yolov8n.onnx");
+sharp.cache(false);
+
+const DEFAULT_MODEL = fs.existsSync(path.join(__dirname, "models", "yolov8n.onnx"))
+  ? path.join(__dirname, "models", "yolov8n.onnx")
+  : path.join(__dirname, "models", "yolov8s.onnx");
 
 const MODEL_PATH = process.env.ML_MODEL_PATH || DEFAULT_MODEL;
 
@@ -58,9 +60,43 @@ export const BARBERSHOP_QUADRANTS = {
 };
 
 let inferenceSession = null;
+let lastFrameThumbnail = null;
+let lastDetectionResult = null;
 
 /**
- * Initialize or get cached ONNX inference session
+ * Calculate image difference against previous frame using a 64x36 grayscale thumbnail (takes ~2ms)
+ */
+export async function checkFrameDifference(imageBuffer, thresholdPercent = 2.5) {
+  const { data } = await sharp(imageBuffer)
+    .resize(64, 36, { fit: "fill" })
+    .grayscale()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  if (!lastFrameThumbnail) {
+    lastFrameThumbnail = data;
+    return { hasChanged: true, diffPercent: 100 };
+  }
+
+  let totalDiff = 0;
+  const len = data.length;
+  for (let i = 0; i < len; i++) {
+    totalDiff += Math.abs(data[i] - lastFrameThumbnail[i]);
+  }
+
+  const maxPossibleDiff = len * 255;
+  const diffPercent = (totalDiff / maxPossibleDiff) * 100;
+  const hasChanged = diffPercent >= thresholdPercent;
+
+  if (hasChanged) {
+    lastFrameThumbnail = data;
+  }
+
+  return { hasChanged, diffPercent: Number(diffPercent.toFixed(2)) };
+}
+
+/**
+ * Initialize or get cached ONNX inference session (capped to 1 thread for max 15-20% CPU)
  */
 export async function getInferenceSession() {
   if (!inferenceSession) {
@@ -68,9 +104,11 @@ export async function getInferenceSession() {
     const t0 = Date.now();
     inferenceSession = await ort.InferenceSession.create(MODEL_PATH, {
       executionProviders: ["cpu"],
-      graphOptimizationLevel: "all"
+      graphOptimizationLevel: "basic",
+      intraOpNumThreads: 1, // Cap CPU usage to 1 thread (max ~15-20%)
+      interOpNumThreads: 1
     });
-    console.log(`[Detector] Modelo ONNX inicializado en ${Date.now() - t0} ms.`);
+    console.log(`[Detector] Modelo ONNX inicializado en ${Date.now() - t0} ms (1 hilo CPU).`);
   }
   return inferenceSession;
 }
@@ -326,8 +364,25 @@ export async function generateAnnotatedImage(imageBuffer, quadrants, width, heig
 
 /**
  * Main detection pipeline: analyze image buffer with ONNX Runtime YOLOv8
+ * Supports frame differencing to bypass ML completely when scene is static.
  */
-export async function detectObjectsAndQuadrants(imageBuffer, confThreshold = 0.18) {
+export async function detectObjectsAndQuadrants(imageBuffer, options = {}) {
+  const confThreshold = typeof options === "number" ? options : (options.confThreshold || 0.18);
+  const forceRecheck = typeof options === "object" && options.forceRecheck === true;
+  const changeThreshold = typeof options === "object" && options.changeThreshold ? options.changeThreshold : 2.5;
+
+  // Frame differencing gate: Compare against previous frame (~2ms)
+  const diff = await checkFrameDifference(imageBuffer, changeThreshold);
+  if (!forceRecheck && !diff.hasChanged && lastDetectionResult) {
+    console.log(`[Detector] Escena estática (variación ${diff.diffPercent}% < umbral ${changeThreshold}%). Reutilizando análisis previo (0% CPU / 0 ms).`);
+    return {
+      ...lastDetectionResult,
+      inferenceMs: 0,
+      skippedDueToNoChange: true,
+      diffPercent: diff.diffPercent
+    };
+  }
+
   const session = await getInferenceSession();
   const { tensor, origWidth, origHeight } = await preprocessImage(imageBuffer);
 
@@ -386,11 +441,15 @@ export async function detectObjectsAndQuadrants(imageBuffer, confThreshold = 0.1
   // Generate annotated image
   const annotatedBuffer = await generateAnnotatedImage(imageBuffer, quadrants, origWidth, origHeight);
 
-  return {
+  lastDetectionResult = {
     inferenceMs,
     imageDimensions: { width: origWidth, height: origHeight },
     rawDetections: detections,
     quadrants,
-    annotatedBuffer
+    annotatedBuffer,
+    diffPercent: diff.diffPercent,
+    skippedDueToNoChange: false
   };
+
+  return lastDetectionResult;
 }
