@@ -47,7 +47,6 @@ const savePromptBtn = document.getElementById("savePromptBtn");
 const promptStatus = document.getElementById("promptStatus");
 const captureBtn = document.getElementById("captureBtn");
 const photosTableBody = document.getElementById("photosTableBody");
-const photoCountBadge = document.getElementById("photoCount");
 
 // Pagination State & Elements
 let allDocs = [];
@@ -208,7 +207,6 @@ function initPhotosListener() {
     });
 
     allDocs = docs;
-    photoCountBadge.textContent = `${docs.length} ${docs.length === 1 ? 'captura' : 'capturas'}`;
 
     if (docs.length === 0) {
       if (paginationContainer) paginationContainer.classList.add("hidden");
