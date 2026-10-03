@@ -54,6 +54,9 @@ jobs:
             else
               echo '⚡ Dependencias sin cambios. Saltando npm install para optimizar tiempo.';
             fi && \
+            echo '🧹 Limpiando contenedores Neolink colgados...' && \
+            docker rm -f \$(docker ps -q --filter ancestor=quantumentangledandy/neolink:latest) 2>/dev/null || true && \
+            docker rm -f neolink-capture 2>/dev/null || true && \
             sudo systemctl restart camera-catcher.service && \
             sudo systemctl is-active camera-catcher.service
           "

@@ -7,6 +7,10 @@ on:
         description: 'Number of log lines to fetch'
         required: false
         default: '100'
+      trigger_capture:
+        description: 'Trigger a manual capture via port 8085 (/capture)?'
+        required: false
+        default: 'false'
 
 jobs:
   inspect:
@@ -24,6 +28,15 @@ jobs:
       - name: Run Diagnostics on VM
         run: |
           SSH_CMD="ssh -o StrictHostKeyChecking=accept-new ${{ secrets.VM_USER || 'deploy' }}@${{ secrets.VM_HOST }}"
+
+          echo "=================================================="
+          echo "=== 0. LIMPIEZA DE CONTENEDORES ZOMBIES ==="
+          echo "=================================================="
+          $SSH_CMD "
+            echo 'Eliminando contenedores de captura huérfanos...'
+            docker rm -f \$(docker ps -q --filter ancestor=quantumentangledandy/neolink:latest) 2>/dev/null || true
+            docker rm -f neolink-capture 2>/dev/null || true
+          "
 
           echo "=================================================="
           echo "=== 1. ESTADO DEL SERVICIO SYSTEMD ==="
@@ -74,3 +87,12 @@ jobs:
             sudo -n journalctl -u camera-catcher.service -n ${{ inputs.lines || 100 }} --no-pager 2>/dev/null || \
             echo 'Sin permisos para journalctl'
           "
+
+          echo "=================================================="
+          echo "=== 7. TRIGGER MANUAL DE CAPTURA (/capture) ==="
+          echo "=================================================="
+          if [ "${{ inputs.trigger_capture }}" = "true" ]; then
+            $SSH_CMD "curl -s -m 60 http://127.0.0.1:8085/capture || echo 'Error o timeout en /capture'"
+          else
+            echo "Saltando trigger manual (/capture). Para ejecutarlo, active trigger_capture=true."
+          fi
