@@ -6,7 +6,6 @@ import fsSync from "fs";
 import path from "path";
 import util from "util";
 import { fileURLToPath } from "url";
-import { analyzeImageWithGemini } from "./gemini.js";
 import { detectObjectsAndQuadrants } from "./detector.js";
 
 const execPromise = util.promisify(exec);
@@ -65,7 +64,6 @@ app.use((req, res, next) => {
 });
 
 const DEFAULT_PROMPT = "Describe what do you see in the image";
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "AQ.Ab8RN6INfNkg0w5zqDOcming00kU9aN0SjMF71fHqISR9BxUHg";
 
 let isCapturing = false;
 
