@@ -207,7 +207,39 @@
                 <strong class="text-success">100% de ahorro</strong>
               </div>
             </div>
-            <div class="kpi-cost-badge">Costo IA: $0.00/m</div>
+            <div class="kpi-cost-badge">Costo ML: $0.00/m</div>
+          </div>
+
+          <!-- Google Gemini Vision API -->
+          <div class="cost-kpi-card">
+            <div class="kpi-top">
+              <span class="kpi-icon">✨</span>
+              <span class="kpi-service">Gemini Vision AI</span>
+              <span class="kpi-tag free">AI Studio Free</span>
+            </div>
+            <div class="kpi-main-val" id="geminiReqsText">0 <small>/ 1,500 día</small></div>
+            <div class="progress-bar-container" style="margin: 8px 0 10px;">
+              <div class="progress-bar-fill" id="geminiProgressFill" style="width: 1%;"></div>
+            </div>
+            <div class="kpi-list">
+              <div class="kpi-row">
+                <span>Modelo activo:</span>
+                <code>gemini-flash-latest</code>
+              </div>
+              <div class="kpi-row">
+                <span>Cuota gratuita diaria:</span>
+                <strong class="text-success">1,500 req/día ($0)</strong>
+              </div>
+              <div class="kpi-row">
+                <span>Límite por minuto:</span>
+                <strong>15 RPM</strong>
+              </div>
+              <div class="kpi-row">
+                <span>Uso cuota gratuita:</span>
+                <strong id="geminiQuotaPercent" class="text-success">< 1%</strong>
+              </div>
+            </div>
+            <div class="kpi-cost-badge" id="geminiCostBadge">Costo API Key: $0.00/m</div>
           </div>
         </div>
 
@@ -256,6 +288,10 @@
             <div class="sim-result-item">
               <span class="sim-res-label">Escrituras Firestore:</span>
               <strong id="simFirestoreVal" class="sim-res-value">96 / 20,000 día (0.5%)</strong>
+            </div>
+            <div class="sim-result-item">
+              <span class="sim-res-label">Peticiones Gemini AI:</span>
+              <strong id="simGeminiVal" class="sim-res-value">96 / 1,500 día (Free $0)</strong>
             </div>
           </div>
 

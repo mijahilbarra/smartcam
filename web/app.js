@@ -666,6 +666,12 @@ const firestoreWritesText = document.getElementById("firestoreWritesText");
 const firestoreProgressFill = document.getElementById("firestoreProgressFill");
 const firestoreQuotaPercent = document.getElementById("firestoreQuotaPercent");
 
+// Gemini API Elements
+const geminiReqsText = document.getElementById("geminiReqsText");
+const geminiProgressFill = document.getElementById("geminiProgressFill");
+const geminiQuotaPercent = document.getElementById("geminiQuotaPercent");
+const geminiCostBadge = document.getElementById("geminiCostBadge");
+
 // Simulator Elements
 const simIntervalRange = document.getElementById("simIntervalRange");
 const simIntervalDisplay = document.getElementById("simIntervalDisplay");
@@ -673,24 +679,28 @@ const simCapturesVal = document.getElementById("simCapturesVal");
 const simStorageMonthVal = document.getElementById("simStorageMonthVal");
 const simOpsVal = document.getElementById("simOpsVal");
 const simFirestoreVal = document.getElementById("simFirestoreVal");
+const simGeminiVal = document.getElementById("simGeminiVal");
 const simAlertBox = document.getElementById("simAlertBox");
 const simAlertIcon = document.getElementById("simAlertIcon");
 const simAlertText = document.getElementById("simAlertText");
 const syncSimWithIntervalBtn = document.getElementById("syncSimWithIntervalBtn");
 const simPresetBtns = document.querySelectorAll(".sim-preset-btn");
 
-// Free Tier Constants for Google Cloud
+// Free Tier Constants for Google Cloud & AI Studio
 const FREE_TIER = {
   storageMB: 5120, // 5.0 GB in MB
   storageOpsA: 5000, // Class A ops/month
   storageOpsB: 50000, // Class B ops/month
   firestoreWritesPerDay: 20000, // Document writes/day
   firestoreReadsPerDay: 50000, // Document reads/day
+  geminiReqsPerDay: 1500, // Google AI Studio Free Tier RPD
+  geminiRPM: 15, // Google AI Studio Free Tier RPM
   computeHoursPerMonth: 744, // 1 e2-micro covered
   diskGB: 30, // pd-standard 30GB/month
   priceStoragePerGB: 0.026, // $0.026 per GB/month after 5GB
   priceOpsAPer10k: 0.05, // $0.05 per 10,000 Class A ops
   priceIPv4PerHour: 0.005, // ~$0.005/hr in-use public IPv4 ($3.65/mo)
+  priceGeminiFlashPerCall: 0.00008, // ~$0.00008 / call in pay-as-you-go
   approxMBPerCapture: 2.1 // 1MB raw + 1MB annotated + 0.1MB crops
 };
 
@@ -844,6 +854,22 @@ function updateCostMetrics(photoCount = 0) {
     firestoreQuotaPercent.textContent = `${writePercent}%`;
   }
 
+  // Gemini AI daily requests (Google AI Studio Free Tier: 1,500 req/day)
+  const dailyGeminiReqs = Math.round(capturesPerDay);
+  const geminiPercent = ((dailyGeminiReqs / FREE_TIER.geminiReqsPerDay) * 100).toFixed(1);
+  if (geminiReqsText) {
+    geminiReqsText.innerHTML = `${dailyGeminiReqs.toLocaleString()} <small>/ 1,500 día</small>`;
+  }
+  if (geminiProgressFill) {
+    geminiProgressFill.style.width = `${Math.max(1, Math.min(100, geminiPercent))}%`;
+  }
+  if (geminiQuotaPercent) {
+    geminiQuotaPercent.textContent = `${geminiPercent}%`;
+  }
+  if (geminiCostBadge) {
+    geminiCostBadge.textContent = "Costo API Key: $0.00/m";
+  }
+
   // General Traffic Light Badge
   if (costTrafficBadge && costTrafficText) {
     if (currentInterval >= 10) {
@@ -897,6 +923,15 @@ function updateSimulator(intervalMinutes) {
   if (simFirestoreVal) {
     const fsPercent = ((capturesPerDay / FREE_TIER.firestoreWritesPerDay) * 100).toFixed(1);
     simFirestoreVal.textContent = `${Math.round(capturesPerDay).toLocaleString()} / 20k día (${fsPercent}%)`;
+  }
+
+  if (simGeminiVal) {
+    const paygCost = (capturesPerMonth * FREE_TIER.priceGeminiFlashPerCall).toFixed(2);
+    if (capturesPerDay <= FREE_TIER.geminiReqsPerDay) {
+      simGeminiVal.innerHTML = `${Math.round(capturesPerDay).toLocaleString()} / día <span style="font-size: 0.72rem; color: #34d399;">(Free $0)</span>`;
+    } else {
+      simGeminiVal.innerHTML = `${Math.round(capturesPerDay).toLocaleString()} / día <span style="font-size: 0.72rem; color: #fbbf24;">(~$${paygCost}/m)</span>`;
+    }
   }
 
   // Cost and alert evaluation

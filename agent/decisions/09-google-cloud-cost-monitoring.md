@@ -27,7 +27,8 @@ Para mantener una operación sostenible sin riesgo de facturaciones imprevistas 
 | **Cloud Storage** | Bucket `skip-bigotes.firebasestorage.app` | 5.0 GB-mes de almacenamiento | ~144 MB base (+ crecimiento según intervalo) | **$0.00** (bajo < 5 GB) |
 | **Operaciones Storage** | Subidas de imágenes (Clase A) | 5,000 operaciones Clase A al mes | ~5,760 ops/mes (a 15 min de intervalo) | **<$0.01** |
 | **Cloud Firestore** | Base de datos modo nativo (`nam5`) | 20,000 escrituras / 50,000 lecturas diarias | ~96 escrituras/día (a 15 min de intervalo) | **$0.00** |
-| **Inferencia ML** | YOLOv8 Nano en ONNX Runtime | N/A (Cómputo en CPU local de la VM) | Inferencia local ~100 ms por fotograma | **$0.00** (100% ahorro) |
+| **Inferencia ML Local** | YOLOv8 Nano en ONNX Runtime | N/A (Cómputo en CPU local de la VM) | Inferencia local ~100 ms por fotograma | **$0.00** (100% ahorro) |
+| **Gemini Vision AI API** | `gemini-flash-latest` (AI Studio) | 1,500 peticiones diarias / 15 RPM gratuitas | ~96 req/día (a 15 min si activo) | **$0.00** (o ~$0.00008/call) |
 | **Firebase Hosting** | CDN global de distribución web | 10 GB de transferencia mensual / 360 MB | Assets estáticos cacheados en CDN | **$0.00** |
 
 *\*Nota de IP Pública: Google Cloud introdujo a partir de febrero de 2024 un cargo estándar de ~$0.005/hora por direcciones IPv4 públicas asignadas a instancias en ejecución, lo que representa aproximadamente $3.65 al mes si no es cubierto por créditos promocionales.*
@@ -48,6 +49,7 @@ Se diseñó e implementó un **Monitor Reactivo de Costos y Cuotas de Google Clo
    - Cálculo del crecimiento diario de almacenamiento estimado (`+MB / día`).
    - Días restantes calculados antes de alcanzar el límite gratuito de Storage.
    - Porcentaje de cuota diaria consumida en Cloud Firestore (sobre el límite de 20,000 escrituras diarias).
+   - Consumo diario y tasa de cuota de **Google Gemini Vision API** (sobre la cuota gratuita de 1,500 llamadas/día en Google AI Studio y costo por llamada Pay-as-you-go).
 
 3. **Simulador Interactivo de Intervalos**:
    - Control deslizante y botones de preajuste rápido (`30s`, `1m`, `5m`, `15m`, `1h`).
