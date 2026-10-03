@@ -2,11 +2,34 @@ import express from "express";
 import admin from "firebase-admin";
 import { exec } from "child_process";
 import fs from "fs/promises";
+import fsSync from "fs";
 import path from "path";
 import util from "util";
 import { fileURLToPath } from "url";
 import { analyzeImageWithGemini } from "./gemini.js";
 import { detectObjectsAndQuadrants } from "./detector.js";
+
+// Tee all console logs to a local file for easy SSH/remote diagnosis
+const LOG_FILE = "/tmp/camera-catcher.log";
+const origLog = console.log;
+const origErr = console.error;
+
+function appendToLog(prefix, args) {
+  try {
+    const text = args.map(a => typeof a === 'object' ? JSON.stringify(a) : a).join(' ');
+    fsSync.appendFileSync(LOG_FILE, `[${new Date().toISOString()}] ${prefix} ${text}\n`);
+  } catch (_) {}
+}
+
+console.log = (...args) => {
+  origLog(...args);
+  appendToLog("[INFO]", args);
+};
+
+console.error = (...args) => {
+  origErr(...args);
+  appendToLog("[ERROR]", args);
+};
 
 const execPromise = util.promisify(exec);
 const __filename = fileURLToPath(import.meta.url);
@@ -212,7 +235,27 @@ export async function executeCaptureProcess() {
     console.log(`[6/6] [Firestore] Documento guardado exitosamente en camera_catcher/photos/photos/${docId}`);
     console.log(`========================================\n`);
 
+    try {
+      await db.doc("camera_catcher/status").set({
+        service: "camera-catcher",
+        status: "ok",
+        lastCaptureAt: new Date().toISOString(),
+        lastDocId: docId
+      }, { merge: true });
+    } catch (_) {}
+
     return record;
+  } catch (err) {
+    console.error(`[Capture Error] Falló el proceso de captura:`, err.message);
+    try {
+      await db.doc("camera_catcher/status").set({
+        service: "camera-catcher",
+        status: "error",
+        lastError: err.message,
+        lastErrorAt: new Date().toISOString()
+      }, { merge: true });
+    } catch (_) {}
+    throw err;
   } finally {
     isCapturing = false;
   }
