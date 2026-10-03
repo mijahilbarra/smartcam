@@ -5,7 +5,9 @@ import {
   doc, 
   onSnapshot, 
   setDoc,
-  getDoc
+  getDoc,
+  updateDoc,
+  deleteDoc
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 import { 
   getStorage, 
@@ -90,6 +92,8 @@ const modalOriginalLink = document.getElementById("modalOriginalLink");
 const modalAnnotatedImage = document.getElementById("modalAnnotatedImage");
 const modalAnnotatedLoading = document.getElementById("modalAnnotatedLoading");
 const modalAnnotatedLink = document.getElementById("modalAnnotatedLink");
+const modalAnnotatedStage = document.getElementById("modalAnnotatedStage");
+const modalAnnotatedSvg = document.getElementById("modalAnnotatedSvg");
 
 let currentModalDocId = "";
 
@@ -459,28 +463,36 @@ async function renderTableRows(docs) {
         </div>
       `;
     } else if (clients.length === 1) {
+      const isStaffSingle = clients[0].role === "staff" || clients[0].isStaffHint === true;
+      const thumbBadgeText = isStaffSingle ? "✂️ Staff" : "👤 Cliente";
+      const thumbBadgeStyle = isStaffSingle ? 'style="background: #FF4500;"' : '';
       thumbCellHtml = `
         <div class="client-thumb-single-wrap" id="client-thumb-wrap-${index}-0" title="Ver detalle de captura">
           <div class="thumbnail-placeholder" id="client-thumb-load-${index}-0">
             <div class="spinner-small"></div>
           </div>
-          <img id="client-thumb-img-${index}-0" class="hidden client-thumb-img" alt="Fragmento de cliente sentado" />
-          <span class="client-thumb-label">👤 Cliente</span>
+          <img id="client-thumb-img-${index}-0" class="hidden client-thumb-img" alt="Fragmento de persona detectada" />
+          <span class="client-thumb-label" ${thumbBadgeStyle}>${thumbBadgeText}</span>
         </div>
       `;
     } else {
-      // Multiple seated clients detected
+      // Multiple seated clients or staff detected
       thumbCellHtml = `
         <div class="client-thumbs-multi-wrap" title="Ver detalle de captura">
-          ${clients.map((c, cIdx) => `
-            <div class="client-thumb-multi-item" id="client-thumb-wrap-${index}-${cIdx}" title="Cliente #${cIdx + 1}">
+          ${clients.map((c, cIdx) => {
+            const isStaffItem = c.role === "staff" || c.isStaffHint === true;
+            const subLabel = isStaffItem ? "✂️ Staff" : `#${cIdx + 1}`;
+            const subLabelStyle = isStaffItem ? 'style="background: #FF4500;"' : "";
+            return `
+            <div class="client-thumb-multi-item" id="client-thumb-wrap-${index}-${cIdx}" title="${isStaffItem ? 'Personal / Staff' : `Cliente #${cIdx + 1}`}">
               <div class="thumbnail-placeholder" id="client-thumb-load-${index}-${cIdx}">
                 <div class="spinner-small"></div>
               </div>
-              <img id="client-thumb-img-${index}-${cIdx}" class="hidden client-thumb-img" alt="Cliente #${cIdx + 1}" />
-              <span class="client-thumb-sublabel">#${cIdx + 1}</span>
+              <img id="client-thumb-img-${index}-${cIdx}" class="hidden client-thumb-img" alt="${isStaffItem ? 'Staff' : `Cliente #${cIdx + 1}`}" />
+              <span class="client-thumb-sublabel" ${subLabelStyle}>${subLabel}</span>
             </div>
-          `).join("")}
+            `;
+          }).join("")}
         </div>
       `;
     }
@@ -490,13 +502,20 @@ async function renderTableRows(docs) {
     if (clients.length > 0) {
       clientChipsHtml = `
         <div class="clients-container" style="display: flex; align-items: center; gap: 8px; margin-top: 8px;">
-          <span style="font-size: 0.75rem; color: #32DC32; font-weight: 600;">👤 ${clients.length === 1 ? 'Cliente detectado' : `${clients.length} clientes detectados`}:</span>
+          <span style="font-size: 0.75rem; color: #32DC32; font-weight: 600;">👥 Personas detectadas:</span>
           <div style="display: flex; gap: 6px; flex-wrap: wrap;">
-            ${clients.map((c, cIdx) => `
-              <div class="client-chip" style="display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; background: rgba(50, 220, 50, 0.12); border: 1px solid rgba(50, 220, 50, 0.35); border-radius: 6px;">
-                <span style="font-size: 0.70rem; color: #32DC32; font-weight: 600;">Cliente #${cIdx + 1} (${escapeHtml(c.status || "en_corte")})</span>
+            ${clients.map((c, cIdx) => {
+              const isStaff = c.role === "staff" || c.isStaffHint === true;
+              const chipBg = isStaff ? "rgba(255, 69, 0, 0.12)" : "rgba(50, 220, 50, 0.12)";
+              const chipBorder = isStaff ? "rgba(255, 69, 0, 0.35)" : "rgba(50, 220, 50, 0.35)";
+              const chipColor = isStaff ? "#FF4500" : "#32DC32";
+              const chipLabel = isStaff ? `✂️ Staff (${escapeHtml(c.status || "en_servicio")})` : `👤 Cliente #${cIdx + 1} (${escapeHtml(c.status || "en_corte")})`;
+              return `
+              <div class="client-chip" style="display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; background: ${chipBg}; border: 1px solid ${chipBorder}; border-radius: 6px;">
+                <span style="font-size: 0.70rem; color: ${chipColor}; font-weight: 600;">${chipLabel}</span>
               </div>
-            `).join("")}
+              `;
+            }).join("")}
           </div>
         </div>
       `;
@@ -587,19 +606,21 @@ async function openModal(docData) {
   modalOriginalLoading.innerHTML = `<div class="spinner-small"></div> <span>Cargando original...</span>`;
   modalOriginalLink.href = "#";
 
-  modalAnnotatedImage.classList.add("hidden");
+  modalAnnotatedStage?.classList.add("hidden");
   modalAnnotatedImage.src = "";
+  if (modalAnnotatedSvg) modalAnnotatedSvg.innerHTML = "";
   modalAnnotatedLoading.classList.remove("hidden");
-  modalAnnotatedLoading.innerHTML = `<div class="spinner-small"></div> <span>Cargando foto con marcos...</span>`;
+  modalAnnotatedLoading.innerHTML = `<div class="spinner-small"></div> <span>Cargando fotograma...</span>`;
   modalAnnotatedLink.href = "#";
 
   imageModal.classList.remove("hidden");
 
-  // 1. Resolve and display Foto Original (Left side)
+  // 1. Resolve photo URL (single original image shared by both panes)
   const originalPath = docData.imageStoragePath || docData.annotatedStoragePath;
   if (originalPath) {
     resolveStorageUrl(originalPath).then((url) => {
       if (url) {
+        // Left pane: clean original photo
         modalOriginalImage.src = url;
         modalOriginalLink.href = url;
         modalOriginalImage.onload = () => {
@@ -609,34 +630,26 @@ async function openModal(docData) {
         modalOriginalImage.onerror = () => {
           modalOriginalLoading.innerHTML = `<span style="color: var(--danger)">Error al cargar</span>`;
         };
-      } else {
-        modalOriginalLoading.innerHTML = `<span style="color: var(--danger)">No disponible</span>`;
-      }
-    });
-  } else {
-    modalOriginalLoading.innerHTML = `<span style="color: var(--text-muted)">Sin imagen original</span>`;
-  }
 
-  // 2. Resolve and display Foto con Marcos (Right side)
-  const annotatedPath = docData.annotatedStoragePath || docData.imageStoragePath;
-  if (annotatedPath) {
-    resolveStorageUrl(annotatedPath).then((url) => {
-      if (url) {
+        // Right pane: mounted dynamically with SVG overlay on top of original photo
         modalAnnotatedImage.src = url;
         modalAnnotatedLink.href = url;
         modalAnnotatedImage.onload = () => {
           modalAnnotatedLoading.classList.add("hidden");
-          modalAnnotatedImage.classList.remove("hidden");
+          modalAnnotatedStage?.classList.remove("hidden");
+          renderFrontendAnnotatedOverlay(docData);
         };
         modalAnnotatedImage.onerror = () => {
           modalAnnotatedLoading.innerHTML = `<span style="color: var(--danger)">Error al cargar</span>`;
         };
       } else {
+        modalOriginalLoading.innerHTML = `<span style="color: var(--danger)">No disponible</span>`;
         modalAnnotatedLoading.innerHTML = `<span style="color: var(--danger)">No disponible</span>`;
       }
     });
   } else {
-    modalAnnotatedLoading.innerHTML = `<span style="color: var(--text-muted)">Sin imagen con marcos</span>`;
+    modalOriginalLoading.innerHTML = `<span style="color: var(--text-muted)">Sin imagen</span>`;
+    modalAnnotatedLoading.innerHTML = `<span style="color: var(--text-muted)">Sin imagen</span>`;
   }
 
   // 3. Populate client crop cards if seated clients were detected
@@ -669,10 +682,110 @@ async function openModal(docData) {
   }
 }
 
+/**
+ * Render dynamic SVG overlay on top of original image in modal, mounting
+ * boxes and perspective quadrilaterals entirely in frontend (saves storage & upload costs).
+ */
+function renderFrontendAnnotatedOverlay(docData) {
+  if (!modalAnnotatedSvg || !modalAnnotatedImage) return;
+
+  const w = docData.ml?.imageDimensions?.width || modalAnnotatedImage.naturalWidth || 1024;
+  const h = docData.ml?.imageDimensions?.height || modalAnnotatedImage.naturalHeight || 576;
+
+  modalAnnotatedSvg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+  modalAnnotatedSvg.innerHTML = "";
+
+  const quadrants = docData.ml?.quadrants || docData.quadrants || [];
+  if (!Array.isArray(quadrants) || quadrants.length === 0) return;
+
+  const occupiedSlots = [];
+
+  quadrants.forEach((q) => {
+    const color = q.color || "#00FF00";
+    const label = q.label || q.name || q.id;
+    const statusText = q.status ? ` [${q.status}]` : "";
+    const fullText = `${label}${statusText}`;
+
+    // 1. Draw Geometry: Free Polygon or Rect
+    if (q.polygonNorm && Array.isArray(q.polygonNorm) && q.polygonNorm.length >= 3) {
+      const pts = q.polygonNorm.map(p => {
+        const [px, py] = toPointTuple(p);
+        return `${Math.round(px * w)},${Math.round(py * h)}`;
+      }).join(" ");
+
+      const poly = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+      poly.setAttribute("points", pts);
+      poly.setAttribute("fill", color);
+      poly.setAttribute("fill-opacity", "0.22");
+      poly.setAttribute("stroke", color);
+      poly.setAttribute("stroke-width", "3");
+      poly.setAttribute("stroke-linejoin", "round");
+      modalAnnotatedSvg.appendChild(poly);
+    } else if (q.box && Array.isArray(q.box) && q.box.length === 4) {
+      const [x1, y1, x2, y2] = q.box;
+      const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      rect.setAttribute("x", x1);
+      rect.setAttribute("y", y1);
+      rect.setAttribute("width", Math.max(1, x2 - x1));
+      rect.setAttribute("height", Math.max(1, y2 - y1));
+      rect.setAttribute("fill", color);
+      rect.setAttribute("fill-opacity", "0.20");
+      rect.setAttribute("stroke", color);
+      rect.setAttribute("stroke-width", "3");
+      rect.setAttribute("rx", "4");
+      modalAnnotatedSvg.appendChild(rect);
+    }
+
+    // 2. Draw Text Badge with status
+    let boxX = 0, boxY = 0;
+    if (q.box && Array.isArray(q.box) && q.box.length === 4) {
+      boxX = q.box[0];
+      boxY = q.box[1];
+    } else if (q.polygonNorm && Array.isArray(q.polygonNorm) && q.polygonNorm.length > 0) {
+      const [px, py] = toPointTuple(q.polygonNorm[0]);
+      boxX = Math.round(px * w);
+      boxY = Math.round(py * h);
+    }
+
+    const badgeW = Math.max(120, fullText.length * 8.5 + 16);
+    const badgeH = 22;
+    let badgeY = Math.max(4, boxY - badgeH - 3);
+
+    const collides = occupiedSlots.some(slot =>
+      Math.abs(slot.x - boxX) < 150 && Math.abs(slot.y - badgeY) < 26
+    );
+    if (collides || q.id === "cliente_sentado") {
+      badgeY = boxY + 6;
+    }
+    occupiedSlots.push({ x: boxX, y: badgeY });
+
+    const badgeRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    badgeRect.setAttribute("x", boxX);
+    badgeRect.setAttribute("y", badgeY);
+    badgeRect.setAttribute("width", badgeW);
+    badgeRect.setAttribute("height", badgeH);
+    badgeRect.setAttribute("fill", color);
+    badgeRect.setAttribute("rx", "3");
+    modalAnnotatedSvg.appendChild(badgeRect);
+
+    const badgeText = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    badgeText.setAttribute("x", boxX + 8);
+    badgeText.setAttribute("y", badgeY + 15);
+    badgeText.setAttribute("font-family", "Arial, Helvetica, sans-serif");
+    badgeText.setAttribute("font-size", "12");
+    badgeText.setAttribute("font-weight", "bold");
+    badgeText.setAttribute("fill", "#000000");
+    badgeText.textContent = fullText;
+    modalAnnotatedSvg.appendChild(badgeText);
+  });
+}
+
 function closeModal() {
   imageModal.classList.add("hidden");
   modalOriginalImage.src = "";
   modalAnnotatedImage.src = "";
+  if (modalAnnotatedSvg) modalAnnotatedSvg.innerHTML = "";
+  modalAnnotatedStage?.classList.add("hidden");
 }
 
 closeModalBtn.addEventListener("click", closeModal);
@@ -1082,7 +1195,187 @@ function updateSimulator(intervalMinutes) {
 }
 
 /* ========================================================
-   CALIBRADOR VISUAL DE CUADRANTES (ZONAS ROI)
+   RECONOCIMIENTO DE PERSONAS & DIRECTORIO BIOMÉTRICO
+   ======================================================== */
+const peopleCardHeader = document.getElementById("peopleCardHeader");
+const togglePeopleBtn = document.getElementById("togglePeopleBtn");
+const peopleCardBody = document.getElementById("peopleCardBody");
+const peopleStatsBadge = document.getElementById("peopleStatsBadge");
+const peopleListGrid = document.getElementById("peopleListGrid");
+
+function initPeopleListener() {
+  if (!peopleListGrid) return;
+
+  function togglePeopleSection() {
+    if (!peopleCardBody || !togglePeopleBtn) return;
+    const isHidden = peopleCardBody.classList.contains("hidden");
+    if (isHidden) {
+      peopleCardBody.classList.remove("hidden");
+      togglePeopleBtn.textContent = "Contraer ▾";
+    } else {
+      peopleCardBody.classList.add("hidden");
+      togglePeopleBtn.textContent = "Expandir ▸";
+    }
+  }
+
+  togglePeopleBtn?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    togglePeopleSection();
+  });
+
+  peopleCardHeader?.addEventListener("click", () => {
+    togglePeopleSection();
+  });
+
+  const peopleColRef = collection(db, "camera_catcher_people");
+  onSnapshot(peopleColRef, async (snapshot) => {
+    const people = [];
+    snapshot.forEach((docSnap) => {
+      people.push({ id: docSnap.id, ...docSnap.data() });
+    });
+
+    const staffCount = people.filter(p => p.isStaff).length;
+    const clientCount = people.filter(p => !p.isStaff).length;
+    if (peopleStatsBadge) {
+      peopleStatsBadge.textContent = `👥 ${people.length} registradas (${staffCount} Staff • ${clientCount} Clientes)`;
+    }
+
+    if (people.length === 0) {
+      peopleListGrid.innerHTML = `
+        <div class="people-empty-state" style="grid-column: 1 / -1; padding: 24px; text-align: center; background: rgba(15, 23, 42, 0.6); border-radius: 8px; border: 1px dashed rgba(255, 255, 255, 0.1);">
+          <div style="font-size: 2rem; margin-bottom: 8px;">👤</div>
+          <strong style="color: var(--text-main); font-size: 0.95rem;">No hay personas registradas todavía</strong>
+          <p style="font-size: 0.82rem; color: var(--text-muted); margin-top: 6px; max-width: 500px; margin-left: auto; margin-right: auto;">
+            A medida que la cámara capture y el backend procese los fotogramas con el modelo MobileFaceNet ArcFace, catalogará automáticamente aquí a clientes y barberos para re-identificación facial.
+          </p>
+        </div>
+      `;
+      return;
+    }
+
+    // Sort: Staff first, then most visits, then most recent
+    people.sort((a, b) => {
+      if (a.isStaff && !b.isStaff) return -1;
+      if (!a.isStaff && b.isStaff) return 1;
+      const visitsA = a.visitCount || 1;
+      const visitsB = b.visitCount || 1;
+      if (visitsB !== visitsA) return visitsB - visitsA;
+      return new Date(b.lastSeen || 0) - new Date(a.lastSeen || 0);
+    });
+
+    peopleListGrid.innerHTML = people.map((p, idx) => {
+      const isStaff = !!p.isStaff;
+      const visits = p.visitCount || 1;
+      const roleBadge = isStaff
+        ? `<span class="person-role-tag staff">💈 Staff / Barbero</span>`
+        : visits > 1
+          ? `<span class="person-role-tag frequent">⭐ Frecuente (${visits} visitas)</span>`
+          : `<span class="person-role-tag new">👤 Cliente (1 visita)</span>`;
+
+      const lastDate = p.lastSeen ? formatDateTime(p.lastSeen) : "Desconocido";
+
+      return `
+        <div class="person-card ${isStaff ? 'staff-card' : ''}" data-person-id="${p.id}">
+          <div class="person-thumb-wrap">
+            <div class="thumbnail-placeholder" id="p-load-${idx}">
+              <div class="spinner-small"></div>
+            </div>
+            <img id="p-img-${idx}" class="person-thumb-img hidden" alt="${escapeHtml(p.name || p.id)}" />
+            <div class="person-badge-overlay">${roleBadge}</div>
+          </div>
+          
+          <div class="person-details">
+            <div class="person-name-row">
+              <input type="text" class="person-name-input" id="p-name-${idx}" value="${escapeHtml(p.name || 'Persona')}" title="Clic para renombrar (Enter o salir del campo para guardar)" />
+              <button class="person-del-btn" id="p-del-${idx}" title="Eliminar perfil">🗑️</button>
+            </div>
+            <div class="person-meta-row">
+              <span>Visitas: <strong>${visits}</strong></span>
+              <span>Última: <small>${lastDate}</small></span>
+            </div>
+            <div class="person-actions-row">
+              <button class="btn btn-secondary btn-sm person-role-toggle-btn" id="p-role-${idx}">
+                ${isStaff ? "⇄ Cambiar a Cliente" : "💈 Marcar como Staff"}
+              </button>
+            </div>
+          </div>
+        </div>
+      `;
+    }).join("");
+
+    // Resolve thumbnails & attach actions
+    people.forEach(async (p, idx) => {
+      const imgEl = document.getElementById(`p-img-${idx}`);
+      const loadEl = document.getElementById(`p-load-${idx}`);
+      const nameInput = document.getElementById(`p-name-${idx}`);
+      const delBtn = document.getElementById(`p-del-${idx}`);
+      const roleBtn = document.getElementById(`p-role-${idx}`);
+
+      const thumbPath = p.lastThumbnailPath || p.thumbnailPath;
+      if (thumbPath) {
+        const url = await resolveStorageUrl(thumbPath);
+        if (url && imgEl) {
+          imgEl.src = url;
+          imgEl.onload = () => {
+            loadEl?.classList.add("hidden");
+            imgEl.classList.remove("hidden");
+          };
+          imgEl.onerror = () => {
+            if (loadEl) loadEl.innerHTML = `<span style="font-size: 0.70rem; color: var(--text-muted)">Sin vista previa</span>`;
+          };
+        }
+      } else {
+        if (loadEl) loadEl.innerHTML = `<span style="font-size: 0.70rem; color: var(--text-muted)">Sin foto</span>`;
+      }
+
+      // Inline renaming
+      nameInput?.addEventListener("change", async (e) => {
+        const newName = e.target.value.trim();
+        if (!newName) return;
+        try {
+          await updateDoc(doc(db, "camera_catcher_people", p.id), { name: newName });
+          nameInput.style.borderColor = "#10b981";
+          setTimeout(() => { nameInput.style.borderColor = ""; }, 1500);
+        } catch (err) {
+          console.error("Error renombrando persona:", err);
+          alert("Error al renombrar: " + err.message);
+        }
+      });
+
+      // Role Toggle
+      roleBtn?.addEventListener("click", async () => {
+        roleBtn.disabled = true;
+        try {
+          await updateDoc(doc(db, "camera_catcher_people", p.id), {
+            isStaff: !p.isStaff
+          });
+        } catch (err) {
+          console.error("Error cambiando rol:", err);
+          alert("Error: " + err.message);
+        } finally {
+          roleBtn.disabled = false;
+        }
+      });
+
+      // Delete Person
+      delBtn?.addEventListener("click", async () => {
+        if (confirm(`¿Eliminar el perfil biométrico de "${p.name || p.id}"?`)) {
+          try {
+            await deleteDoc(doc(db, "camera_catcher_people", p.id));
+          } catch (err) {
+            console.error("Error eliminando perfil:", err);
+            alert("Error: " + err.message);
+          }
+        }
+      });
+    });
+  }, (err) => {
+    console.error("[People] Error suscribiendo a camera_catcher_people:", err);
+  });
+}
+
+/* ========================================================
+   CALIBRADOR VISUAL DE CUADRANTES (POLÍGONOS LIBRES / PERSPECTIVA)
    ======================================================== */
 const openCalibratorBtn = document.getElementById("openCalibratorBtn");
 const modalCalibrateWithPhotoBtn = document.getElementById("modalCalibrateWithPhotoBtn");
@@ -1100,6 +1393,7 @@ const calibratorStatusBadge = document.getElementById("calibratorStatusBadge");
 const calibratorPhotoSelect = document.getElementById("calibratorPhotoSelect");
 const calibratorLoading = document.getElementById("calibratorLoading");
 const calibratorImg = document.getElementById("calibratorImg");
+const calibratorSvg = document.getElementById("calibratorSvg");
 const calibratorOverlay = document.getElementById("calibratorOverlay");
 const quadrantsList = document.getElementById("quadrantsList");
 const quadrantCount = document.getElementById("quadrantCount");
@@ -1108,11 +1402,86 @@ let currentToolMode = "move"; // 'move' | 'draw'
 let drawingContext = null;
 let drawPreviewEl = null;
 
-const DEFAULT_QUADRANTS = [
+// Helpers for Quadrilateral & Polygon Conversion
+function toPointTuple(p) {
+  if (Array.isArray(p)) return [Number(p[0]), Number(p[1])];
+  if (p && typeof p === "object") return [Number(p.x ?? 0), Number(p.y ?? 0)];
+  return [0, 0];
+}
+
+function boxNormToPolygonNorm([ymin, xmin, ymax, xmax]) {
+  return [
+    [Number(xmin.toFixed(3)), Number(ymin.toFixed(3))], // P1 (Top-Left)
+    [Number(xmax.toFixed(3)), Number(ymin.toFixed(3))], // P2 (Top-Right)
+    [Number(xmax.toFixed(3)), Number(ymax.toFixed(3))], // P3 (Bottom-Right)
+    [Number(xmin.toFixed(3)), Number(ymax.toFixed(3))]  // P4 (Bottom-Left)
+  ];
+}
+
+function polygonNormToBoundingBoxNorm(polygon) {
+  if (!polygon || polygon.length === 0) return [0, 0, 1, 1];
+  const xs = polygon.map(p => toPointTuple(p)[0]);
+  const ys = polygon.map(p => toPointTuple(p)[1]);
+  return [
+    Number(Math.min(...ys).toFixed(3)),
+    Number(Math.min(...xs).toFixed(3)),
+    Number(Math.max(...ys).toFixed(3)),
+    Number(Math.max(...xs).toFixed(3))
+  ];
+}
+
+function normalizeQuadrants(quads) {
+  if (!Array.isArray(quads)) return [];
+  return quads.map(q => {
+    const item = { ...q };
+    if (item.polygonNorm && Array.isArray(item.polygonNorm) && item.polygonNorm.length >= 3) {
+      item.polygonNorm = item.polygonNorm.map(toPointTuple);
+    } else if (item.boxNorm && Array.isArray(item.boxNorm) && item.boxNorm.length === 4) {
+      item.polygonNorm = boxNormToPolygonNorm(item.boxNorm);
+    } else {
+      item.polygonNorm = [[0.2, 0.2], [0.8, 0.2], [0.8, 0.8], [0.2, 0.8]];
+    }
+    item.boxNorm = polygonNormToBoundingBoxNorm(item.polygonNorm);
+    return item;
+  });
+}
+
+/**
+ * Serialize quadrants for Firestore to avoid nested arrays limitation.
+ * Converts polygonNorm [[x, y], ...] into an array of map objects [{ x, y }, ...].
+ */
+function serializeQuadrantsForFirestore(quads) {
+  return quads.map(q => {
+    const rawPoly = q.polygonNorm || boxNormToPolygonNorm(q.boxNorm || [0, 0, 1, 1]);
+    const polyObjects = rawPoly.map(p => {
+      const [x, y] = toPointTuple(p);
+      return {
+        x: Number(x.toFixed(3)),
+        y: Number(y.toFixed(3))
+      };
+    });
+    return {
+      id: q.id,
+      name: q.name || q.id,
+      type: q.type || "custom_zone",
+      color: q.color || "#007BFF",
+      boxNorm: q.boxNorm || [0, 0, 1, 1],
+      polygonNorm: polyObjects
+    };
+  });
+}
+
+const DEFAULT_QUADRANTS = normalizeQuadrants([
   {
     id: "puerta_entrada",
     name: "Entrada / Pasillo peatonal",
     boxNorm: [0.30, 0.40, 0.88, 0.60],
+    polygonNorm: [
+      [0.40, 0.30],
+      [0.60, 0.30],
+      [0.60, 0.88],
+      [0.40, 0.88]
+    ],
     type: "walking_zone",
     color: "#007BFF"
   },
@@ -1120,6 +1489,12 @@ const DEFAULT_QUADRANTS = [
     id: "silla_barbero_puesto1",
     name: "Silla de barbero (Puesto 1)",
     boxNorm: [0.65, 0.80, 1.00, 1.00],
+    polygonNorm: [
+      [0.80, 0.65],
+      [1.00, 0.65],
+      [1.00, 1.00],
+      [0.80, 1.00]
+    ],
     type: "barber_chair",
     color: "#FFD700"
   },
@@ -1127,6 +1502,12 @@ const DEFAULT_QUADRANTS = [
     id: "silla_barbero_puesto2",
     name: "Silla de barbero (Frente)",
     boxNorm: [0.80, 0.36, 1.00, 0.67],
+    polygonNorm: [
+      [0.36, 0.80],
+      [0.67, 0.80],
+      [0.67, 1.00],
+      [0.36, 1.00]
+    ],
     type: "barber_chair",
     color: "#FFD700"
   },
@@ -1134,6 +1515,12 @@ const DEFAULT_QUADRANTS = [
     id: "silla_espera",
     name: "Silla de espera",
     boxNorm: [0.55, 0.73, 0.92, 0.90],
+    polygonNorm: [
+      [0.73, 0.55],
+      [0.90, 0.55],
+      [0.90, 0.92],
+      [0.73, 0.92]
+    ],
     type: "waiting_chair",
     color: "#D250DC"
   },
@@ -1141,10 +1528,16 @@ const DEFAULT_QUADRANTS = [
     id: "zona_barbero",
     name: "Zona de trabajo de barbero",
     boxNorm: [0.45, 0.65, 0.95, 0.82],
+    polygonNorm: [
+      [0.65, 0.45],
+      [0.82, 0.45],
+      [0.82, 0.95],
+      [0.65, 0.95]
+    ],
     type: "barber_workstation",
     color: "#FF4500"
   }
-];
+]);
 
 let currentQuadrants = JSON.parse(JSON.stringify(DEFAULT_QUADRANTS));
 let selectedQuadrantIndex = 0;
@@ -1172,10 +1565,14 @@ function initQuadrantsListener() {
   onSnapshot(quadrantsDocRef, (snap) => {
     if (snap.exists()) {
       const data = snap.data();
+      let quadsRaw = [];
       if (Array.isArray(data?.quadrants) && data.quadrants.length > 0) {
-        currentQuadrants = JSON.parse(JSON.stringify(data.quadrants));
+        quadsRaw = data.quadrants;
       } else if (data?.quadrants && typeof data.quadrants === "object") {
-        currentQuadrants = Object.values(data.quadrants);
+        quadsRaw = Object.values(data.quadrants);
+      }
+      if (quadsRaw.length > 0) {
+        currentQuadrants = normalizeQuadrants(quadsRaw);
       }
       renderQuadrantsSidebar();
       renderBoxesOnStage();
@@ -1209,7 +1606,6 @@ function updateCalibratorPhotoSelectOptions(preselectDocId = null) {
   });
 
   if (preselectDocId && calibratorPhotoSelect.value !== preselectDocId) {
-    // If not found yet, default to first option
     calibratorPhotoSelect.value = "latest";
   }
 }
@@ -1259,7 +1655,7 @@ function setToolMode(mode) {
   if (calibratorTipText) {
     calibratorTipText.innerHTML = mode === "draw"
       ? `✏️ <strong>Modo Dibujar activo:</strong> Haz clic y arrastra sobre la foto para crear la zona.`
-      : `💡 <em>Arrastra cualquier caja para moverla o ajusta sus 4 esquinas.</em>`;
+      : `💡 <em>Arrastra cualquier zona para moverla o ajusta libremente sus 4 esquinas (perspectiva).</em>`;
   }
 }
 
@@ -1280,7 +1676,7 @@ function deleteQuadrant(idx) {
 }
 
 /**
- * Render list of quadrants in the sidebar
+ * Render list of quadrants in the sidebar with 4-vertex coordinates
  */
 function renderQuadrantsSidebar() {
   if (!quadrantsList) return;
@@ -1292,25 +1688,34 @@ function renderQuadrantsSidebar() {
     item.className = `q-item ${idx === selectedQuadrantIndex ? "active" : ""}`;
     item.dataset.index = idx;
 
-    const [ymin, xmin, ymax, xmax] = q.boxNorm || [0, 0, 1, 1];
+    const poly = q.polygonNorm || [];
+    const vStr = poly.map((p, i) => `P${i+1}:(${p[0].toFixed(2)},${p[1].toFixed(2)})`).join("  ");
+    const currentType = q.type || "custom_zone";
 
     item.innerHTML = `
       <div class="q-item-header">
         <div class="q-item-left">
-          <input type="color" class="q-color-picker" value="${q.color || '#3b82f6'}" title="Cambiar color del cuadrante" />
-          <input type="text" class="q-name-input" value="${q.name || q.id}" title="Editar nombre del cuadrante" />
+          <input type="color" class="q-color-picker" value="${q.color || '#3b82f6'}" title="Cambiar color de la zona" />
+          <input type="text" class="q-name-input" value="${escapeHtml(q.name || q.id)}" title="Editar nombre de la zona" />
         </div>
         <button class="q-delete-btn" title="Eliminar esta zona" style="font-size: 0.95rem; cursor: pointer; padding: 2px 6px;">🗑️</button>
       </div>
-      <div class="q-coords-row">
-        <span>Y: <strong class="q-coord-pill">${ymin.toFixed(2)} - ${ymax.toFixed(2)}</strong></span>
-        <span>X: <strong class="q-coord-pill">${xmin.toFixed(2)} - ${xmax.toFixed(2)}</strong></span>
+      <div class="q-type-row">
+        <select class="q-type-select" title="Regla de negocio / Función asignada a esta zona">
+          <option value="barber_chair" ${currentType === 'barber_chair' ? 'selected' : ''}>💈 Silla de Barbero (Corte / Cliente)</option>
+          <option value="barber_workstation" ${currentType === 'barber_workstation' ? 'selected' : ''}>✂️ Puesto de Barbero (Staff / Personal)</option>
+          <option value="waiting_chair" ${currentType === 'waiting_chair' ? 'selected' : ''}>🛋️ Silla / Sala de Espera</option>
+          <option value="walking_zone" ${currentType === 'walking_zone' ? 'selected' : ''}>🚶 Pasillo / Acceso (Tránsito)</option>
+          <option value="custom_zone" ${currentType === 'custom_zone' ? 'selected' : ''}>📦 Zona Personalizada (General)</option>
+        </select>
+      </div>
+      <div class="q-coords-row" title="4 Vértices de perspectiva libre: ${vStr}">
+        <span class="q-vertices-display">${vStr}</span>
       </div>
     `;
 
-    // Click item to select
     item.addEventListener("click", (e) => {
-      if (e.target.classList.contains("q-name-input") || e.target.classList.contains("q-color-picker") || e.target.classList.contains("q-delete-btn")) {
+      if (e.target.classList.contains("q-name-input") || e.target.classList.contains("q-color-picker") || e.target.classList.contains("q-delete-btn") || e.target.classList.contains("q-type-select")) {
         return;
       }
       selectedQuadrantIndex = idx;
@@ -1318,50 +1723,67 @@ function renderQuadrantsSidebar() {
       renderBoxesOnStage();
     });
 
-    // Name change
     const nameInput = item.querySelector(".q-name-input");
     nameInput.addEventListener("input", (e) => {
       q.name = e.target.value;
       updateBoxBadge(idx);
     });
 
-    // Color change
     const colorPicker = item.querySelector(".q-color-picker");
     colorPicker.addEventListener("input", (e) => {
       q.color = e.target.value;
       updateBoxColor(idx);
     });
 
-    // Delete
+    const typeSelect = item.querySelector(".q-type-select");
+    typeSelect?.addEventListener("change", (e) => {
+      q.type = e.target.value;
+      // Auto-suggest matching signature color if desired
+      const TYPE_COLORS = {
+        barber_chair: "#FFD700",
+        barber_workstation: "#FF4500",
+        waiting_chair: "#D250DC",
+        walking_zone: "#007BFF",
+        custom_zone: "#10B981"
+      };
+      if (TYPE_COLORS[q.type]) {
+        q.color = TYPE_COLORS[q.type];
+        const picker = item.querySelector(".q-color-picker");
+        if (picker) picker.value = q.color;
+        updateBoxColor(idx);
+      }
+    });
+
     const deleteBtn = item.querySelector(".q-delete-btn");
-    if (deleteBtn) {
-      deleteBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        deleteQuadrant(idx);
-      });
-    }
+    deleteBtn?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      deleteQuadrant(idx);
+    });
 
     quadrantsList.appendChild(item);
   });
 }
 
 function updateBoxBadge(idx) {
-  const box = calibratorOverlay?.querySelector(`.q-box[data-index="${idx}"]`);
-  const badge = box?.querySelector(".q-box-badge");
+  const badge = calibratorOverlay?.querySelector(`.q-poly-badge[data-index="${idx}"]`);
   if (badge && currentQuadrants[idx]) {
     badge.textContent = currentQuadrants[idx].name || currentQuadrants[idx].id;
   }
 }
 
 function updateBoxColor(idx) {
-  const box = calibratorOverlay?.querySelector(`.q-box[data-index="${idx}"]`);
-  const badge = box?.querySelector(".q-box-badge");
   const q = currentQuadrants[idx];
-  if (box && q) {
-    box.style.borderColor = q.color;
-    box.style.backgroundColor = hexToRgba(q.color, 0.20);
-    if (badge) badge.style.backgroundColor = q.color;
+  if (!q) return;
+  const poly = calibratorSvg?.querySelector(`polygon[data-index="${idx}"]`);
+  const badge = calibratorOverlay?.querySelector(`.q-poly-badge[data-index="${idx}"]`);
+  const handles = calibratorOverlay?.querySelectorAll(`.q-vertex-handle[data-index="${idx}"]`);
+
+  if (poly) {
+    poly.setAttribute("stroke", q.color);
+    poly.setAttribute("fill", hexToRgba(q.color, idx === selectedQuadrantIndex ? 0.30 : 0.14));
   }
+  if (badge) badge.style.backgroundColor = q.color;
+  handles?.forEach(h => { h.style.backgroundColor = q.color; });
 }
 
 function hexToRgba(hex, alpha = 0.2) {
@@ -1373,16 +1795,18 @@ function hexToRgba(hex, alpha = 0.2) {
 }
 
 /**
- * Render interactive boxes and handles on the stage overlay
+ * Render free quadrilaterals (SVG polygons) and 4 vertex handles on the stage
  */
 function renderBoxesOnStage() {
-  if (!calibratorOverlay || !calibratorImg || !calibratorImg.clientWidth) return;
-  calibratorOverlay.innerHTML = "";
-
+  if (!calibratorOverlay || !calibratorSvg || !calibratorImg || !calibratorImg.clientWidth) return;
   const stageW = calibratorImg.clientWidth;
   const stageH = calibratorImg.clientHeight;
 
-  // Drawing mode mousedown listener on overlay
+  calibratorSvg.setAttribute("viewBox", `0 0 ${stageW} ${stageH}`);
+  calibratorSvg.innerHTML = "";
+  calibratorOverlay.innerHTML = "";
+
+  // Draw Mode Overlay Listener
   calibratorOverlay.onmousedown = (e) => {
     if (currentToolMode === "draw" || e.target === calibratorOverlay) {
       e.preventDefault();
@@ -1390,11 +1814,7 @@ function renderBoxesOnStage() {
       const startX = e.clientX - rect.left;
       const startY = e.clientY - rect.top;
 
-      drawingContext = {
-        startX,
-        startY,
-        rect
-      };
+      drawingContext = { startX, startY, rect };
 
       if (!drawPreviewEl) {
         drawPreviewEl = document.createElement("div");
@@ -1409,101 +1829,117 @@ function renderBoxesOnStage() {
   };
 
   currentQuadrants.forEach((q, idx) => {
-    const [ymin, xmin, ymax, xmax] = q.boxNorm || [0, 0, 1, 1];
-    const left = xmin * stageW;
-    const top = ymin * stageH;
-    const width = Math.max(20, (xmax - xmin) * stageW);
-    const height = Math.max(20, (ymax - ymin) * stageH);
+    const isSelected = idx === selectedQuadrantIndex;
+    const polyNorm = q.polygonNorm || boxNormToPolygonNorm(q.boxNorm || [0,0,1,1]);
+    const pts = polyNorm.map(p => `${(p[0] * stageW).toFixed(1)},${(p[1] * stageH).toFixed(1)}`).join(" ");
 
-    const box = document.createElement("div");
-    box.className = `q-box ${idx === selectedQuadrantIndex ? "active" : ""}`;
-    box.dataset.index = idx;
-    box.style.left = `${left}px`;
-    box.style.top = `${top}px`;
-    box.style.width = `${width}px`;
-    box.style.height = `${height}px`;
-    box.style.borderColor = q.color || "#00ff00";
-    box.style.backgroundColor = hexToRgba(q.color || "#00ff00", 0.20);
+    // 1. SVG Polygon for perspective quadrilateral
+    const polyEl = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+    polyEl.setAttribute("points", pts);
+    polyEl.setAttribute("stroke", q.color || "#00ff00");
+    polyEl.setAttribute("stroke-width", isSelected ? "3.5" : "2");
+    polyEl.setAttribute("fill", hexToRgba(q.color || "#00ff00", isSelected ? 0.32 : 0.14));
+    polyEl.setAttribute("class", `q-svg-polygon ${isSelected ? 'active' : ''}`);
+    polyEl.dataset.index = idx;
 
-    const badge = document.createElement("div");
-    badge.className = "q-box-badge";
-    badge.style.backgroundColor = q.color || "#00ff00";
-    badge.textContent = q.name || q.id;
-    box.appendChild(badge);
-
-    // Resize Handles: NW, NE, SW, SE
-    ["nw", "ne", "sw", "se"].forEach(pos => {
-      const handle = document.createElement("div");
-      handle.className = `q-handle q-handle-${pos}`;
-      handle.dataset.handle = pos;
-      box.appendChild(handle);
-    });
-
-    // Handle mousedown on box or resize handles
-    box.addEventListener("mousedown", (e) => {
-      if (currentToolMode === "draw") {
-        return; // In draw mode, let the overlay trigger new rectangle drawing
-      }
-      e.stopPropagation();
+    // Drag whole polygon body
+    polyEl.addEventListener("mousedown", (e) => {
+      if (currentToolMode === "draw") return;
       e.preventDefault();
+      e.stopPropagation();
       selectedQuadrantIndex = idx;
       renderQuadrantsSidebar();
-
-      // Refresh active class on boxes
-      calibratorOverlay.querySelectorAll(".q-box").forEach((b, bIdx) => {
-        b.classList.toggle("active", bIdx === idx);
-      });
-
-      const handlePos = e.target.dataset.handle;
-      const mode = handlePos || "move";
+      renderBoxesOnStage();
 
       dragContext = {
-        mode,
+        mode: "polygon",
         index: idx,
         startX: e.clientX,
         startY: e.clientY,
-        stageW: calibratorImg.clientWidth,
-        stageH: calibratorImg.clientHeight,
-        origBox: [...q.boxNorm]
+        stageW,
+        stageH,
+        origPolygon: JSON.parse(JSON.stringify(q.polygonNorm))
       };
     });
 
-    calibratorOverlay.appendChild(box);
-  });
-}
+    calibratorSvg.appendChild(polyEl);
 
-function updateBoxPositionsDOM() {
-  if (!calibratorOverlay || !calibratorImg) return;
-  const stageW = calibratorImg.clientWidth;
-  const stageH = calibratorImg.clientHeight;
+    // 2. Centroid Badge / Label
+    const avgX = polyNorm.reduce((acc, p) => acc + p[0], 0) / polyNorm.length;
+    const avgY = polyNorm.reduce((acc, p) => acc + p[1], 0) / polyNorm.length;
 
-  currentQuadrants.forEach((q, idx) => {
-    const box = calibratorOverlay.querySelector(`.q-box[data-index="${idx}"]`);
-    if (!box) return;
-    const [ymin, xmin, ymax, xmax] = q.boxNorm;
-    box.style.left = `${xmin * stageW}px`;
-    box.style.top = `${ymin * stageH}px`;
-    box.style.width = `${Math.max(15, (xmax - xmin) * stageW)}px`;
-    box.style.height = `${Math.max(15, (ymax - ymin) * stageH)}px`;
+    const badge = document.createElement("div");
+    badge.className = `q-poly-badge ${isSelected ? 'active' : ''}`;
+    badge.dataset.index = idx;
+    badge.style.left = `${avgX * stageW}px`;
+    badge.style.top = `${avgY * stageH}px`;
+    badge.style.backgroundColor = q.color || "#00ff00";
+    badge.textContent = q.name || q.id;
+
+    badge.addEventListener("click", (e) => {
+      e.stopPropagation();
+      selectedQuadrantIndex = idx;
+      renderQuadrantsSidebar();
+      renderBoxesOnStage();
+    });
+
+    calibratorOverlay.appendChild(badge);
+
+    // 3. Four Vertex Handles for Selected Quadrilateral
+    if (isSelected) {
+      polyNorm.forEach((p, vIdx) => {
+        const vx = p[0] * stageW;
+        const vy = p[1] * stageH;
+
+        const handle = document.createElement("div");
+        handle.className = "q-vertex-handle";
+        handle.dataset.index = idx;
+        handle.dataset.vertex = vIdx;
+        handle.style.left = `${vx}px`;
+        handle.style.top = `${vy}px`;
+        handle.style.backgroundColor = q.color || "#00ff00";
+        handle.innerHTML = `<span class="q-v-label">P${vIdx + 1}</span>`;
+        handle.title = `Vértice P${vIdx + 1} (${p[0].toFixed(2)}, ${p[1].toFixed(2)}). Arrastra para perspectiva libre.`;
+
+        handle.addEventListener("mousedown", (e) => {
+          if (currentToolMode === "draw") return;
+          e.preventDefault();
+          e.stopPropagation();
+
+          dragContext = {
+            mode: "vertex",
+            index: idx,
+            vertex: vIdx,
+            startX: e.clientX,
+            startY: e.clientY,
+            stageW,
+            stageH,
+            origPoint: [...p]
+          };
+        });
+
+        calibratorOverlay.appendChild(handle);
+      });
+    }
   });
 }
 
 function updateSidebarCoordDisplay(idx) {
   const item = quadrantsList?.querySelector(`.q-item[data-index="${idx}"]`);
-  if (!item || !currentQuadrants[idx]) return;
-  const [ymin, xmin, ymax, xmax] = currentQuadrants[idx].boxNorm;
-  const pills = item.querySelectorAll(".q-coord-pill");
-  if (pills && pills.length >= 2) {
-    pills[0].textContent = `${ymin.toFixed(2)} - ${ymax.toFixed(2)}`;
-    pills[1].textContent = `${xmin.toFixed(2)} - ${xmax.toFixed(2)}`;
+  const q = currentQuadrants[idx];
+  if (!item || !q || !q.polygonNorm) return;
+  const vDisp = item.querySelector(".q-vertices-display");
+  if (vDisp) {
+    const vStr = q.polygonNorm.map((p, i) => `P${i+1}:(${p[0].toFixed(2)},${p[1].toFixed(2)})`).join("  ");
+    vDisp.textContent = vStr;
   }
 }
 
 /**
- * Setup Window Drag & Draw Listeners
+ * Global Mouse Move & Up Listeners
  */
 window.addEventListener("mousemove", (e) => {
-  // 1. Drawing preview
+  // 1. Drawing mode preview
   if (drawingContext) {
     const curX = Math.max(0, Math.min(drawingContext.rect.width, e.clientX - drawingContext.rect.left));
     const curY = Math.max(0, Math.min(drawingContext.rect.height, e.clientY - drawingContext.rect.top));
@@ -1522,56 +1958,90 @@ window.addEventListener("mousemove", (e) => {
     return;
   }
 
-  // 2. Dragging/resizing existing boxes
+  // 2. Dragging vertex or polygon body
   if (!dragContext) return;
-  const dxNorm = (e.clientX - dragContext.startX) / dragContext.stageW;
-  const dyNorm = (e.clientY - dragContext.startY) / dragContext.stageH;
-  const [origYmin, origXmin, origYmax, origXmax] = dragContext.origBox;
   const q = currentQuadrants[dragContext.index];
   if (!q) return;
 
+  const dxNorm = (e.clientX - dragContext.startX) / dragContext.stageW;
+  const dyNorm = (e.clientY - dragContext.startY) / dragContext.stageH;
   const clamp = (v, min = 0, max = 1) => Math.max(min, Math.min(max, v));
-  const minSize = 0.03;
 
-  if (dragContext.mode === "move") {
-    const w = origXmax - origXmin;
-    const h = origYmax - origYmin;
-    let newXmin = clamp(origXmin + dxNorm, 0, 1 - w);
-    let newYmin = clamp(origYmin + dyNorm, 0, 1 - h);
-    q.boxNorm = [
-      Number(newYmin.toFixed(3)),
-      Number(newXmin.toFixed(3)),
-      Number((newYmin + h).toFixed(3)),
-      Number((newXmin + w).toFixed(3))
-    ];
-  } else if (dragContext.mode === "nw") {
-    let newYmin = clamp(origYmin + dyNorm, 0, origYmax - minSize);
-    let newXmin = clamp(origXmin + dxNorm, 0, origXmax - minSize);
-    q.boxNorm[0] = Number(newYmin.toFixed(3));
-    q.boxNorm[1] = Number(newXmin.toFixed(3));
-  } else if (dragContext.mode === "ne") {
-    let newYmin = clamp(origYmin + dyNorm, 0, origYmax - minSize);
-    let newXmax = clamp(origXmax + dxNorm, origXmin + minSize, 1);
-    q.boxNorm[0] = Number(newYmin.toFixed(3));
-    q.boxNorm[3] = Number(newXmax.toFixed(3));
-  } else if (dragContext.mode === "sw") {
-    let newYmax = clamp(origYmax + dyNorm, origYmin + minSize, 1);
-    let newXmin = clamp(origXmin + dxNorm, 0, origXmax - minSize);
-    q.boxNorm[2] = Number(newYmax.toFixed(3));
-    q.boxNorm[1] = Number(newXmin.toFixed(3));
-  } else if (dragContext.mode === "se") {
-    let newYmax = clamp(origYmax + dyNorm, origYmin + minSize, 1);
-    let newXmax = clamp(origXmax + dxNorm, origXmin + minSize, 1);
-    q.boxNorm[2] = Number(newYmax.toFixed(3));
-    q.boxNorm[3] = Number(newXmax.toFixed(3));
+  if (dragContext.mode === "vertex") {
+    const vIdx = dragContext.vertex;
+    const newX = clamp(dragContext.origPoint[0] + dxNorm, 0, 1);
+    const newY = clamp(dragContext.origPoint[1] + dyNorm, 0, 1);
+    q.polygonNorm[vIdx] = [Number(newX.toFixed(3)), Number(newY.toFixed(3))];
+    q.boxNorm = polygonNormToBoundingBoxNorm(q.polygonNorm);
+
+    // Live update SVG polygon
+    const poly = calibratorSvg?.querySelector(`polygon[data-index="${dragContext.index}"]`);
+    if (poly) {
+      const pts = q.polygonNorm.map(p => `${(p[0] * dragContext.stageW).toFixed(1)},${(p[1] * dragContext.stageH).toFixed(1)}`).join(" ");
+      poly.setAttribute("points", pts);
+    }
+    // Live update Handle
+    const handle = calibratorOverlay?.querySelector(`.q-vertex-handle[data-vertex="${vIdx}"]`);
+    if (handle) {
+      handle.style.left = `${newX * dragContext.stageW}px`;
+      handle.style.top = `${newY * dragContext.stageH}px`;
+    }
+    // Live update Badge
+    const badge = calibratorOverlay?.querySelector(`.q-poly-badge[data-index="${dragContext.index}"]`);
+    if (badge) {
+      const avgX = q.polygonNorm.reduce((acc, p) => acc + p[0], 0) / q.polygonNorm.length;
+      const avgY = q.polygonNorm.reduce((acc, p) => acc + p[1], 0) / q.polygonNorm.length;
+      badge.style.left = `${avgX * dragContext.stageW}px`;
+      badge.style.top = `${avgY * dragContext.stageH}px`;
+    }
+    updateSidebarCoordDisplay(dragContext.index);
+  } else if (dragContext.mode === "polygon") {
+    // Translate entire polygon while preventing any vertex from exiting [0, 1]
+    const origXs = dragContext.origPolygon.map(p => p[0]);
+    const origYs = dragContext.origPolygon.map(p => p[1]);
+    const minOrigX = Math.min(...origXs);
+    const maxOrigX = Math.max(...origXs);
+    const minOrigY = Math.min(...origYs);
+    const maxOrigY = Math.max(...origYs);
+
+    const validDx = Math.max(-minOrigX, Math.min(1 - maxOrigX, dxNorm));
+    const validDy = Math.max(-minOrigY, Math.min(1 - maxOrigY, dyNorm));
+
+    q.polygonNorm = dragContext.origPolygon.map(p => [
+      Number((p[0] + validDx).toFixed(3)),
+      Number((p[1] + validDy).toFixed(3))
+    ]);
+    q.boxNorm = polygonNormToBoundingBoxNorm(q.polygonNorm);
+
+    // Live update SVG polygon
+    const poly = calibratorSvg?.querySelector(`polygon[data-index="${dragContext.index}"]`);
+    if (poly) {
+      const pts = q.polygonNorm.map(p => `${(p[0] * dragContext.stageW).toFixed(1)},${(p[1] * dragContext.stageH).toFixed(1)}`).join(" ");
+      poly.setAttribute("points", pts);
+    }
+    // Live update Handles
+    const handles = calibratorOverlay?.querySelectorAll(`.q-vertex-handle[data-index="${dragContext.index}"]`);
+    handles?.forEach((h) => {
+      const v = parseInt(h.dataset.vertex, 10);
+      if (q.polygonNorm[v]) {
+        h.style.left = `${q.polygonNorm[v][0] * dragContext.stageW}px`;
+        h.style.top = `${q.polygonNorm[v][1] * dragContext.stageH}px`;
+      }
+    });
+    // Live update Badge
+    const badge = calibratorOverlay?.querySelector(`.q-poly-badge[data-index="${dragContext.index}"]`);
+    if (badge) {
+      const avgX = q.polygonNorm.reduce((acc, p) => acc + p[0], 0) / q.polygonNorm.length;
+      const avgY = q.polygonNorm.reduce((acc, p) => acc + p[1], 0) / q.polygonNorm.length;
+      badge.style.left = `${avgX * dragContext.stageW}px`;
+      badge.style.top = `${avgY * dragContext.stageH}px`;
+    }
+    updateSidebarCoordDisplay(dragContext.index);
   }
-
-  updateBoxPositionsDOM();
-  updateSidebarCoordDisplay(dragContext.index);
 });
 
 window.addEventListener("mouseup", (e) => {
-  // 1. Commit drawn box
+  // 1. Commit drawn box into new 4-vertex quadrilateral
   if (drawingContext) {
     const stageW = drawingContext.rect.width;
     const stageH = drawingContext.rect.height;
@@ -1602,38 +2072,34 @@ window.addEventListener("mouseup", (e) => {
         name: `Zona ${currentQuadrants.length + 1}`,
         type: "custom_zone",
         color: randColor,
-        boxNorm: [ymin, xmin, ymax, xmax]
+        boxNorm: [ymin, xmin, ymax, xmax],
+        polygonNorm: boxNormToPolygonNorm([ymin, xmin, ymax, xmax])
       });
 
       selectedQuadrantIndex = currentQuadrants.length - 1;
       setToolMode("move");
       renderQuadrantsSidebar();
       renderBoxesOnStage();
-      showCalibratorStatus("✅ ¡Nueva zona trazada! Puedes renombrarla o ajustar sus límites.", "success");
+      showCalibratorStatus("✅ ¡Nueva zona creada! Puedes arrastrar sus 4 esquinas para ajustar la perspectiva.", "success");
       setTimeout(() => hideCalibratorStatus(), 4000);
     }
     drawingContext = null;
     return;
   }
 
-  // 2. Clear box drag context
+  // 2. Clear drag context
   if (dragContext) {
     dragContext = null;
+    renderBoxesOnStage();
   }
 });
 
-/**
- * Handle Window Resize to keep boxes aligned with image
- */
 window.addEventListener("resize", () => {
   if (calibratorModal && !calibratorModal.classList.contains("hidden")) {
     renderBoxesOnStage();
   }
 });
 
-/**
- * Open Calibrator Modal
- */
 function openCalibrator(targetDocId = null) {
   if (!calibratorModal) return;
   hideCalibratorStatus();
@@ -1652,122 +2118,673 @@ function closeCalibrator() {
   document.body.style.overflow = "";
 }
 
-/**
- * Initialize Calibrator UI and Event Listeners
- */
 function initCalibratorUI() {
-  if (openCalibratorBtn) {
-    openCalibratorBtn.addEventListener("click", () => {
-      openCalibrator();
-    });
-  }
+  openCalibratorBtn?.addEventListener("click", () => openCalibrator());
 
-  if (modalCalibrateWithPhotoBtn) {
-    modalCalibrateWithPhotoBtn.addEventListener("click", () => {
-      const activeDocId = currentModalDocId || (allDocs.length > 0 ? allDocs[0].id : null);
-      if (imageModal) imageModal.classList.add("hidden");
-      openCalibrator(activeDocId);
-    });
-  }
+  modalCalibrateWithPhotoBtn?.addEventListener("click", () => {
+    const activeDocId = currentModalDocId || (allDocs.length > 0 ? allDocs[0].id : null);
+    if (imageModal) imageModal.classList.add("hidden");
+    openCalibrator(activeDocId);
+  });
 
-  if (closeCalibratorBtn) {
-    closeCalibratorBtn.addEventListener("click", closeCalibrator);
-  }
+  closeCalibratorBtn?.addEventListener("click", closeCalibrator);
+  calibratorOverlayBg?.addEventListener("click", closeCalibrator);
 
-  if (calibratorOverlayBg) {
-    calibratorOverlayBg.addEventListener("click", closeCalibrator);
-  }
+  calibratorPhotoSelect?.addEventListener("change", (e) => {
+    loadCalibratorImage(e.target.value);
+  });
 
-  if (calibratorPhotoSelect) {
-    calibratorPhotoSelect.addEventListener("change", (e) => {
-      loadCalibratorImage(e.target.value);
-    });
-  }
+  toolModeMove?.addEventListener("click", () => setToolMode("move"));
+  toolModeDraw?.addEventListener("click", () => setToolMode("draw"));
 
-  if (toolModeMove) {
-    toolModeMove.addEventListener("click", () => setToolMode("move"));
-  }
+  deleteSelectedQuadrantBtn?.addEventListener("click", () => {
+    deleteQuadrant(selectedQuadrantIndex);
+  });
 
-  if (toolModeDraw) {
-    toolModeDraw.addEventListener("click", () => setToolMode("draw"));
-  }
-
-  if (deleteSelectedQuadrantBtn) {
-    deleteSelectedQuadrantBtn.addEventListener("click", () => {
-      deleteQuadrant(selectedQuadrantIndex);
-    });
-  }
-
-  if (resetQuadrantsBtn) {
-    resetQuadrantsBtn.addEventListener("click", () => {
-      if (confirm("¿Estás seguro de restablecer todos los cuadrantes a los valores por defecto?")) {
-        currentQuadrants = JSON.parse(JSON.stringify(DEFAULT_QUADRANTS));
-        selectedQuadrantIndex = 0;
-        setToolMode("move");
-        renderQuadrantsSidebar();
-        renderBoxesOnStage();
-        showCalibratorStatus("Valores restablecidos a defaults (pulsa Guardar para persistir en Firebase).", "info");
-      }
-    });
-  }
-
-  if (addQuadrantBtn) {
-    addQuadrantBtn.addEventListener("click", () => {
-      const newId = `zona_personalizada_${Date.now().toString().slice(-4)}`;
-      const colors = ["#06b6d4", "#ec4899", "#8b5cf6", "#10b981", "#f97316", "#eab308"];
-      const randColor = colors[currentQuadrants.length % colors.length];
-
-      const newQ = {
-        id: newId,
-        name: `Nueva Zona ${currentQuadrants.length + 1}`,
-        type: "custom_zone",
-        color: randColor,
-        boxNorm: [0.35, 0.35, 0.65, 0.65]
-      };
-
-      currentQuadrants.push(newQ);
-      selectedQuadrantIndex = currentQuadrants.length - 1;
+  resetQuadrantsBtn?.addEventListener("click", () => {
+    if (confirm("¿Estás seguro de restablecer todos los cuadrantes a los valores por defecto?")) {
+      currentQuadrants = JSON.parse(JSON.stringify(DEFAULT_QUADRANTS));
+      selectedQuadrantIndex = 0;
       setToolMode("move");
       renderQuadrantsSidebar();
       renderBoxesOnStage();
-      showCalibratorStatus("➕ Nueva zona creada en el centro. Arrástrala a su posición o ajusta sus límites.", "info");
-    });
+      showCalibratorStatus("Valores restablecidos a defaults (pulsa Guardar para persistir en Firebase).", "info");
+    }
+  });
+
+  addQuadrantBtn?.addEventListener("click", () => {
+    const newId = `zona_personalizada_${Date.now().toString().slice(-4)}`;
+    const colors = ["#06b6d4", "#ec4899", "#8b5cf6", "#10b981", "#f97316", "#eab308"];
+    const randColor = colors[currentQuadrants.length % colors.length];
+
+    const newQ = {
+      id: newId,
+      name: `Nueva Zona ${currentQuadrants.length + 1}`,
+      type: "custom_zone",
+      color: randColor,
+      boxNorm: [0.35, 0.35, 0.65, 0.65],
+      polygonNorm: boxNormToPolygonNorm([0.35, 0.35, 0.65, 0.65])
+    };
+
+    currentQuadrants.push(newQ);
+    selectedQuadrantIndex = currentQuadrants.length - 1;
+    setToolMode("move");
+    renderQuadrantsSidebar();
+    renderBoxesOnStage();
+    showCalibratorStatus("➕ Nueva zona creada. Arrastra sus 4 esquinas para ajustar la perspectiva.", "info");
+  });
+
+  saveQuadrantsBtn?.addEventListener("click", async () => {
+    saveQuadrantsBtn.disabled = true;
+    saveQuadrantsBtn.innerHTML = `<span>⏳ Guardando...</span>`;
+    showCalibratorStatus("Guardando cuadrantes en Firestore: camera_catcher/quadrants...", "info");
+
+    try {
+      const quadrantsDocRef = doc(db, "camera_catcher", "quadrants");
+      const serialized = serializeQuadrantsForFirestore(currentQuadrants);
+      await setDoc(quadrantsDocRef, {
+        updatedAt: new Date().toISOString(),
+        updatedBy: "web-dashboard",
+        quadrants: serialized
+      });
+
+      showCalibratorStatus("✅ ¡Cuadrantes guardados y sincronizados con el backend en tiempo real!", "success");
+      setTimeout(() => hideCalibratorStatus(), 5000);
+    } catch (err) {
+      console.error("[Calibrator] Error guardando cuadrantes:", err);
+      showCalibratorStatus(`❌ Error al guardar en Firebase: ${err.message}`, "error");
+    } finally {
+      saveQuadrantsBtn.disabled = false;
+      saveQuadrantsBtn.innerHTML = `<span>💾 Guardar en Firebase</span>`;
+    }
+  });
+}
+
+// ==========================================================================
+// Daemon Live Monitor & Canvas Pipeline Renderer
+// ==========================================================================
+
+class DaemonCanvasRenderer {
+  constructor(canvasId) {
+    this.canvas = document.getElementById(canvasId);
+    this.ctx = this.canvas ? this.canvas.getContext("2d") : null;
+    this.currentImage = null;
+    this.currentDocId = "";
+    this.layers = {
+      quadrants: true,
+      humans: true,
+      people: true
+    };
+    this.stateData = {
+      quadrants: [],
+      humans: { hasHumans: false, count: 0, detections: [] },
+      people: []
+    };
+    this.width = 1024;
+    this.height = 576;
   }
 
-  if (saveQuadrantsBtn) {
-    saveQuadrantsBtn.addEventListener("click", async () => {
-      saveQuadrantsBtn.disabled = true;
-      saveQuadrantsBtn.innerHTML = `<span>⏳ Guardando...</span>`;
-      showCalibratorStatus("Guardando cuadrantes en Firestore: camera_catcher/quadrants...", "info");
+  setLayer(layerName, isEnabled) {
+    this.layers[layerName] = isEnabled;
+    this.render();
+  }
 
-      try {
-        const quadrantsDocRef = doc(db, "camera_catcher", "quadrants");
-        await setDoc(quadrantsDocRef, {
-          updatedAt: new Date().toISOString(),
-          updatedBy: "web-dashboard",
-          quadrants: currentQuadrants
-        });
+  updateData(stateData) {
+    this.stateData = stateData;
+    this.render();
+  }
 
-        showCalibratorStatus("✅ ¡Cuadrantes guardados y sincronizados con el backend en tiempo real!", "success");
-        setTimeout(() => hideCalibratorStatus(), 5000);
-      } catch (err) {
-        console.error("[Calibrator] Error guardando cuadrantes:", err);
-        showCalibratorStatus(`❌ Error al guardar en Firebase: ${err.message}`, "error");
-      } finally {
-        saveQuadrantsBtn.disabled = false;
-        saveQuadrantsBtn.innerHTML = `<span>💾 Guardar en Firebase</span>`;
+  async loadImage(imageUrl, docId) {
+    if (!imageUrl) return;
+    if (this.currentDocId === docId && this.currentImage) {
+      this.render();
+      return;
+    }
+
+    const placeholder = document.getElementById("canvasOverlayPlaceholder");
+    try {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      await new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = reject;
+        img.src = imageUrl;
+      });
+
+      this.currentImage = img;
+      this.currentDocId = docId;
+      this.width = img.naturalWidth || 1024;
+      this.height = img.naturalHeight || 576;
+
+      if (this.canvas) {
+        this.canvas.width = this.width;
+        this.canvas.height = this.height;
       }
-    });
+
+      placeholder?.classList.add("hidden");
+      this.render();
+    } catch (err) {
+      console.warn("[DaemonCanvas] Error cargando imagen en canvas:", err);
+    }
+  }
+
+  render() {
+    if (!this.ctx || !this.canvas) return;
+    const ctx = this.ctx;
+    const W = this.canvas.width;
+    const H = this.canvas.height;
+
+    ctx.clearRect(0, 0, W, H);
+
+    // 1. Base Camera Image
+    if (this.currentImage) {
+      ctx.drawImage(this.currentImage, 0, 0, W, H);
+    } else {
+      ctx.fillStyle = "#0b1120";
+      ctx.fillRect(0, 0, W, H);
+      return;
+    }
+
+    // 2. Layer: Physical Quadrants (ROI)
+    if (this.layers.quadrants && this.stateData.quadrants?.length > 0) {
+      this.stateData.quadrants.forEach(q => {
+        const color = q.color || "#007BFF";
+        const status = q.status || "disponible";
+        const label = q.label || q.id;
+
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 3;
+        ctx.fillStyle = color + "26"; // 15% opacity
+
+        let minX = 0, minY = 0, maxX = 0, maxY = 0;
+
+        if (q.polygonNorm && Array.isArray(q.polygonNorm) && q.polygonNorm.length >= 3) {
+          ctx.beginPath();
+          const p0 = toPointTuple(q.polygonNorm[0]);
+          minX = p0[0] * W; maxX = p0[0] * W;
+          minY = p0[1] * H; maxY = p0[1] * H;
+          ctx.moveTo(p0[0] * W, p0[1] * H);
+
+          for (let i = 1; i < q.polygonNorm.length; i++) {
+            const pt = toPointTuple(q.polygonNorm[i]);
+            const px = pt[0] * W;
+            const py = pt[1] * H;
+            ctx.lineTo(px, py);
+            minX = Math.min(minX, px);
+            maxX = Math.max(maxX, px);
+            minY = Math.min(minY, py);
+            maxY = Math.max(maxY, py);
+          }
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+        } else if (q.box && Array.isArray(q.box) && q.box.length === 4) {
+          const [x1, y1, x2, y2] = q.box;
+          minX = x1; minY = y1; maxX = x2; maxY = y2;
+          ctx.fillRect(x1, y1, x2 - x1, y2 - y1);
+          ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+        }
+
+        // Draw Quadrant Tag
+        const badgeText = `${label} [${status.toUpperCase()}]`;
+        ctx.font = "bold 12px Inter, sans-serif";
+        const textWidth = ctx.measureText(badgeText).width;
+        const badgeX = Math.max(8, minX);
+        const badgeY = Math.max(22, minY + 20);
+
+        ctx.fillStyle = "rgba(15, 23, 42, 0.85)";
+        ctx.fillRect(badgeX - 4, badgeY - 14, textWidth + 12, 20);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(badgeX - 4, badgeY - 14, textWidth + 12, 20);
+
+        ctx.fillStyle = color;
+        ctx.fillText(badgeText, badgeX + 2, badgeY);
+
+        ctx.restore();
+      });
+    }
+
+    // 3. Layer: Humans Detection (YOLOv8)
+    if (this.layers.humans) {
+      const humans = this.stateData.humans;
+      if (humans?.hasHumans && humans?.detections?.length > 0) {
+        humans.detections.forEach((det, idx) => {
+          if (!det.box || det.box.length !== 4) return;
+          const [x1, y1, x2, y2] = det.box;
+          const w = x2 - x1;
+          const h = y2 - y1;
+
+          ctx.save();
+          // Glow effect for human bounding box
+          ctx.shadowColor = "#10b981";
+          ctx.shadowBlur = 10;
+          ctx.strokeStyle = "#10b981";
+          ctx.lineWidth = 3;
+          ctx.strokeRect(x1, y1, w, h);
+
+          // Corner brackets
+          const cornerLen = Math.min(16, w / 4, h / 4);
+          ctx.lineWidth = 4;
+          ctx.beginPath();
+          // Top-left
+          ctx.moveTo(x1, y1 + cornerLen); ctx.lineTo(x1, y1); ctx.lineTo(x1 + cornerLen, y1);
+          // Top-right
+          ctx.moveTo(x2 - cornerLen, y1); ctx.lineTo(x2, y1); ctx.lineTo(x2, y1 + cornerLen);
+          // Bottom-left
+          ctx.moveTo(x1, y2 - cornerLen); ctx.lineTo(x1, y2); ctx.lineTo(x1 + cornerLen, y2);
+          // Bottom-right
+          ctx.moveTo(x2 - cornerLen, y2); ctx.lineTo(x2, y2); ctx.lineTo(x2, y2 - cornerLen);
+          ctx.stroke();
+
+          // Human Tag badge
+          const humanText = `👤 Humano #${idx + 1} (${Math.round((det.score || 0.85) * 100)}%)`;
+          ctx.font = "bold 12px Inter, sans-serif";
+          const hTextWidth = ctx.measureText(humanText).width;
+          const bY = Math.max(22, y1 - 6);
+
+          ctx.fillStyle = "#10b981";
+          ctx.fillRect(x1, bY - 14, hTextWidth + 12, 20);
+          ctx.fillStyle = "#000000";
+          ctx.fillText(humanText, x1 + 6, bY);
+
+          ctx.restore();
+        });
+      } else if (humans && humans.hasHumans === false) {
+        // Banner informing no humans present
+        ctx.save();
+        const bannerText = "⚪ NO SE DETECTAN HUMANOS EN LA ESCENA (0 PERSONAS)";
+        ctx.font = "bold 13px Inter, sans-serif";
+        const bW = ctx.measureText(bannerText).width + 24;
+        const bX = (W - bW) / 2;
+        ctx.fillStyle = "rgba(15, 23, 42, 0.90)";
+        ctx.fillRect(bX, 14, bW, 28);
+        ctx.strokeStyle = "#94a3b8";
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(bX, 14, bW, 28);
+        ctx.fillStyle = "#f8fafc";
+        ctx.fillText(bannerText, bX + 12, 33);
+        ctx.restore();
+      }
+    }
+
+    // 4. Layer: Biometrics & Person Classification (ArcFace MobileFaceNet)
+    if (this.layers.people && this.stateData.people?.length > 0) {
+      this.stateData.people.forEach(p => {
+        let box = p.box;
+        // If person has no explicit box, search in seated client quadrants
+        if (!box) {
+          const seatedQ = this.stateData.quadrants?.find(q => q.category === "cliente" || q.id.startsWith("cliente_sentado"));
+          if (seatedQ && seatedQ.box) box = seatedQ.box;
+        }
+
+        if (!box || box.length !== 4) return;
+        const [x1, y1, x2, y2] = box;
+
+        ctx.save();
+        let badgeColor = "#10b981";
+        let rolePrefix = "👤 Nuevo Cliente";
+        let subText = `Visita #1`;
+
+        if (p.isStaff) {
+          badgeColor = "#f59e0b";
+          rolePrefix = "✂️ Barbero / Staff";
+          subText = "Personal Activo";
+        } else if (p.isFrequent) {
+          badgeColor = "#06b6d4";
+          rolePrefix = "⭐ Cliente Frecuente";
+          subText = `${p.visitCount} visitas registradas`;
+        }
+
+        const titleText = `${rolePrefix}: ${p.name || "Cliente"}`;
+        ctx.font = "bold 12px Inter, sans-serif";
+        const titleW = ctx.measureText(titleText).width;
+
+        ctx.font = "10px Inter, sans-serif";
+        const subW = ctx.measureText(subText).width;
+        const maxW = Math.max(titleW, subW) + 20;
+
+        const posX = Math.max(10, Math.min(W - maxW - 10, x1));
+        const posY = Math.max(45, y1 - 10);
+
+        // Badge Container Box
+        ctx.fillStyle = "rgba(15, 23, 42, 0.95)";
+        ctx.fillRect(posX, posY - 36, maxW, 36);
+        ctx.strokeStyle = badgeColor;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(posX, posY - 36, maxW, 36);
+
+        // Badge Header
+        ctx.font = "bold 12px Inter, sans-serif";
+        ctx.fillStyle = badgeColor;
+        ctx.fillText(titleText, posX + 8, posY - 20);
+
+        // Badge Subtext
+        ctx.font = "500 10px Inter, sans-serif";
+        ctx.fillStyle = "#cbd5e1";
+        ctx.fillText(subText, posX + 8, posY - 6);
+
+        ctx.restore();
+      });
+    }
   }
 }
 
-// Initialize
+let daemonCanvasRenderer = null;
+let countdownIntervalId = null;
+let currentDaemonState = null;
+
+/**
+ * Inicializa el listener en tiempo real de camera_catcher/daemon_state
+ */
+function initDaemonLiveMonitor() {
+  const daemonCanvas = document.getElementById("daemonCanvas");
+  if (!daemonCanvas) return;
+
+  daemonCanvasRenderer = new DaemonCanvasRenderer("daemonCanvas");
+
+  // Layer Checkbox handlers
+  document.getElementById("chkLayerQuadrants")?.addEventListener("change", (e) => {
+    daemonCanvasRenderer.setLayer("quadrants", e.target.checked);
+  });
+  document.getElementById("chkLayerHumans")?.addEventListener("change", (e) => {
+    daemonCanvasRenderer.setLayer("humans", e.target.checked);
+  });
+  document.getElementById("chkLayerPeople")?.addEventListener("change", (e) => {
+    daemonCanvasRenderer.setLayer("people", e.target.checked);
+  });
+
+  // Manual Trigger button
+  const triggerLiveCycleBtn = document.getElementById("triggerLiveCycleBtn");
+  triggerLiveCycleBtn?.addEventListener("click", async () => {
+    triggerLiveCycleBtn.disabled = true;
+    const origHtml = triggerLiveCycleBtn.innerHTML;
+    triggerLiveCycleBtn.innerHTML = `<span>⏳ Disparando captura...</span>`;
+
+    try {
+      // 1. Send Firestore command
+      const commandsRef = doc(db, "camera_catcher", "commands");
+      await setDoc(commandsRef, {
+        action: "capture",
+        source: "web-live-monitor",
+        requestedAt: Date.now()
+      });
+
+      // 2. Direct HTTP ping fallback if daemon endpoint is reachable
+      try {
+        fetch(`${BACKEND_URL}/capture`, { method: "POST" }).catch(() => {});
+      } catch (_) {}
+
+      setTimeout(() => {
+        triggerLiveCycleBtn.disabled = false;
+        triggerLiveCycleBtn.innerHTML = origHtml;
+      }, 4000);
+    } catch (err) {
+      console.warn("[DaemonLive] Error disparando ciclo:", err);
+      triggerLiveCycleBtn.disabled = false;
+      triggerLiveCycleBtn.innerHTML = origHtml;
+    }
+  });
+
+  // Real-time Firestore Listener
+  const stateDocRef = doc(db, "camera_catcher", "daemon_state");
+  onSnapshot(stateDocRef, async (snapshot) => {
+    if (!snapshot.exists()) return;
+    const data = snapshot.data();
+    currentDaemonState = data;
+
+    updateDaemonUI(data);
+  }, (err) => {
+    console.warn("[DaemonLive] Error escuchando camera_catcher/daemon_state:", err);
+  });
+
+  // Also listen to latest photo if daemon_state has no image yet
+  const photosCol = collection(db, "camera_catcher", "photos", "photos");
+  onSnapshot(photosCol, (snapshot) => {
+    if (!currentDaemonState?.image?.storagePath && !snapshot.empty) {
+      let latestDoc = null;
+      snapshot.forEach(docSnap => {
+        const d = docSnap.data();
+        if (!latestDoc || (d.epoch && d.epoch > (latestDoc.epoch || 0))) {
+          latestDoc = { id: docSnap.id, ...d };
+        }
+      });
+
+      if (latestDoc && latestDoc.imageStoragePath && !daemonCanvasRenderer.currentImage) {
+        resolveStorageUrl(latestDoc.imageStoragePath).then(url => {
+          if (url) daemonCanvasRenderer.loadImage(url, latestDoc.id);
+        });
+      }
+    }
+  });
+}
+
+/**
+ * Actualiza todos los elementos visuales de la vista en vivo del daemon
+ */
+async function updateDaemonUI(data) {
+  if (!data) return;
+
+  // 1. Step Title & Description
+  const currentStepTitle = document.getElementById("daemonCurrentStepTitle");
+  const currentStepDesc = document.getElementById("daemonCurrentStepDesc");
+  const bannerText = document.getElementById("canvasBannerText");
+
+  if (currentStepTitle && data.stepTitle) currentStepTitle.textContent = data.stepTitle;
+  if (currentStepDesc && data.stepDescription) currentStepDesc.textContent = data.stepDescription;
+  if (bannerText && data.stepDescription) bannerText.textContent = `${data.stepTitle || "Proceso"}: ${data.stepDescription}`;
+
+  // 2. Countdown Clock & Tags
+  const intervalTag = document.getElementById("daemonIntervalTag");
+  const hoursTag = document.getElementById("daemonWorkingHoursTag");
+  const hoursStatusTag = document.getElementById("daemonHoursStatusTag");
+
+  if (intervalTag && data.countdown?.intervalMinutes) {
+    intervalTag.textContent = `⏱️ Intervalo: ${data.countdown.intervalMinutes} min`;
+  }
+  if (hoursTag && data.countdown?.workHours) {
+    hoursTag.textContent = `🕒 Horario: ${data.countdown.workHours}`;
+  }
+  if (hoursStatusTag) {
+    const isWithin = data.countdown?.isWithinWorkingHours !== false;
+    hoursStatusTag.textContent = isWithin ? "🟢 En jornada de atención" : "⏸️ Fuera de horario laboral";
+    hoursStatusTag.className = `countdown-tag ${isWithin ? "tag-success" : "tag-warning"}`;
+  }
+
+  // Update dynamic countdown ticker
+  setupDynamicCountdownTicker(data.countdown?.nextCaptureAt, data.countdown?.intervalMinutes || 15);
+
+  // 3. Process Stepper Pipeline (6 Steps)
+  updateStepperPipeline(data.stepIndex !== undefined ? data.stepIndex : 0, data.step);
+
+  // 4. Update Canvas Data & Image
+  daemonCanvasRenderer.updateData({
+    quadrants: data.quadrants || [],
+    humans: data.humans || { hasHumans: false, count: 0, detections: [] },
+    people: data.people || []
+  });
+
+  if (data.image?.storagePath) {
+    const imgUrl = await resolveStorageUrl(data.image.storagePath);
+    if (imgUrl) {
+      await daemonCanvasRenderer.loadImage(imgUrl, data.image.docId || data.lastDocId);
+    }
+  }
+
+  // 5. Update Bottom Stats Bar
+  const statDocId = document.getElementById("statDocId");
+  const statDims = document.getElementById("statDims");
+  const statQuadrantsCount = document.getElementById("statQuadrantsCount");
+  const statHumansDetected = document.getElementById("statHumansDetected");
+  const statPeopleClassified = document.getElementById("statPeopleClassified");
+
+  if (statDocId) statDocId.textContent = data.lastDocId || data.image?.docId || "Esperando";
+  if (statDims) statDims.textContent = `${data.image?.width || 1024} x ${data.image?.height || 576} px`;
+  if (statQuadrantsCount) statQuadrantsCount.textContent = `${(data.quadrants || []).length} activos`;
+  if (statHumansDetected) {
+    if (data.humans?.hasHumans) {
+      statHumansDetected.textContent = `¡SÍ! (${data.humans.count || 0} personas)`;
+      statHumansDetected.style.color = "#10b981";
+    } else {
+      statHumansDetected.textContent = "NO se detectan";
+      statHumansDetected.style.color = "#94a3b8";
+    }
+  }
+  if (statPeopleClassified) {
+    statPeopleClassified.textContent = `${(data.people || []).length} identificados`;
+  }
+
+  // 6. Update Real-time Log Feed
+  renderLogFeed(data.history || []);
+}
+
+/**
+ * Actualiza el stepper visual con los 6 pasos reales
+ */
+function updateStepperPipeline(activeStepIndex, stepKey) {
+  for (let i = 0; i <= 5; i++) {
+    const node = document.getElementById(`stepNode${i}`);
+    const connector = document.getElementById(`stepConnector${i}`);
+
+    if (node) {
+      node.classList.remove("active", "completed");
+      if (i < activeStepIndex) {
+        node.classList.add("completed");
+      } else if (i === activeStepIndex) {
+        node.classList.add("active");
+      }
+    }
+
+    if (connector) {
+      connector.classList.remove("completed");
+      if (i <= activeStepIndex) {
+        connector.classList.add("completed");
+      }
+    }
+  }
+}
+
+/**
+ * Ticker dinámico de cuenta regresiva en segundos hacia nextCaptureAt
+ */
+function setupDynamicCountdownTicker(nextCaptureAtIso, intervalMinutes) {
+  if (countdownIntervalId) {
+    clearInterval(countdownIntervalId);
+    countdownIntervalId = null;
+  }
+
+  const clockText = document.getElementById("daemonClockText");
+  const circleProgress = document.getElementById("countdownCircleProgress");
+  if (!clockText) return;
+
+  const totalCycleSec = Math.max(6, Math.round(intervalMinutes * 60));
+  const fullDashArray = 264; // 2 * PI * 42
+
+  function tick() {
+    if (!nextCaptureAtIso) {
+      clockText.textContent = "--:--";
+      if (circleProgress) circleProgress.style.strokeDashoffset = "0";
+      return;
+    }
+
+    const targetTime = new Date(nextCaptureAtIso).getTime();
+    const remainingMs = Math.max(0, targetTime - Date.now());
+    const remainingSec = Math.floor(remainingMs / 1000);
+
+    const mins = Math.floor(remainingSec / 60);
+    const secs = remainingSec % 60;
+    clockText.textContent = `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+
+    // SVG Circular Progress
+    if (circleProgress) {
+      const progressFraction = Math.min(1, Math.max(0, remainingSec / totalCycleSec));
+      const offset = fullDashArray * (1 - progressFraction);
+      circleProgress.style.strokeDashoffset = String(offset);
+    }
+
+    if (remainingSec <= 0) {
+      clockText.textContent = "00:00";
+    }
+  }
+
+  tick();
+  countdownIntervalId = setInterval(tick, 1000);
+}
+
+/**
+ * Renderiza el feed descriptivo de eventos en la terminal
+ */
+function renderLogFeed(history) {
+  const logFeed = document.getElementById("daemonLogFeed");
+  const logCountBadge = document.getElementById("logCountBadge");
+  if (!logFeed) return;
+
+  if (logCountBadge) logCountBadge.textContent = `${history.length} eventos`;
+
+  if (history.length === 0) {
+    logFeed.innerHTML = `<div class="log-empty-msg">No hay eventos registrados aún.</div>`;
+    return;
+  }
+
+  logFeed.innerHTML = history.map(item => {
+    let typeClass = "log-process";
+    if (item.type === "success") typeClass = "log-success";
+    if (item.type === "countdown") typeClass = "log-countdown";
+    if (item.type === "error") typeClass = "log-error";
+
+    return `
+      <div class="log-item ${typeClass}">
+        <span class="log-time">[${item.timeFormatted || ""}]</span>
+        <span class="log-text">${item.text}</span>
+      </div>
+    `;
+  }).join("");
+}
+
+/**
+ * Gestión de pestañas principales (Daemon Live vs Historial)
+ */
+function initMainTabs() {
+  const tabDaemonLiveBtn = document.getElementById("tabDaemonLiveBtn");
+  const tabHistoryBtn = document.getElementById("tabHistoryBtn");
+  const daemonLiveViewTab = document.getElementById("daemonLiveViewTab");
+  const historyViewTab = document.getElementById("historyViewTab");
+
+  function switchTab(target) {
+    if (target === "daemon") {
+      tabDaemonLiveBtn?.classList.add("active");
+      tabDaemonLiveBtn?.setAttribute("aria-selected", "true");
+      tabHistoryBtn?.classList.remove("active");
+      tabHistoryBtn?.setAttribute("aria-selected", "false");
+      daemonLiveViewTab?.classList.remove("hidden");
+      historyViewTab?.classList.add("hidden");
+      daemonCanvasRenderer?.render();
+    } else {
+      tabHistoryBtn?.classList.add("active");
+      tabHistoryBtn?.setAttribute("aria-selected", "true");
+      tabDaemonLiveBtn?.classList.remove("active");
+      tabDaemonLiveBtn?.setAttribute("aria-selected", "false");
+      historyViewTab?.classList.remove("hidden");
+      daemonLiveViewTab?.classList.add("hidden");
+    }
+  }
+
+  tabDaemonLiveBtn?.addEventListener("click", () => switchTab("daemon"));
+  tabHistoryBtn?.addEventListener("click", () => switchTab("history"));
+}
+
+// Global Initialization
+initMainTabs();
+initDaemonLiveMonitor();
 initSettingsModal();
 initPromptListener();
 initPaginationListeners();
 initPhotosListener();
 initCostMonitor();
+initPeopleListener();
 initQuadrantsListener();
 initCalibratorUI();
+
 
 

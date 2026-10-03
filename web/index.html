@@ -29,9 +29,9 @@
       }
     })();
   </script>
-  <link rel="stylesheet" href="style.css?v=10">
+  <link rel="stylesheet" href="style.css?v=14">
   <!-- Firebase SDKs via CDN -->
-  <script type="module" src="app.js?v=10"></script>
+  <script type="module" src="app.js?v=14"></script>
 </head>
 <body>
   <div class="app-container">
@@ -59,6 +59,181 @@
       </div>
     </header>
 
+    <!-- Main Navigation Tabs -->
+    <nav class="main-tabs" role="tablist">
+      <button id="tabDaemonLiveBtn" class="tab-nav-btn active" role="tab" aria-selected="true">
+        <span class="tab-icon">📡</span>
+        <span class="tab-label">Monitor en Vivo del Daemon</span>
+        <span class="live-pill"><span class="live-dot-pulse"></span>EN VIVO</span>
+      </button>
+      <button id="tabHistoryBtn" class="tab-nav-btn" role="tab" aria-selected="false">
+        <span class="tab-icon">🖼️</span>
+        <span class="tab-label">Historial y Métricas</span>
+      </button>
+    </nav>
+
+    <!-- TAB 1: VISTA EN VIVO DEL DAEMON -->
+    <div id="daemonLiveViewTab" class="tab-content active">
+      <section class="card daemon-live-card">
+        <!-- Live Header Bar -->
+        <div class="daemon-live-header">
+          <div class="daemon-title-wrap">
+            <span class="card-icon">⚡</span>
+            <div>
+              <h2>Flujo Operativo del Daemon en Tiempo Real</h2>
+              <p class="card-subtitle">
+                Telemetría descriptiva paso a paso: consulta P2P, fotograma base, cuadrantes, detección de humanos y biometría
+              </p>
+            </div>
+          </div>
+          <div class="daemon-header-controls">
+            <div id="daemonStatusPill" class="status-pill status-pill-active">
+              <span class="status-dot-pulse"></span>
+              <span id="daemonStatusPillText">Daemon Conectado</span>
+            </div>
+            <button id="triggerLiveCycleBtn" class="btn btn-primary btn-sm">
+              <span class="btn-icon">⚡</span>
+              <span>Ejecutar Ciclo en Vivo Ahora</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Dynamic Countdown & Working Hours Bar -->
+        <div class="daemon-countdown-card">
+          <div class="countdown-main">
+            <div class="countdown-clock-wrapper">
+              <div class="countdown-circle-svg">
+                <svg viewBox="0 0 100 100" class="countdown-ring">
+                  <circle cx="50" cy="50" r="42" class="countdown-ring-bg"></circle>
+                  <circle cx="50" cy="50" r="42" class="countdown-ring-progress" id="countdownCircleProgress"></circle>
+                </svg>
+                <div class="countdown-clock-content">
+                  <span id="daemonClockText" class="countdown-time">--:--</span>
+                  <span class="countdown-unit">min / seg</span>
+                </div>
+              </div>
+            </div>
+            <div class="countdown-info">
+              <div class="countdown-badge-row">
+                <span class="countdown-tag" id="daemonIntervalTag">⏱️ Intervalo: 15 min</span>
+                <span class="countdown-tag" id="daemonWorkingHoursTag">🕒 Horario: 11:00 - 23:00</span>
+                <span class="countdown-tag tag-success" id="daemonHoursStatusTag">🟢 Dentro de jornada</span>
+              </div>
+              <h3 id="daemonCurrentStepTitle" class="countdown-step-title">Contador activo</h3>
+              <p id="daemonCurrentStepDesc" class="countdown-step-desc">
+                Esperando siguiente consulta a la cámara de seguridad Reolink...
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Process Stepper Pipeline (6 Pasos Reales) -->
+        <div class="daemon-stepper-container">
+          <div class="stepper-track">
+            <div class="step-node active" id="stepNode0" data-step="0">
+              <div class="step-circle"><span class="step-num">0</span><span class="step-icon">⏱️</span></div>
+              <div class="step-content">
+                <div class="step-name">Contador de Ciclo</div>
+                <div class="step-sub" id="stepSub0">Cuenta regresiva</div>
+              </div>
+            </div>
+            <div class="step-connector" id="stepConnector1"></div>
+            <div class="step-node" id="stepNode1" data-step="1">
+              <div class="step-circle"><span class="step-num">1</span><span class="step-icon">📡</span></div>
+              <div class="step-content">
+                <div class="step-name">Consulta a Cámara</div>
+                <div class="step-sub" id="stepSub1">P2P Baichuan</div>
+              </div>
+            </div>
+            <div class="step-connector" id="stepConnector2"></div>
+            <div class="step-node" id="stepNode2" data-step="2">
+              <div class="step-circle"><span class="step-num">2</span><span class="step-icon">🖼️</span></div>
+              <div class="step-content">
+                <div class="step-name">Llega la Imagen</div>
+                <div class="step-sub" id="stepSub2">Imprime en Canvas</div>
+              </div>
+            </div>
+            <div class="step-connector" id="stepConnector3"></div>
+            <div class="step-node" id="stepNode3" data-step="3">
+              <div class="step-circle"><span class="step-num">3</span><span class="step-icon">📐</span></div>
+              <div class="step-content">
+                <div class="step-name">Activan Cuadrantes</div>
+                <div class="step-sub" id="stepSub3">Proyección ROI</div>
+              </div>
+            </div>
+            <div class="step-connector" id="stepConnector4"></div>
+            <div class="step-node" id="stepNode4" data-step="4">
+              <div class="step-circle"><span class="step-num">4</span><span class="step-icon">👤</span></div>
+              <div class="step-content">
+                <div class="step-name">Detecta Humanos</div>
+                <div class="step-sub" id="stepSub4">YOLOv8: ¿Sí o No?</div>
+              </div>
+            </div>
+            <div class="step-connector" id="stepConnector5"></div>
+            <div class="step-node" id="stepNode5" data-step="5">
+              <div class="step-circle"><span class="step-num">5</span><span class="step-icon">👥</span></div>
+              <div class="step-content">
+                <div class="step-name">Biometría y Perfil</div>
+                <div class="step-sub" id="stepSub5">Barbero / Frecuentes</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Canvas and Real-time Log Grid -->
+        <div class="daemon-main-grid">
+          <!-- Canvas Area -->
+          <div class="daemon-canvas-pane">
+            <div class="canvas-toolbar">
+              <div class="canvas-status-banner" id="canvasStatusBanner">
+                <span class="banner-dot"></span>
+                <span id="canvasBannerText">Canvas listo • Esperando fotograma</span>
+              </div>
+              <div class="canvas-layer-controls">
+                <label class="layer-chk"><input type="checkbox" id="chkLayerQuadrants" checked> <span>Cuadrantes</span></label>
+                <label class="layer-chk"><input type="checkbox" id="chkLayerHumans" checked> <span>Humanos</span></label>
+                <label class="layer-chk"><input type="checkbox" id="chkLayerPeople" checked> <span>Biometría</span></label>
+              </div>
+            </div>
+
+            <div class="canvas-viewport" id="daemonCanvasViewport">
+              <canvas id="daemonCanvas" width="1024" height="576"></canvas>
+              <div id="canvasOverlayPlaceholder" class="canvas-placeholder">
+                <div class="placeholder-icon">📸</div>
+                <h3>Lienzo en Vivo del Daemon</h3>
+                <p>En cuanto el Daemon consulte la cámara o se dispare una captura, la imagen, cuadrantes y detecciones se dibujarán aquí en tiempo real.</p>
+              </div>
+            </div>
+
+            <!-- Dynamic Bottom Info bar of Canvas -->
+            <div class="canvas-bottom-stats" id="canvasBottomStats">
+              <div class="stat-pill"><span class="lbl">Fotograma:</span> <strong id="statDocId">Ninguno</strong></div>
+              <div class="stat-pill"><span class="lbl">Dimensiones:</span> <strong id="statDims">1024 x 576 px</strong></div>
+              <div class="stat-pill"><span class="lbl">Cuadrantes:</span> <strong id="statQuadrantsCount">0 activos</strong></div>
+              <div class="stat-pill"><span class="lbl">¿Humanos Detectados?:</span> <strong id="statHumansDetected" class="text-muted">En espera</strong></div>
+              <div class="stat-pill"><span class="lbl">Clasificación:</span> <strong id="statPeopleClassified">0 identificados</strong></div>
+            </div>
+          </div>
+
+          <!-- Real-time Descriptive Log Area -->
+          <div class="daemon-log-pane">
+            <div class="log-pane-header">
+              <div class="log-title">
+                <span>📋</span>
+                <h4>Bitácora de Procesos Reales</h4>
+              </div>
+              <span class="log-badge-count" id="logCountBadge">0 eventos</span>
+            </div>
+            <div class="log-feed" id="daemonLogFeed">
+              <div class="log-empty-msg">Conectando con Firestore camera_catcher/daemon_state...</div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- TAB 2: HISTORIAL Y ANÁLISIS -->
+    <div id="historyViewTab" class="tab-content hidden">
     <!-- Google Cloud Cost & Quotas Monitor Card -->
     <section class="card cost-card" id="costMonitorCard">
       <div class="card-header" style="cursor: pointer;" id="costMonitorHeader" title="Clic para expandir o contraer">
@@ -314,6 +489,37 @@
       </div>
     </section>
 
+    <!-- People & Frequent Customers Directory Card -->
+    <section class="card people-card" id="peopleCard">
+      <div class="card-header" style="cursor: pointer;" id="peopleCardHeader">
+        <div class="card-title">
+          <span class="card-icon">👥</span>
+          <div>
+            <h2>Reconocimiento de Personas y Clientes Frecuentes</h2>
+            <p class="card-subtitle" style="font-size: 0.78rem; color: var(--text-muted); margin-top: 2px;">
+              Re-identificación biométrica automática (MobileFaceNet ArcFace) • Staff vs Clientes Frecuentes
+            </p>
+          </div>
+        </div>
+        <div class="people-header-actions" style="display: flex; align-items: center; gap: 10px;">
+          <span id="peopleStatsBadge" class="tag" style="background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3);">
+            👤 0 personas registradas
+          </span>
+          <button id="togglePeopleBtn" class="btn btn-secondary btn-sm" style="padding: 4px 10px; font-size: 0.75rem;">
+            Contraer ▾
+          </button>
+        </div>
+      </div>
+
+      <div class="people-body" id="peopleCardBody" style="padding: 16px;">
+        <div id="peopleListGrid" class="people-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px;">
+          <div class="text-muted" style="font-size: 0.82rem; grid-column: 1 / -1; padding: 12px 0;">
+            Cargando directorio biométrico en tiempo real...
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- Photos Table Card -->
     <section class="card table-card">
       <div class="card-header">
@@ -369,7 +575,8 @@
         </div>
       </div>
     </section>
-  </div>
+    </div> <!-- End historyViewTab -->
+  </div> <!-- End app-container -->
 
   <!-- Image Modal Viewer (Dual: Original y Con Marcos al costado) -->
   <div id="imageModal" class="modal hidden">
@@ -416,15 +623,18 @@
 
           <div class="modal-image-pane">
             <div class="pane-header">
-              <span class="pane-tag annotated">🎯 Foto con Marcos (ML)</span>
-              <a id="modalAnnotatedLink" href="#" target="_blank" rel="noopener noreferrer" class="pane-link" title="Abrir imagen con marcos completa">Ver HD ↗</a>
+              <span class="pane-tag annotated">🎯 Foto con Marcos (Frontend SVG)</span>
+              <a id="modalAnnotatedLink" href="#" target="_blank" rel="noopener noreferrer" class="pane-link" title="Abrir imagen original completa">Ver HD ↗</a>
             </div>
-            <div class="image-wrapper">
+            <div class="image-wrapper" id="modalAnnotatedWrapper">
               <div id="modalAnnotatedLoading" class="image-loading-placeholder">
                 <div class="spinner-small"></div>
-                <span>Cargando foto con marcos...</span>
+                <span>Cargando fotograma...</span>
               </div>
-              <img id="modalAnnotatedImage" class="hidden" src="" alt="Foto con marcos y detección" />
+              <div class="modal-annotated-stage hidden" id="modalAnnotatedStage">
+                <img id="modalAnnotatedImage" src="" alt="Foto para análisis y detección" />
+                <svg id="modalAnnotatedSvg" class="modal-annotated-svg"></svg>
+              </div>
             </div>
           </div>
         </div>
@@ -515,6 +725,7 @@
             </div>
             <div class="calibrator-stage" id="calibratorStage">
               <img id="calibratorImg" src="" alt="Foto para calibración" />
+              <svg id="calibratorSvg" class="calibrator-svg"></svg>
               <div id="calibratorOverlay" class="calibrator-overlay"></div>
             </div>
           </div>

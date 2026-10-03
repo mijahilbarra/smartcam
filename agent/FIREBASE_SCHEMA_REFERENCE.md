@@ -62,7 +62,31 @@ Toda la estructura del proyecto está organizada bajo el prefijo raíz `camera_c
 
 ---
 
-### D) `camera_catcher/quadrants`
+### D) `camera_catcher/daemon_state`
+* **Tipo:** Documento individual
+* **Rol:** Telemetría de flujo y pipeline en tiempo real del Daemon para la vista descriptiva con Canvas, contador y etapas.
+* **Leído por:** Frontend Web (`web/app.js`) vía `onSnapshot` para renderizado reactivo del Canvas, stepper y terminal de eventos.
+* **Escrito por:** Backend Daemon (`src/daemon_reporter.js` / `src/index.js`) en cada micro-etapa de su ciclo de vida.
+
+| Campo | Tipo | Ejemplo | Descripción |
+| :--- | :--- | :--- | :--- |
+| `step` | `string` | `"detecting_humans"` | Clave de etapa actual: `countdown`, `querying_camera`, `image_received`, `quadrants_active`, `detecting_humans`, `identifying_people`, `completed`, `error`. |
+| `stepIndex` | `number` | `4` | Índice numérico de etapa para el pipeline visual (0 a 6). |
+| `stepTitle` | `string` | `"Detección de Humanos (YOLOv8)"` | Título legible de la fase en ejecución. |
+| `stepDescription` | `string` | `"Se detectan 2 humanos en escena..."` | Descripción detallada del proceso en curso. |
+| `countdown` | `object` | Ver detalle | Información del temporizador y jornada laboral. |
+| `countdown.nextCaptureAt` | `string` | `"2026-10-03T18:15:00.000Z"` | Timestamp objetivo de la siguiente captura. |
+| `countdown.intervalMinutes` | `number` | `15` | Intervalo activo configurado. |
+| `countdown.isWithinWorkingHours` | `boolean` | `true` | Indica si el ciclo está habilitado por horario. |
+| `image` | `object` | `{ storagePath, width, height, sizeBytes, docId }` | Metadatos de la imagen base recibida para el Canvas. |
+| `quadrants` | `array<object>` | `[{ id, label, status, color, box, polygonNorm }]` | Cuadrantes activos proyectados sobre el Canvas. |
+| `humans` | `object` | `{ hasHumans: true, count: 2, detections: [...] }` | Detecciones humanas de YOLOv8 con cajas delimitadoras. |
+| `people` | `array<object>` | `[{ name, role, isStaff, isFrequent, visitCount, box }]` | Personas identificadas con biometría ArcFace. |
+| `history` | `array<object>` | `[{ id, timeFormatted, text, type }]` | Buffer circular de los últimos 30 eventos para la terminal en vivo. |
+
+---
+
+### E) `camera_catcher/quadrants`
 * **Tipo:** Documento individual
 * **Rol:** Configuración física de las Regiones de Interés (ROI) de la barbería para el clasificador geométrico de Machine Learning.
 * **Leído por:** Backend Daemon (`src/detector.js` / `src/index.js`) y Frontend Web (`web/app.js`).
@@ -81,14 +105,21 @@ Toda la estructura del proyecto está organizada bajo el prefijo raíz `camera_c
   "name": "Silla de barbero (Puesto 1)",
   "type": "barber_chair",
   "color": "#FFD700",
-  "boxNorm": [0.65, 0.80, 1.00, 1.00] 
+  "boxNorm": [0.65, 0.80, 1.00, 1.00],
+  "polygonNorm": [
+    { "x": 0.80, "y": 0.65 },
+    { "x": 1.00, "y": 0.65 },
+    { "x": 1.00, "y": 1.00 },
+    { "x": 0.80, "y": 1.00 }
+  ]
 }
 ```
-* **`boxNorm`**: Formato estándar normalizado `[ymin, xmin, ymax, xmax]` donde cada valor está entre `0.0` y `1.0`. Multiplicado por el ancho y alto de la cámara, determina los píxeles exactos en cualquier resolución.
+* **`boxNorm`**: Formato estándar normalizado `[ymin, xmin, ymax, xmax]` ($[0.0, 1.0]$) para compatibilidad hacia atrás.
+* **`polygonNorm`**: Lista de 4 vértices `{ x, y }` con coordenadas normalizadas para deformación angular y perspectiva libre. Se almacena como array de objetos (maps) en lugar de array de arrays para cumplir con la restricción de Firestore contra *nested arrays*.
 
 ---
 
-### E) `camera_catcher/photos/photos/<docId>`
+### F) `camera_catcher/photos/photos/<docId>`
 * **Tipo:** Subcolección (`collection("camera_catcher", "photos", "photos")`)
 * **Nombre de documentos (`docId`):** `photo_<timestamp_epoch_ms>` (ejemplo: `photo_1772635959958`)
 * **Rol:** Registro histórico de cada captura realizada, análisis visual y objetos detectados.
@@ -103,9 +134,9 @@ Toda la estructura del proyecto está organizada bajo el prefijo raíz `camera_c
 | `capturedAt` | `string` | `"2026-10-03T15:00:00.000Z"` | Fecha/hora ISO legible. |
 | `camera` | `string` | `"barberia"` | Identificador de la cámara origen. |
 | `source` | `string` | `"gcp-e2-micro"` | Nodo de procesamiento que ejecutó la captura. |
-| `imageStoragePath` | `string` | `"camera_catcher/photos/photo_...jpg"` | Ruta al archivo JPEG original en Firebase Storage. |
-| `annotatedStoragePath`| `string` | `"camera_catcher/photos/photo_..._annotated.jpg"` | Ruta a la foto con los cuadrantes y etiquetas dibujadas en Storage. |
-| `quadrants` | `array<object>` | `[{ id, label, category, color, box, status }]` | Cuadrantes semánticos evaluados en este fotograma. |
+| `imageStoragePath` | `string` | `"camera_catcher/photos/photo_...jpg"` | Ruta a la fotografía original en Firebase Storage (se evita duplicar fotos con marcos). |
+| `ml` | `object` | Ver detalle abajo | Metadatos de inferencia y posiciones vectoriales de cuadrantes. |
+| `ml.quadrants` | `array<object>` | `[{ id, label, category, color, box, status, polygonNorm }]` | Posiciones de cuadrantes y detección para montaje dinámico SVG en el frontend. |
 | `clientCrops` | `array<object>` | `[{ id, label, storagePath, confidence, box }]` | Lista de imágenes recortadas individualmente de los clientes sentados. |
 | `inferenceMs` | `number` | `102` | Duración del procesamiento de ML local con YOLOv8. |
 | `skippedDueToNoChange`| `boolean` | `false` | Indica si se omitió la inferencia completa por frame differencing (< 2.5% cambio). |
@@ -119,13 +150,16 @@ Toda la estructura del proyecto está organizada bajo el prefijo raíz `camera_c
 
 * **Bucket:** `skip-bigotes.firebasestorage.app`
 * **Ubicación:** `us-central1` (Google Cloud Storage)
+* **Arquitectura de Cero Duplicación de Imágenes:**
+  - El backend **únicamente sube la fotografía original** limpia.
+  - La visualización con marcos, polígonos y etiquetas se monta dinámicamente en el frontend usando capas SVG basadas en los datos de `ml.quadrants`.
+  - Esto **reduce el consumo de almacenamiento y operaciones de subida en un 50%**.
 * **Estructura de Carpetas:**
 
 ```
 camera_catcher/
 └── photos/
     ├── photo_1772635959958.jpg            # Fotograma original sin modificaciones
-    ├── photo_1772635959958_annotated.jpg  # Fotograma con recuadros de cuadrantes y badges SVG
     ├── photo_1772635959958_client_1.jpg   # Recorte de alta resolución del cliente sentado 1
     └── ...
 ```

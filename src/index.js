@@ -7,6 +7,8 @@ import path from "path";
 import util from "util";
 import { fileURLToPath } from "url";
 import { detectObjectsAndQuadrants, setCustomQuadrants, getDefaultQuadrantsArray } from "./detector.js";
+import { extractFaceEmbedding, identifyFace } from "./face_recognizer.js";
+import { daemonReporter } from "./daemon_reporter.js";
 
 const execPromise = util.promisify(exec);
 const __filename = fileURLToPath(import.meta.url);
@@ -48,6 +50,7 @@ admin.initializeApp({
 
 const db = admin.firestore();
 const bucket = admin.storage().bucket();
+daemonReporter.init(db);
 
 const app = express();
 app.use(express.json());
@@ -180,9 +183,119 @@ async function killCaptureContainer() {
 }
 
 /**
+ * Run Face Recognition and Re-identification on detected people across captures
+ */
+async function processPeopleRecognition(clientRecords, clientCrops) {
+  if (!clientCrops || clientCrops.length === 0) return [];
+  const identifiedPeople = [];
+
+  try {
+    // 1. Fetch known profiles and staff from Firestore
+    const profilesSnap = await db.collection("camera_catcher_people").get();
+    const knownProfiles = [];
+    profilesSnap.forEach(docSnap => {
+      knownProfiles.push({ id: docSnap.id, ...docSnap.data() });
+    });
+
+    const staffDoc = await db.doc("camera_catcher/staff").get();
+    const staffMembers = staffDoc.exists ? (staffDoc.data().members || []) : [];
+    
+    // Merge staff into query gallery
+    const allKnown = [
+      ...staffMembers.map(s => ({ ...s, isStaff: true })),
+      ...knownProfiles
+    ];
+
+    for (let i = 0; i < clientCrops.length; i++) {
+      const crop = clientCrops[i];
+      const record = clientRecords[i];
+      const t0 = Date.now();
+      
+      const embedding = await extractFaceEmbedding(crop.buffer);
+      console.log(`[FaceRecognition] Embedding extraído en ${Date.now() - t0} ms.`);
+
+      const result = identifyFace(embedding, allKnown, 0.45);
+
+      if (result.matched && result.profile) {
+        const p = result.profile;
+        console.log(`[FaceRecognition] Match biométrico: "${p.name}" (Similitud: ${result.similarity}, Staff: ${p.isStaff ? "SÍ" : "NO"})`);
+
+        if (p.isStaff) {
+          identifiedPeople.push({
+            cropId: crop.id || `crop_${i + 1}`,
+            personId: p.id,
+            name: p.name,
+            isStaff: true,
+            role: "Barbero / Staff",
+            similarity: result.similarity,
+            confidence: crop.confidence
+          });
+        } else {
+          // Existing customer - increment visit count and update lastSeen
+          const newCount = (p.visitCount || 1) + 1;
+          await db.doc(`camera_catcher_people/${p.id}`).update({
+            lastSeen: new Date().toISOString(),
+            lastThumbnailPath: record ? record.storagePath : "",
+            visitCount: newCount
+          });
+
+          identifiedPeople.push({
+            cropId: crop.id || `crop_${i + 1}`,
+            personId: p.id,
+            name: p.name,
+            isStaff: false,
+            isFrequent: newCount > 1,
+            visitCount: newCount,
+            similarity: result.similarity,
+            confidence: crop.confidence
+          });
+        }
+      } else {
+        // New customer profile creation
+        const totalProfiles = knownProfiles.length + 1;
+        const newPersonId = `person_${Date.now()}_${i + 1}`;
+        const newName = `Cliente #${totalProfiles}`;
+
+        const newProfile = {
+          id: newPersonId,
+          name: newName,
+          firstSeen: new Date().toISOString(),
+          lastSeen: new Date().toISOString(),
+          visitCount: 1,
+          isStaff: false,
+          embedding: embedding,
+          thumbnailPath: record ? record.storagePath : ""
+        };
+
+        await db.doc(`camera_catcher_people/${newPersonId}`).set(newProfile);
+        console.log(`[FaceRecognition] Nuevo cliente registrado en Firestore: "${newName}" (${newPersonId})`);
+
+        identifiedPeople.push({
+          cropId: crop.id || `crop_${i + 1}`,
+          personId: newPersonId,
+          name: newName,
+          isStaff: false,
+          isFrequent: false,
+          visitCount: 1,
+          similarity: result.similarity,
+          confidence: crop.confidence
+        });
+
+        knownProfiles.push(newProfile);
+        allKnown.push(newProfile);
+      }
+    }
+  } catch (err) {
+    console.warn(`[FaceRecognition] Error en proceso de reconocimiento facial:`, err.message);
+  }
+
+  return identifiedPeople;
+}
+
+/**
  * Execute single snapshot capture, upload, Gemini analysis and Firestore recording
  */
-export async function executeCaptureProcess() {
+export async function executeCaptureProcess(triggerSource = "scheduled") {
   if (isCapturing) {
     console.log("[Capture] Ya hay una captura en curso. Omitiendo ejecución concurrente.");
     return { status: "already_running" };
@@ -196,6 +309,9 @@ export async function executeCaptureProcess() {
   try {
     console.log(`\n========================================`);
     console.log(`[1/5] Ejecutando captura P2P (${docId})...`);
+
+    // Notificar Fase 1: Se activa consulta a la cámara de seguridad
+    await daemonReporter.reportCameraQuery(triggerSource);
 
     // Ensure any previously stuck capture container is forcibly removed before starting
     await killCaptureContainer();
@@ -219,16 +335,9 @@ export async function executeCaptureProcess() {
     const buffer = await fs.readFile(localOutputPath);
     console.log(`[2/5] Fotograma capturado: ${buffer.length} bytes.`);
 
-    // 3. Run Local Machine Learning (ONNX Runtime / YOLO)
-    console.log(`[3/6] Analizando fotograma con Machine Learning local (ONNX Runtime)...`);
-    const mlResult = await detectObjectsAndQuadrants(buffer);
-    console.log(`[ML] Inferencia completada en ${mlResult.inferenceMs} ms. Cuadrantes detectados: ${mlResult.quadrants.length}`);
-
-    // 4. Upload original and annotated images to Firebase Storage
-    // 4. Upload original, annotated, and client crop images to Firebase Storage
+    // Subir imagen base inmediatamente para que la vista web la cargue en el canvas de inmediato
     const storagePath = `camera_catcher/photos/${docId}.jpg`;
-    const annotatedStoragePath = `camera_catcher/photos/${docId}_annotated.jpg`;
-    console.log(`[4/6] Subiendo a Firebase Storage: ${storagePath} y ${annotatedStoragePath}...`);
+    console.log(`[4/6] Subiendo imagen original a Firebase Storage: ${storagePath}...`);
 
     const fileOriginal = bucket.file(storagePath);
     await fileOriginal.save(buffer, {
@@ -243,18 +352,25 @@ export async function executeCaptureProcess() {
       }
     });
 
-    const fileAnnotated = bucket.file(annotatedStoragePath);
-    await fileAnnotated.save(mlResult.annotatedBuffer, {
-      metadata: {
-        contentType: "image/jpeg",
-        metadata: {
-          capturedAt: new Date().toISOString(),
-          camera: "barberia",
-          source: "gcp-e2-micro",
-          type: "annotated_quadrants"
-        }
-      }
+    // Notificar Fase 2: Llega la imagen => imprimir en el Canvas
+    await daemonReporter.reportImageReceived({
+      storagePath,
+      width: 1024,
+      height: 576,
+      sizeBytes: buffer.length,
+      docId
     });
+
+    // 3. Run Local Machine Learning (ONNX Runtime / YOLO)
+    console.log(`[3/6] Analizando fotograma con Machine Learning local (ONNX Runtime)...`);
+    const mlResult = await detectObjectsAndQuadrants(buffer);
+    console.log(`[ML] Inferencia completada en ${mlResult.inferenceMs} ms. Cuadrantes detectados: ${mlResult.quadrants.length}`);
+
+    // Notificar Fase 3: Se activan y dibujan los cuadrantes en el Canvas
+    await daemonReporter.reportQuadrantsActive(mlResult.quadrants);
+
+    // Notificar Fase 4: Se detecta a humanos y se imprime si se detecta a humanos o no
+    await daemonReporter.reportHumanDetection(mlResult);
 
     // Upload client crops if any seated clients were detected
     const clientRecords = [];
@@ -278,15 +394,27 @@ export async function executeCaptureProcess() {
         });
 
         clientRecords.push({
-          id: crop.id || `client_${i + 1}`,
+          id: crop.id || `crop_${i + 1}`,
           storagePath: clientStoragePath,
           box: crop.box,
           confidence: crop.confidence,
+          role: crop.role || "client",
+          isStaffHint: crop.isStaffHint === true,
           status: crop.status || "en_corte",
           detectedAt: new Date().toISOString()
         });
       }
     }
+
+    // 4.5. Run Face Recognition & Re-identification
+    let identifiedPeople = [];
+    if (mlResult.clientCrops && mlResult.clientCrops.length > 0) {
+      console.log(`[FaceRecognition] Evaluando biometría de personas detectadas...`);
+      identifiedPeople = await processPeopleRecognition(clientRecords, mlResult.clientCrops);
+    }
+
+    // Notificar Fase 5: Reconocimiento de personas (Barbero / Staff vs. Clientes Frecuentes vs. Nuevos)
+    await daemonReporter.reportPeopleIdentified(identifiedPeople, clientRecords);
 
     // Clean temp local file
     try {
@@ -296,7 +424,8 @@ export async function executeCaptureProcess() {
     // 5. Config / Summary
     console.log(`[5/6] Preparando resumen analítico...`);
     const clientsCountStr = clientRecords.length > 0 ? ` (${clientRecords.length} cliente(s) sentado(s) extraído(s))` : "";
-    const summaryText = `ML Local: ${mlResult.quadrants.map(q => `${q.label} [${q.status}]`).join(", ")}${clientsCountStr}`;
+    const peopleStr = identifiedPeople.length > 0 ? ` | Personas: ${identifiedPeople.map(p => `${p.name} (${p.isStaff ? 'Staff' : p.isFrequent ? 'Frecuente' : 'Nuevo'})`).join(", ")}` : "";
+    const summaryText = `ML Local: ${mlResult.quadrants.map(q => `${q.label} [${q.status}]`).join(", ")}${clientsCountStr}${peopleStr}`;
     console.log(`[Resumen] ${summaryText}`);
 
     // 6. Save in Firestore: camera_catcher/photos/photos/<docId>
@@ -304,8 +433,8 @@ export async function executeCaptureProcess() {
     const record = {
       id: docId,
       imageStoragePath: storagePath,
-      annotatedStoragePath: annotatedStoragePath,
-      clients: clientRecords, // Array estructurado de clientes sentados extraídos
+      clients: clientRecords,
+      identifiedPeople: identifiedPeople,
       timestamp: admin.firestore.FieldValue.serverTimestamp(),
       createdAt: new Date().toISOString(),
       epoch: timestamp,
@@ -316,7 +445,8 @@ export async function executeCaptureProcess() {
         imageDimensions: mlResult.imageDimensions,
         quadrants: mlResult.quadrants,
         rawDetections: mlResult.rawDetections,
-        clientCount: clientRecords.length
+        clientCount: clientRecords.length,
+        identifiedPeopleCount: identifiedPeople.length
       },
       camera: "barberia",
       source: "gcp-e2-micro"
@@ -325,6 +455,15 @@ export async function executeCaptureProcess() {
     await docRef.set(record);
     console.log(`[6/6] [Firestore] Documento guardado exitosamente en camera_catcher/photos/photos/${docId}`);
     console.log(`========================================\n`);
+
+    // Notificar Fase 6: Ciclo completado y programar siguiente contador
+    const nextCaptureDate = new Date(Date.now() + Math.round(currentIntervalMinutes * 60 * 1000));
+    await daemonReporter.reportCycleCompleted({
+      docId,
+      summary: summaryText,
+      nextCaptureDate,
+      intervalMinutes: currentIntervalMinutes
+    });
 
     try {
       await db.doc("camera_catcher/status").set({
@@ -338,6 +477,7 @@ export async function executeCaptureProcess() {
     return record;
   } catch (err) {
     console.error(`[Capture Error] Falló el proceso de captura:`, err.message);
+    await daemonReporter.reportError(err);
     try {
       await db.doc("camera_catcher/status").set({
         service: "camera-catcher",
@@ -373,7 +513,7 @@ app.get("/", (req, res) => {
 // Capture trigger endpoint
 app.all("/capture", async (req, res) => {
   try {
-    const result = await executeCaptureProcess();
+    const result = await executeCaptureProcess("manual");
     res.status(200).json({
       success: true,
       message: "Capture and analysis completed successfully",
@@ -409,14 +549,30 @@ function setupCronTimer(minutes) {
 
   console.log(`[Cron] Programador de captura configurado cada ${currentIntervalMinutes} min (${intervalMs / 1000} seg). Horario laboral: ${workStart} a ${workEnd} (${configuredTimeZone}).`);
 
+  // Notificar estado del contador en Firestore
+  const nextCaptureDate = new Date(Date.now() + intervalMs);
+  daemonReporter.setCountdown(nextCaptureDate, currentIntervalMinutes, {
+    isWithinWorkingHours: isWithinWorkingHours(),
+    workStart,
+    workEnd,
+    timezone: configuredTimeZone
+  });
+
   cronTimerId = setInterval(async () => {
     if (!isWithinWorkingHours()) {
       console.log(`[Cron] Fuera de horario laboral (${workStart} a ${workEnd} ${configuredTimeZone}). Omitiendo captura programada.`);
+      const nextDate = new Date(Date.now() + intervalMs);
+      daemonReporter.setCountdown(nextDate, currentIntervalMinutes, {
+        isWithinWorkingHours: false,
+        workStart,
+        workEnd,
+        timezone: configuredTimeZone
+      });
       return;
     }
     console.log(`[Cron] Ejecutando captura programada periódica (${currentIntervalMinutes} min)...`);
     try {
-      await executeCaptureProcess();
+      await executeCaptureProcess("scheduled");
     } catch (err) {
       console.error(`[Cron] Error en captura periódica:`, err.message);
     }
@@ -529,13 +685,27 @@ db.doc("camera_catcher/commands").onSnapshot((snapshot) => {
   if (data && data.action === "capture" && data.requestedAt > lastTriggerHandled) {
     lastTriggerHandled = data.requestedAt;
     console.log(`[Listener] Disparo manual recibido desde la web a las ${new Date(data.requestedAt).toLocaleTimeString()}`);
-    executeCaptureProcess().catch(err => {
+    executeCaptureProcess("manual").catch(err => {
       console.error(`[Listener] Error procesando captura manual:`, err.message);
     });
   }
 }, (err) => {
   console.warn(`[Listener] Error en snapshot listener de commands:`, err.message);
 });
+
+// Pre-load dynamic quadrants immediately on boot
+async function prefetchQuadrants() {
+  try {
+    const snap = await db.doc("camera_catcher/quadrants").get();
+    if (snap.exists && snap.data()?.quadrants) {
+      setCustomQuadrants(snap.data().quadrants);
+      console.log(`[Quadrants] Cuadrantes dinámicos precargados exitosamente de Firestore (${snap.data().quadrants.length} zonas).`);
+    }
+  } catch (err) {
+    console.warn(`[Quadrants] No se pudieron precargar cuadrantes al iniciar:`, err.message);
+  }
+}
+prefetchQuadrants();
 
 // Real-time listener for physical quadrants configuration in Firestore
 console.log(`[Quadrants] Escuchando configuración de cuadrantes en tiempo real: camera_catcher/quadrants...`);

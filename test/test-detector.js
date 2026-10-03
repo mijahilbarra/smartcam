@@ -17,7 +17,7 @@ async function main() {
   console.log(`Tamaño de imagen: ${buffer.length} bytes`);
 
   const tStart = Date.now();
-  const result = await detectObjectsAndQuadrants(buffer, 0.18);
+  const result = await detectObjectsAndQuadrants(buffer, { confThreshold: 0.18, generateAnnotated: true, forceRecheck: true });
   const totalElapsed = Date.now() - tStart;
 
   console.log(`\nResultados:`);

@@ -25,12 +25,68 @@ const COCO_CLASSES = {
   67: "cell phone"
 };
 
+// Helper to convert vertex representations (array [x,y] or object {x,y}) to [x, y]
+export function toPointTuple(p) {
+  if (Array.isArray(p)) return [Number(p[0]), Number(p[1])];
+  if (p && typeof p === "object") return [Number(p.x ?? 0), Number(p.y ?? 0)];
+  return [0, 0];
+}
+
+// Helper to convert [ymin, xmin, ymax, xmax] to polygon vertices [[x,y], ...]
+export function boxNormToPolygonNorm([ymin, xmin, ymax, xmax]) {
+  return [
+    [xmin, ymin], // P0: Top-Left
+    [xmax, ymin], // P1: Top-Right
+    [xmax, ymax], // P2: Bottom-Right
+    [xmin, ymax]  // P3: Bottom-Left
+  ];
+}
+
+export function polygonNormToBoundingBoxNorm(polygon) {
+  const xs = polygon.map(p => toPointTuple(p)[0]);
+  const ys = polygon.map(p => toPointTuple(p)[1]);
+  return [
+    Math.min(...ys),
+    Math.min(...xs),
+    Math.max(...ys),
+    Math.max(...xs)
+  ];
+}
+
+/**
+ * Ray-casting algorithm to test if point [px, py] is inside a polygon [[x,y], ...] or [{x,y}, ...]
+ */
+export function isPointInPolygon([px, py], polygon) {
+  if (!polygon || polygon.length < 3) return false;
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const [xi, yi] = toPointTuple(polygon[i]);
+    const [xj, yj] = toPointTuple(polygon[j]);
+    const intersect = ((yi > py) !== (yj > py)) &&
+      (px < ((xj - xi) * (py - yi)) / (yj - yi) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+export function isPointInsideZone(cx, cy, zone) {
+  if (!zone) return false;
+  if (zone.polygonNorm && Array.isArray(zone.polygonNorm) && zone.polygonNorm.length >= 3) {
+    return isPointInPolygon([cx, cy], zone.polygonNorm);
+  }
+  if (zone.boxNorm && Array.isArray(zone.boxNorm) && zone.boxNorm.length === 4) {
+    return cy >= zone.boxNorm[0] && cx >= zone.boxNorm[1] && cy <= zone.boxNorm[2] && cx <= zone.boxNorm[3];
+  }
+  return false;
+}
+
 // Physical quadrant definitions based on 1024x576 camera view
 export const BARBERSHOP_QUADRANTS = {
   puerta_entrada: {
     id: "puerta_entrada",
     name: "Entrada / Pasillo peatonal",
     boxNorm: [0.30, 0.40, 0.88, 0.60], // [ymin, xmin, ymax, xmax]
+    polygonNorm: [{ x: 0.40, y: 0.30 }, { x: 0.60, y: 0.30 }, { x: 0.60, y: 0.88 }, { x: 0.40, y: 0.88 }],
     type: "walking_zone",
     color: "#007BFF"
   },
@@ -38,6 +94,7 @@ export const BARBERSHOP_QUADRANTS = {
     id: "silla_barbero_puesto1",
     name: "Silla de barbero (Puesto 1)",
     boxNorm: [0.65, 0.80, 1.00, 1.00],
+    polygonNorm: [{ x: 0.80, y: 0.65 }, { x: 1.00, y: 0.65 }, { x: 1.00, y: 1.00 }, { x: 0.80, y: 1.00 }],
     type: "barber_chair",
     color: "#FFD700"
   },
@@ -45,6 +102,7 @@ export const BARBERSHOP_QUADRANTS = {
     id: "silla_barbero_puesto2",
     name: "Silla de barbero (Frente)",
     boxNorm: [0.80, 0.36, 1.00, 0.67],
+    polygonNorm: [{ x: 0.36, y: 0.80 }, { x: 0.67, y: 0.80 }, { x: 0.67, y: 1.00 }, { x: 0.36, y: 1.00 }],
     type: "barber_chair",
     color: "#FFD700"
   },
@@ -52,6 +110,7 @@ export const BARBERSHOP_QUADRANTS = {
     id: "silla_espera",
     name: "Silla de espera",
     boxNorm: [0.55, 0.73, 0.92, 0.90],
+    polygonNorm: [{ x: 0.73, y: 0.55 }, { x: 0.90, y: 0.55 }, { x: 0.90, y: 0.92 }, { x: 0.73, y: 0.92 }],
     type: "waiting_chair",
     color: "#D250DC"
   },
@@ -59,6 +118,7 @@ export const BARBERSHOP_QUADRANTS = {
     id: "zona_barbero",
     name: "Zona de trabajo de barbero",
     boxNorm: [0.45, 0.65, 0.95, 0.82],
+    polygonNorm: [{ x: 0.65, y: 0.45 }, { x: 0.82, y: 0.45 }, { x: 0.82, y: 0.95 }, { x: 0.65, y: 0.95 }],
     type: "barber_workstation",
     color: "#FF4500"
   }
@@ -71,18 +131,21 @@ let dynamicQuadrants = { ...BARBERSHOP_QUADRANTS };
  */
 export function setCustomQuadrants(newQuadrants) {
   if (!newQuadrants) return;
-  if (Array.isArray(newQuadrants)) {
-    const map = {};
-    for (const q of newQuadrants) {
-      if (q && q.id) {
-        map[q.id] = q;
+  const list = Array.isArray(newQuadrants) ? newQuadrants : Object.values(newQuadrants);
+  const map = {};
+  for (const rawQ of list) {
+    if (rawQ && rawQ.id) {
+      const q = { ...rawQ };
+      if (q.polygonNorm && Array.isArray(q.polygonNorm)) {
+        q.polygonNorm = q.polygonNorm.map(toPointTuple);
+      } else if (q.boxNorm && Array.isArray(q.boxNorm) && q.boxNorm.length === 4) {
+        q.polygonNorm = boxNormToPolygonNorm(q.boxNorm);
       }
+      map[q.id] = q;
     }
-    dynamicQuadrants = map;
-  } else if (typeof newQuadrants === "object") {
-    dynamicQuadrants = { ...newQuadrants };
   }
-  console.log(`[Detector] Cuadrantes actualizados dinámicamente: ${Object.keys(dynamicQuadrants).join(", ")}`);
+  dynamicQuadrants = map;
+  console.log(`[Detector] Cuadrantes actualizados dinámicamente (${Object.keys(dynamicQuadrants).length}): ${Object.keys(dynamicQuadrants).join(", ")}`);
 }
 
 export function getActiveQuadrants() {
@@ -220,128 +283,296 @@ function isPointInNormBox(cx, cy, boxNorm) {
 }
 
 /**
- * Classify detected objects into semantic barber shop quadrants
+ * Test whether a detection bounding box [x1, y1, x2, y2] intersects or falls into a semantic zone
  */
-function mapDetectionsToBarbershopQuadrants(detections, width, height, customQuadrants = null) {
+export function doesDetectionOverlapZone(detBox, zone, width, height) {
+  if (!detBox || !zone || !width || !height) return false;
+  const [x1, y1, x2, y2] = detBox;
+
+  // Multi-point sampling across the bounding box (head/torso/center/hips/sides)
+  const samples = [
+    [(x1 + x2) / (2 * width), (y1 + y2) / (2 * height)],              // Geometric center
+    [(x1 * 0.75 + x2 * 0.25) / width, (y1 + y2) / (2 * height)],        // Left-center
+    [(x1 * 0.25 + x2 * 0.75) / width, (y1 + y2) / (2 * height)],        // Right-center
+    [(x1 + x2) / (2 * width), (y1 * 0.60 + y2 * 0.40) / height],        // Torso-center
+    [(x1 * 0.75 + x2 * 0.25) / width, (y1 * 0.60 + y2 * 0.40) / height],// Torso-left
+    [(x1 * 0.25 + x2 * 0.75) / width, (y1 * 0.60 + y2 * 0.40) / height],// Torso-right
+    [(x1 + x2) / (2 * width), (y1 * 0.25 + y2 * 0.75) / height]         // Base / lower body
+  ];
+
+  if (samples.some(([px, py]) => isPointInsideZone(px, py, zone))) {
+    return true;
+  }
+
+  // Also check bounding box IoU if zone has boxNorm or polygonNorm
+  let bNorm = zone.boxNorm;
+  if (!bNorm && zone.polygonNorm && zone.polygonNorm.length >= 3) {
+    bNorm = polygonNormToBoundingBoxNorm(zone.polygonNorm);
+  }
+  if (bNorm && bNorm.length === 4) {
+    const zonePixelBox = [
+      Math.round(bNorm[1] * width),
+      Math.round(bNorm[0] * height),
+      Math.round(bNorm[3] * width),
+      Math.round(bNorm[2] * height)
+    ];
+    if (calculateIoU(detBox, zonePixelBox) > 0.25) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Classify detected objects into semantic barber shop quadrants dynamically.
+ * Iterates through all zones configured by the user, respecting custom polygons,
+ * types, names, additions, and deletions.
+ */
+export function mapDetectionsToBarbershopQuadrants(detections, width, height, customQuadrants = null) {
   const quadrants = [];
   const activeCfg = customQuadrants || getActiveQuadrants();
 
-  const cfgSilla1 = activeCfg.silla_barbero_puesto1 || BARBERSHOP_QUADRANTS.silla_barbero_puesto1;
-  const cfgSilla2 = activeCfg.silla_barbero_puesto2 || BARBERSHOP_QUADRANTS.silla_barbero_puesto2;
-  const cfgEspera = activeCfg.silla_espera || BARBERSHOP_QUADRANTS.silla_espera;
-  const cfgPuerta = activeCfg.puerta_entrada || BARBERSHOP_QUADRANTS.puerta_entrada;
-  const cfgBarbero = activeCfg.zona_barbero || BARBERSHOP_QUADRANTS.zona_barbero;
+  let configuredZones = [];
+  if (Array.isArray(activeCfg)) {
+    configuredZones = activeCfg;
+  } else if (activeCfg && typeof activeCfg === "object") {
+    configuredZones = Object.values(activeCfg);
+  }
 
-  const toBox = (bNorm) => [
-    Math.round(bNorm[1] * width),
-    Math.round(bNorm[0] * height),
-    Math.round(bNorm[3] * width),
-    Math.round(bNorm[2] * height)
-  ];
+  // Fallback to default quadrants if no zones are configured
+  if (!configuredZones || configuredZones.length === 0) {
+    configuredZones = Object.values(BARBERSHOP_QUADRANTS);
+  }
 
-  const silla1Box = toBox(cfgSilla1.boxNorm);
-  const silla2Box = toBox(cfgSilla2.boxNorm);
-  const esperaBox = toBox(cfgEspera.boxNorm);
+  // Normalize each zone (polygonNorm points, boxNorm)
+  const normalizedZones = configuredZones.filter(z => z && z.id).map(rawZ => {
+    const z = { ...rawZ };
+    if (z.polygonNorm && Array.isArray(z.polygonNorm) && z.polygonNorm.length >= 3) {
+      z.polygonNorm = z.polygonNorm.map(toPointTuple);
+    } else if (z.boxNorm && Array.isArray(z.boxNorm) && z.boxNorm.length === 4) {
+      z.polygonNorm = boxNormToPolygonNorm(z.boxNorm);
+    }
+    if (!z.boxNorm && z.polygonNorm) {
+      z.boxNorm = polygonNormToBoundingBoxNorm(z.polygonNorm);
+    }
+    return z;
+  });
 
-  let silla1Ocupada = false;
-  let clienteSilla1Det = null;
+  const matchedPersonIndices = new Set();
 
-  // Evaluate dynamic detections
-  for (const det of detections) {
-    const [x1, y1, x2, y2] = det.box;
-    const cx = (x1 + x2) / (2 * width);
-    const cy = (y1 + y2) / (2 * height);
+  for (const zone of normalizedZones) {
+    const bNorm = zone.boxNorm || [0, 0, 1, 1];
+    const zonePixelBox = [
+      Math.round(bNorm[1] * width),
+      Math.round(bNorm[0] * height),
+      Math.round(bNorm[3] * width),
+      Math.round(bNorm[2] * height)
+    ];
 
-    if (det.class === "person") {
-      // Walking person in door / entrance corridor
-      if (isPointInNormBox(cx, cy, cfgPuerta.boxNorm)) {
+    // Find detections inside this zone
+    const matchingPersonDets = [];
+    const matchingPhoneDets = [];
+    const matchingChairDets = [];
+
+    detections.forEach((det, idx) => {
+      if (det.class === "person" && doesDetectionOverlapZone(det.box, zone, width, height)) {
+        matchingPersonDets.push(det);
+        matchedPersonIndices.add(idx);
+      } else if (det.class === "cell phone" && doesDetectionOverlapZone(det.box, zone, width, height)) {
+        matchingPhoneDets.push(det);
+      } else if (det.class === "chair" && calculateIoU(det.box, zonePixelBox) > 0.35) {
+        matchingChairDets.push(det);
+      }
+    });
+
+    const zoneType = zone.type || "custom_zone";
+    const zoneColor = zone.color || "#007BFF";
+
+    switch (zoneType) {
+      case "barber_chair": {
+        const isOccupied = matchingPersonDets.length > 0 || matchingPhoneDets.length > 0 || matchingChairDets.length > 0;
+        const primaryPerson = matchingPersonDets[0];
+
+        // Register the chair quadrant itself
         quadrants.push({
-          id: "persona_caminando",
-          label: "Persona caminando",
-          category: "transito",
-          color: cfgPuerta.color || "#007BFF", // Blue
-          confidence: det.score,
-          box: [x1, y1, x2, y2],
-          status: "en_transito",
-          description: "Persona desplazándose por el acceso peatonal"
+          id: zone.id,
+          label: zone.name || zone.id,
+          category: "silla_barbero",
+          type: "barber_chair",
+          color: zoneColor,
+          box: zonePixelBox,
+          polygonNorm: zone.polygonNorm,
+          status: isOccupied ? "ocupada" : "disponible",
+          description: isOccupied ? `Sillón de barbero ocupado en corte` : `Sillón de barbero disponible`
         });
+
+        // If occupied, add the seated client occupant
+        if (isOccupied) {
+          const clientBox = primaryPerson ? primaryPerson.box : [zonePixelBox[0] + 15, zonePixelBox[1] + 10, zonePixelBox[2] - 15, zonePixelBox[3] - 10];
+          quadrants.push({
+            id: `cliente_sentado_${zone.id}`,
+            zoneId: zone.id,
+            label: `Cliente sentado (${zone.name || "Silla"})`,
+            category: "cliente",
+            color: "#32DC32", // Green
+            confidence: primaryPerson ? primaryPerson.score : 0.85,
+            box: clientBox,
+            status: "en_corte",
+            description: `Cliente sentado recibiendo servicio en ${zone.name || zone.id}`
+          });
+        }
+        break;
       }
-      // Seated client on chair 1
-      else if (isPointInNormBox(cx, cy, cfgSilla1.boxNorm) || (cx >= 0.78 && cy >= 0.60)) {
-        silla1Ocupada = true;
-        clienteSilla1Det = det;
+
+      case "barber_workstation": {
+        const isWorking = matchingPersonDets.length > 0;
+        if (isWorking) {
+          // Register the active barber staff
+          const barberDet = matchingPersonDets[0];
+          quadrants.push({
+            id: `barbero_${zone.id}`,
+            zoneId: zone.id,
+            label: zone.name || "Barbero",
+            category: "personal",
+            type: "barber_workstation",
+            color: zoneColor || "#FF4500",
+            confidence: barberDet.score,
+            box: barberDet.box,
+            polygonNorm: zone.polygonNorm,
+            status: "en_servicio",
+            description: `Barbero / Personal activo atendiendo en ${zone.name}`
+          });
+        } else {
+          // Register available workstation
+          quadrants.push({
+            id: zone.id,
+            label: zone.name || zone.id,
+            category: "personal",
+            type: "barber_workstation",
+            color: zoneColor || "#FF4500",
+            box: zonePixelBox,
+            polygonNorm: zone.polygonNorm,
+            status: "disponible",
+            description: `Puesto de barbero libre`
+          });
+        }
+        break;
       }
-      // Barber standing working next to chair
-      else if (isPointInNormBox(cx, cy, cfgBarbero.boxNorm) || (cx >= 0.65 && cx < 0.80 && cy >= 0.35)) {
+
+      case "waiting_chair": {
+        const isOccupied = matchingPersonDets.length > 0;
+        if (isOccupied) {
+          matchingPersonDets.forEach((pDet, pIdx) => {
+            quadrants.push({
+              id: `cliente_espera_${zone.id}_${pIdx + 1}`,
+              zoneId: zone.id,
+              label: `Cliente en espera (${zone.name})`,
+              category: "cliente",
+              color: "#D250DC",
+              confidence: pDet.score,
+              box: pDet.box,
+              status: "en_espera",
+              description: `Cliente esperando turno en ${zone.name}`
+            });
+          });
+        }
         quadrants.push({
-          id: "barbero_servicio",
-          label: cfgBarbero.name || "Barbero",
-          category: "personal",
-          color: cfgBarbero.color || "#FF4500", // OrangeRed
-          confidence: det.score,
-          box: [x1, y1, x2, y2],
-          status: "en_servicio",
-          description: "Barbero de pie atendiendo puesto"
+          id: zone.id,
+          label: zone.name || zone.id,
+          category: "silla_espera",
+          type: "waiting_chair",
+          color: zoneColor || "#D250DC",
+          box: zonePixelBox,
+          polygonNorm: zone.polygonNorm,
+          status: isOccupied ? "ocupada" : "disponible",
+          description: isOccupied ? `Banca de espera ocupada (${matchingPersonDets.length})` : `Banca de espera disponible`
         });
+        break;
       }
-    } else if (det.class === "cell phone" && (isPointInNormBox(cx, cy, cfgSilla1.boxNorm) || (cx >= 0.80 && cy >= 0.60))) {
-      // Cell phone held by client confirms seated customer presence
-      silla1Ocupada = true;
-    } else if (det.class === "chair") {
-      // If chair detection overlaps with silla 1 and score is high
-      const iou = calculateIoU(det.box, silla1Box);
-      if (iou > 0.40) {
-        silla1Ocupada = true;
+
+      case "walking_zone": {
+        if (matchingPersonDets.length > 0) {
+          matchingPersonDets.forEach((pDet, pIdx) => {
+            quadrants.push({
+              id: `transito_${zone.id}_${pIdx + 1}`,
+              zoneId: zone.id,
+              label: `Tránsito en ${zone.name}`,
+              category: "transito",
+              type: "walking_zone",
+              color: zoneColor || "#007BFF",
+              confidence: pDet.score,
+              box: pDet.box,
+              polygonNorm: zone.polygonNorm,
+              status: "en_transito",
+              description: `Persona en tránsito por ${zone.name}`
+            });
+          });
+        } else {
+          quadrants.push({
+            id: zone.id,
+            label: zone.name || zone.id,
+            category: "transito",
+            type: "walking_zone",
+            color: zoneColor || "#007BFF",
+            box: zonePixelBox,
+            polygonNorm: zone.polygonNorm,
+            status: "despejado",
+            description: `Zona peatonal despejada`
+          });
+        }
+        break;
+      }
+
+      default: {
+        // Custom or generic zone
+        const isOccupied = matchingPersonDets.length > 0;
+        if (isOccupied) {
+          matchingPersonDets.forEach((pDet, pIdx) => {
+            quadrants.push({
+              id: `persona_${zone.id}_${pIdx + 1}`,
+              zoneId: zone.id,
+              label: `Presencia en ${zone.name}`,
+              category: zone.category || "custom",
+              type: zoneType,
+              color: zoneColor || "#10B981",
+              confidence: pDet.score,
+              box: pDet.box,
+              status: "ocupada",
+              description: `Persona detectada en ${zone.name}`
+            });
+          });
+        }
+        quadrants.push({
+          id: zone.id,
+          label: zone.name || zone.id,
+          category: zone.category || "custom",
+          type: zoneType,
+          color: zoneColor || "#10B981",
+          box: zonePixelBox,
+          polygonNorm: zone.polygonNorm,
+          status: isOccupied ? "ocupada" : "disponible",
+          description: isOccupied ? `Zona ${zone.name} ocupada` : `Zona ${zone.name} disponible`
+        });
+        break;
       }
     }
   }
 
-  // Register Barber Chair 1
-  quadrants.push({
-    id: cfgSilla1.id || "silla_barbero_puesto1",
-    label: cfgSilla1.name || "Silla de barbero",
-    category: "silla_barbero",
-    color: cfgSilla1.color || "#FFD700", // Gold
-    box: silla1Box,
-    status: silla1Ocupada ? "ocupada" : "disponible",
-    description: "Sillón hidráulico de servicio principal"
-  });
-
-  // If client seated detected or chair occupied with human presence
-  if (silla1Ocupada) {
-    const clientBox = clienteSilla1Det ? clienteSilla1Det.box : [silla1Box[0] + 18, silla1Box[1] + 15, silla1Box[2], silla1Box[3] - 10];
-    quadrants.push({
-      id: "cliente_sentado",
-      label: "Cliente sentado",
-      category: "cliente",
-      color: "#32DC32", // Green
-      confidence: clienteSilla1Det ? clienteSilla1Det.score : 0.85,
-      box: clientBox,
-      status: "en_corte",
-      description: "Cliente sentado en la silla de barbero"
-    });
-  }
-
-  // Register Barber Chair 2 (Foreground)
-  quadrants.push({
-    id: cfgSilla2.id || "silla_barbero_puesto2",
-    label: cfgSilla2.name || "Silla de barbero (Frente)",
-    category: "silla_barbero",
-    color: cfgSilla2.color || "#FFD700",
-    box: silla2Box,
-    status: "disponible",
-    description: "Cabezal y sillón de barbero en primer plano"
-  });
-
-  // Register Waiting Chair / Bench
-  quadrants.push({
-    id: cfgEspera.id || "silla_espera",
-    label: cfgEspera.name || "Silla de espera",
-    category: "silla_espera",
-    color: cfgEspera.color || "#D250DC", // Purple
-    box: esperaBox,
-    status: "disponible",
-    description: "Banca para clientes en espera"
+  // Any detected person outside all defined zones
+  detections.forEach((det, idx) => {
+    if (det.class === "person" && !matchedPersonIndices.has(idx)) {
+      quadrants.push({
+        id: `persona_sin_zona_${idx + 1}`,
+        label: "Persona fuera de zonas",
+        category: "otro",
+        color: "#6C757D",
+        confidence: det.score,
+        box: det.box,
+        status: "detectada",
+        description: "Persona en área no delimitada"
+      });
+    }
   });
 
   return quadrants;
@@ -361,8 +592,16 @@ export async function generateAnnotatedImage(imageBuffer, quadrants, width, heig
     const color = q.color || "#00FF00";
     const label = q.label;
 
-    // Semi-transparent box fill
-    svgOverlays += `<rect x="${x1}" y="${y1}" width="${w}" height="${h}" fill="${color}" fill-opacity="0.20" stroke="${color}" stroke-width="3" rx="4" />`;
+    // Draw polygon if polygonNorm exists, otherwise fallback to bounding rect
+    if (q.polygonNorm && Array.isArray(q.polygonNorm) && q.polygonNorm.length >= 3) {
+      const pts = q.polygonNorm.map(p => {
+        const [px, py] = toPointTuple(p);
+        return `${Math.round(px * width)},${Math.round(py * height)}`;
+      }).join(" ");
+      svgOverlays += `<polygon points="${pts}" fill="${color}" fill-opacity="0.22" stroke="${color}" stroke-width="3" stroke-linejoin="round" />`;
+    } else {
+      svgOverlays += `<rect x="${x1}" y="${y1}" width="${w}" height="${h}" fill="${color}" fill-opacity="0.20" stroke="${color}" stroke-width="3" rx="4" />`;
+    }
 
     // Text label badge calculation
     const badgeW = Math.max(130, label.length * 9 + 18);
@@ -408,6 +647,7 @@ export async function detectObjectsAndQuadrants(imageBuffer, options = {}) {
   const confThreshold = typeof options === "number" ? options : (options.confThreshold || 0.18);
   const forceRecheck = typeof options === "object" && options.forceRecheck === true;
   const changeThreshold = typeof options === "object" && options.changeThreshold ? options.changeThreshold : 2.5;
+  const shouldAnnotate = typeof options === "object" && options.generateAnnotated !== undefined ? options.generateAnnotated : false;
 
   // Frame differencing gate: Compare against previous frame (~2ms)
   const diff = await checkFrameDifference(imageBuffer, changeThreshold);
@@ -476,12 +716,20 @@ export async function detectObjectsAndQuadrants(imageBuffer, options = {}) {
   // Map to barber shop quadrants
   const quadrants = mapDetectionsToBarbershopQuadrants(detections, origWidth, origHeight, options.quadrants);
 
-  // Extract cropped images for seated clients
+  // Extract cropped images for people (seated clients and active barber)
   const clientCrops = [];
-  const clientQuadrants = quadrants.filter(q => q.category === "cliente" || q.id.startsWith("cliente_sentado"));
+  const personQuadrants = quadrants.filter(q => 
+    q.category === "cliente" || 
+    q.category === "personal" || 
+    q.id.startsWith("cliente_sentado") || 
+    q.id.startsWith("cliente_espera") || 
+    q.id.startsWith("barbero_") || 
+    q.id.startsWith("staff_")
+  );
 
-  for (let i = 0; i < clientQuadrants.length; i++) {
-    const q = clientQuadrants[i];
+  for (let i = 0; i < personQuadrants.length; i++) {
+    const q = personQuadrants[i];
+    const isStaffZone = q.category === "personal" || q.id.startsWith("barbero_");
     const [x1, y1, x2, y2] = q.box;
     const cropW = Math.max(10, Math.min(origWidth - x1, x2 - x1));
     const cropH = Math.max(10, Math.min(origHeight - y1, y2 - y1));
@@ -492,16 +740,20 @@ export async function detectObjectsAndQuadrants(imageBuffer, options = {}) {
       .toBuffer();
 
     clientCrops.push({
-      id: `client_${i + 1}`,
+      id: isStaffZone ? `staff_${i + 1}` : `client_${i + 1}`,
+      role: isStaffZone ? "staff" : "client",
+      isStaffHint: isStaffZone,
       box: q.box,
       confidence: q.confidence || 0.85,
-      status: q.status || "en_corte",
+      status: q.status || (isStaffZone ? "en_servicio" : "en_corte"),
       buffer: cropBuffer
     });
   }
 
-  // Generate annotated image
-  const annotatedBuffer = await generateAnnotatedImage(imageBuffer, quadrants, origWidth, origHeight);
+  // Generate annotated image only if explicitly requested (saves CPU and eliminates duplicate storage)
+  const annotatedBuffer = shouldAnnotate
+    ? await generateAnnotatedImage(imageBuffer, quadrants, origWidth, origHeight)
+    : null;
 
   lastDetectionResult = {
     inferenceMs,
