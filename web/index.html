@@ -7,9 +7,9 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=2">
+  <link rel="stylesheet" href="style.css?v=3">
   <!-- Firebase SDKs via CDN -->
-  <script type="module" src="app.js?v=2"></script>
+  <script type="module" src="app.js?v=3"></script>
 </head>
 <body>
   <div class="app-container">
@@ -84,10 +84,10 @@
         <table class="data-table">
           <thead>
             <tr>
-              <th style="width: 130px;">Miniatura</th>
+              <th style="width: 140px;">Miniatura (Cliente)</th>
               <th style="width: 180px;">Fecha y Hora</th>
-              <th>Cuadrantes y Clientes Detectados</th>
-              <th style="width: 120px;">Acciones</th>
+              <th>Cuadrantes y Análisis</th>
+              <th style="width: 130px;">Acciones</th>
             </tr>
           </thead>
           <tbody id="photosTableBody">
@@ -103,20 +103,57 @@
     </section>
   </div>
 
-  <!-- Image Modal Viewer -->
+  <!-- Image Modal Viewer (Dual: Original y Con Marcos al costado) -->
   <div id="imageModal" class="modal hidden">
     <div class="modal-overlay"></div>
     <div class="modal-content">
-      <button id="closeModalBtn" class="modal-close">&times;</button>
-      <img id="modalImage" src="" alt="Fotograma en alta resolución">
-      <div class="modal-info">
+      <button id="closeModalBtn" class="modal-close" title="Cerrar modal">&times;</button>
+      
+      <div class="modal-header-bar">
+        <h3 id="modalTitle" class="modal-title">Detalle de Captura y Detección</h3>
         <div id="modalTimestamp" class="modal-time"></div>
-        <div id="modalAnalysis" class="modal-text"></div>
-        <div id="modalClientsContainer" class="modal-clients hidden" style="margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border);">
-          <div style="font-size: 0.80rem; font-weight: 600; color: #32DC32; text-transform: uppercase; margin-bottom: 8px;">
-            ✂️ Clientes Sentados Extraídos:
+      </div>
+
+      <div class="modal-body">
+        <!-- Dual Comparison: Original y Con Marcos al costado -->
+        <div class="modal-comparison-grid">
+          <div class="modal-image-pane">
+            <div class="pane-header">
+              <span class="pane-tag">📷 Foto Original</span>
+              <a id="modalOriginalLink" href="#" target="_blank" rel="noopener noreferrer" class="pane-link" title="Abrir imagen original completa">Ver HD ↗</a>
+            </div>
+            <div class="image-wrapper">
+              <div id="modalOriginalLoading" class="image-loading-placeholder">
+                <div class="spinner-small"></div>
+                <span>Cargando original...</span>
+              </div>
+              <img id="modalOriginalImage" class="hidden" src="" alt="Foto original capturada" />
+            </div>
           </div>
-          <div id="modalClientsList" style="display: flex; gap: 12px; flex-wrap: wrap;"></div>
+
+          <div class="modal-image-pane">
+            <div class="pane-header">
+              <span class="pane-tag annotated">🎯 Foto con Marcos (ML)</span>
+              <a id="modalAnnotatedLink" href="#" target="_blank" rel="noopener noreferrer" class="pane-link" title="Abrir imagen con marcos completa">Ver HD ↗</a>
+            </div>
+            <div class="image-wrapper">
+              <div id="modalAnnotatedLoading" class="image-loading-placeholder">
+                <div class="spinner-small"></div>
+                <span>Cargando foto con marcos...</span>
+              </div>
+              <img id="modalAnnotatedImage" class="hidden" src="" alt="Foto con marcos y detección" />
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-info">
+          <div id="modalAnalysis" class="modal-text"></div>
+          <div id="modalClientsContainer" class="modal-clients hidden" style="margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border);">
+            <div style="font-size: 0.80rem; font-weight: 600; color: #32DC32; text-transform: uppercase; margin-bottom: 8px;">
+              ✂️ Clientes Sentados Extraídos:
+            </div>
+            <div id="modalClientsList" style="display: flex; gap: 12px; flex-wrap: wrap;"></div>
+          </div>
         </div>
       </div>
     </div>

@@ -52,11 +52,16 @@ const photoCountBadge = document.getElementById("photoCount");
 // Modal Elements
 const imageModal = document.getElementById("imageModal");
 const closeModalBtn = document.getElementById("closeModalBtn");
-const modalImage = document.getElementById("modalImage");
 const modalTimestamp = document.getElementById("modalTimestamp");
 const modalAnalysis = document.getElementById("modalAnalysis");
 const modalClientsContainer = document.getElementById("modalClientsContainer");
 const modalClientsList = document.getElementById("modalClientsList");
+const modalOriginalImage = document.getElementById("modalOriginalImage");
+const modalOriginalLoading = document.getElementById("modalOriginalLoading");
+const modalOriginalLink = document.getElementById("modalOriginalLink");
+const modalAnnotatedImage = document.getElementById("modalAnnotatedImage");
+const modalAnnotatedLoading = document.getElementById("modalAnnotatedLoading");
+const modalAnnotatedLink = document.getElementById("modalAnnotatedLink");
 
 /**
  * Format timestamp into local Spanish readable format
@@ -227,17 +232,55 @@ async function renderTableRows(docs) {
       `</div>`;
     }
 
-    // Render client crop preview chips if present
+    const clients = (Array.isArray(docData.clients) && docData.clients.length > 0) ? docData.clients : [];
+
+    // Thumbnail column: client fragment, or if no client, DO NOT place photo
+    let thumbCellHtml = "";
+    if (clients.length === 0) {
+      thumbCellHtml = `
+        <div class="no-client-wrap">
+          <span class="no-client-badge" title="No se detectó cliente sentado en este fotograma">
+            <span class="no-client-icon">🚫</span> Sin cliente
+          </span>
+        </div>
+      `;
+    } else if (clients.length === 1) {
+      thumbCellHtml = `
+        <div class="client-thumb-single-wrap" id="client-thumb-wrap-${index}-0" title="Ver detalle de captura">
+          <div class="thumbnail-placeholder" id="client-thumb-load-${index}-0">
+            <div class="spinner-small"></div>
+          </div>
+          <img id="client-thumb-img-${index}-0" class="hidden client-thumb-img" alt="Fragmento de cliente sentado" />
+          <span class="client-thumb-label">👤 Cliente</span>
+        </div>
+      `;
+    } else {
+      // Multiple seated clients detected
+      thumbCellHtml = `
+        <div class="client-thumbs-multi-wrap" title="Ver detalle de captura">
+          ${clients.map((c, cIdx) => `
+            <div class="client-thumb-multi-item" id="client-thumb-wrap-${index}-${cIdx}" title="Cliente #${cIdx + 1}">
+              <div class="thumbnail-placeholder" id="client-thumb-load-${index}-${cIdx}">
+                <div class="spinner-small"></div>
+              </div>
+              <img id="client-thumb-img-${index}-${cIdx}" class="hidden client-thumb-img" alt="Cliente #${cIdx + 1}" />
+              <span class="client-thumb-sublabel">#${cIdx + 1}</span>
+            </div>
+          `).join("")}
+        </div>
+      `;
+    }
+
+    // Render client crop preview chips in analysis cell if present
     let clientChipsHtml = "";
-    if (docData.clients && Array.isArray(docData.clients) && docData.clients.length > 0) {
+    if (clients.length > 0) {
       clientChipsHtml = `
         <div class="clients-container" style="display: flex; align-items: center; gap: 8px; margin-top: 8px;">
-          <span style="font-size: 0.75rem; color: #32DC32; font-weight: 600;">👤 Cliente(s) en sillón:</span>
+          <span style="font-size: 0.75rem; color: #32DC32; font-weight: 600;">👤 ${clients.length === 1 ? 'Cliente detectado' : `${clients.length} clientes detectados`}:</span>
           <div style="display: flex; gap: 6px; flex-wrap: wrap;">
-            ${docData.clients.map((c, cIdx) => `
-              <div class="client-chip" style="display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px; background: rgba(50, 220, 50, 0.12); border: 1px solid rgba(50, 220, 50, 0.35); border-radius: 6px;">
-                <img id="thumb-client-${index}-${cIdx}" class="hidden" style="width: 28px; height: 28px; object-fit: cover; border-radius: 4px; border: 1px solid #32DC32; cursor: pointer;" alt="Cliente sentado" />
-                <span style="font-size: 0.70rem; color: #32DC32; font-weight: 600;">Cliente #${cIdx + 1}</span>
+            ${clients.map((c, cIdx) => `
+              <div class="client-chip" style="display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; background: rgba(50, 220, 50, 0.12); border: 1px solid rgba(50, 220, 50, 0.35); border-radius: 6px;">
+                <span style="font-size: 0.70rem; color: #32DC32; font-weight: 600;">Cliente #${cIdx + 1} (${escapeHtml(c.status || "en_corte")})</span>
               </div>
             `).join("")}
           </div>
@@ -245,17 +288,10 @@ async function renderTableRows(docs) {
       `;
     }
 
-    const storagePath = docData.annotatedStoragePath || docData.imageStoragePath || "";
-
     return `
-      <tr data-id="${docData.id}" data-path="${storagePath}">
+      <tr data-id="${docData.id}">
         <td>
-          <div class="thumbnail-wrap" id="thumb-wrap-${index}">
-            <div class="thumbnail-placeholder" id="thumb-load-${index}">
-              <div class="spinner-small"></div>
-            </div>
-            <img id="thumb-img-${index}" class="hidden" alt="Miniatura" />
-          </div>
+          ${thumbCellHtml}
         </td>
         <td>
           <div class="timestamp-cell">${dateStr}</div>
@@ -264,8 +300,8 @@ async function renderTableRows(docs) {
           <div class="analysis-cell">${analysisText}${mlTagsHtml}${clientChipsHtml}${promptUsed}</div>
         </td>
         <td>
-          <button class="btn btn-secondary view-btn" style="padding: 6px 10px; font-size: 0.75rem;" data-index="${index}">
-            Ver HD
+          <button class="btn btn-secondary view-btn" style="padding: 6px 12px; font-size: 0.75rem;" data-index="${index}">
+            Ver Detalle
           </button>
         </td>
       </tr>
@@ -274,73 +310,130 @@ async function renderTableRows(docs) {
 
   photosTableBody.innerHTML = rowsHtml;
 
-  // Resolve images in parallel using Firebase Storage Client SDK
-  docs.forEach(async (docData, index) => {
-    const imgEl = document.getElementById(`thumb-img-${index}`);
-    const loadEl = document.getElementById(`thumb-load-${index}`);
-    const wrapEl = document.getElementById(`thumb-wrap-${index}`);
+  // Asynchronously resolve client crop thumbnails and attach modal triggers
+  docs.forEach((docData, index) => {
+    const clients = (Array.isArray(docData.clients) && docData.clients.length > 0) ? docData.clients : [];
 
-    const displayPath = docData.annotatedStoragePath || docData.imageStoragePath;
-    if (!imgEl || !displayPath) return;
+    // Resolve client crop thumbnails if any
+    clients.forEach(async (c, cIdx) => {
+      const imgEl = document.getElementById(`client-thumb-img-${index}-${cIdx}`);
+      const loadEl = document.getElementById(`client-thumb-load-${index}-${cIdx}`);
+      const wrapEl = document.getElementById(`client-thumb-wrap-${index}-${cIdx}`);
 
-    const url = await resolveStorageUrl(displayPath);
-    if (url) {
-      imgEl.src = url;
-      imgEl.onload = () => {
-        loadEl?.classList.add("hidden");
-        imgEl.classList.remove("hidden");
-      };
-      
-      const openModalHandler = () => {
-        openModal(url, formatDateTime(docData.timestamp || docData.createdAt, docData.epoch), docData.analysis, docData.promptUsed, docData.clients || []);
-      };
-
-      wrapEl?.addEventListener("click", openModalHandler);
-      
-      const viewBtn = document.querySelector(`.view-btn[data-index="${index}"]`);
-      viewBtn?.addEventListener("click", openModalHandler);
-    } else {
-      if (loadEl) loadEl.innerHTML = `<span style="font-size: 0.65rem; color: var(--danger)">Error</span>`;
-    }
-
-    // Resolve client crop thumbnails
-    if (docData.clients && Array.isArray(docData.clients)) {
-      docData.clients.forEach(async (c, cIdx) => {
-        const clientImgEl = document.getElementById(`thumb-client-${index}-${cIdx}`);
-        if (clientImgEl && c.storagePath) {
-          const clientUrl = await resolveStorageUrl(c.storagePath);
-          if (clientUrl) {
-            clientImgEl.src = clientUrl;
-            clientImgEl.classList.remove("hidden");
-            clientImgEl.addEventListener("click", (e) => {
-              e.stopPropagation();
-              openModal(clientUrl, `${formatDateTime(docData.timestamp || docData.createdAt, docData.epoch)} • Cliente #${cIdx + 1}`, `Recorte de cliente sentado en sillón de barbero.`, null, []);
-            });
-          }
+      if (c.storagePath) {
+        const clientUrl = await resolveStorageUrl(c.storagePath);
+        if (clientUrl && imgEl) {
+          imgEl.src = clientUrl;
+          imgEl.onload = () => {
+            loadEl?.classList.add("hidden");
+            imgEl.classList.remove("hidden");
+          };
+          imgEl.onerror = () => {
+            if (loadEl) loadEl.innerHTML = `<span style="font-size: 0.65rem; color: var(--danger)">Error</span>`;
+          };
         }
+      }
+
+      wrapEl?.addEventListener("click", () => {
+        openModal(docData);
       });
-    }
+    });
+
+    // Attach "Ver Detalle" button handler
+    const viewBtn = document.querySelector(`.view-btn[data-index="${index}"]`);
+    viewBtn?.addEventListener("click", () => {
+      openModal(docData);
+    });
   });
 }
 
-async function openModal(imgUrl, dateStr, analysis, promptUsed, clients = []) {
-  modalImage.src = imgUrl;
+/**
+ * Open detail modal showing original photo and annotated photo side-by-side
+ */
+async function openModal(docData) {
+  const dateStr = formatDateTime(docData.timestamp || docData.createdAt, docData.epoch);
   modalTimestamp.textContent = `📅 ${dateStr}`;
-  modalAnalysis.innerHTML = `<strong>Detalles de Captura y ML:</strong><br>${escapeHtml(analysis)}` +
-    (promptUsed ? `<br><br><small class="text-muted">Prompt utilizado: "${escapeHtml(promptUsed)}"</small>` : "");
+  modalAnalysis.innerHTML = `<strong>Resumen y Cuadrantes ML:</strong><br>${escapeHtml(docData.analysis || "Sin análisis")}` +
+    (docData.promptUsed ? `<br><br><small class="text-muted">Prompt utilizado: "${escapeHtml(docData.promptUsed)}"</small>` : "");
 
-  // Populate client crops in modal if available
+  // Reset loading states for both panes
+  modalOriginalImage.classList.add("hidden");
+  modalOriginalImage.src = "";
+  modalOriginalLoading.classList.remove("hidden");
+  modalOriginalLoading.innerHTML = `<div class="spinner-small"></div> <span>Cargando original...</span>`;
+  modalOriginalLink.href = "#";
+
+  modalAnnotatedImage.classList.add("hidden");
+  modalAnnotatedImage.src = "";
+  modalAnnotatedLoading.classList.remove("hidden");
+  modalAnnotatedLoading.innerHTML = `<div class="spinner-small"></div> <span>Cargando foto con marcos...</span>`;
+  modalAnnotatedLink.href = "#";
+
+  imageModal.classList.remove("hidden");
+
+  // 1. Resolve and display Foto Original (Left side)
+  const originalPath = docData.imageStoragePath || docData.annotatedStoragePath;
+  if (originalPath) {
+    resolveStorageUrl(originalPath).then((url) => {
+      if (url) {
+        modalOriginalImage.src = url;
+        modalOriginalLink.href = url;
+        modalOriginalImage.onload = () => {
+          modalOriginalLoading.classList.add("hidden");
+          modalOriginalImage.classList.remove("hidden");
+        };
+        modalOriginalImage.onerror = () => {
+          modalOriginalLoading.innerHTML = `<span style="color: var(--danger)">Error al cargar</span>`;
+        };
+      } else {
+        modalOriginalLoading.innerHTML = `<span style="color: var(--danger)">No disponible</span>`;
+      }
+    });
+  } else {
+    modalOriginalLoading.innerHTML = `<span style="color: var(--text-muted)">Sin imagen original</span>`;
+  }
+
+  // 2. Resolve and display Foto con Marcos (Right side)
+  const annotatedPath = docData.annotatedStoragePath || docData.imageStoragePath;
+  if (annotatedPath) {
+    resolveStorageUrl(annotatedPath).then((url) => {
+      if (url) {
+        modalAnnotatedImage.src = url;
+        modalAnnotatedLink.href = url;
+        modalAnnotatedImage.onload = () => {
+          modalAnnotatedLoading.classList.add("hidden");
+          modalAnnotatedImage.classList.remove("hidden");
+        };
+        modalAnnotatedImage.onerror = () => {
+          modalAnnotatedLoading.innerHTML = `<span style="color: var(--danger)">Error al cargar</span>`;
+        };
+      } else {
+        modalAnnotatedLoading.innerHTML = `<span style="color: var(--danger)">No disponible</span>`;
+      }
+    });
+  } else {
+    modalAnnotatedLoading.innerHTML = `<span style="color: var(--text-muted)">Sin imagen con marcos</span>`;
+  }
+
+  // 3. Populate client crop cards if seated clients were detected
   if (modalClientsContainer && modalClientsList) {
-    if (clients && clients.length > 0) {
+    const clients = docData.clients || [];
+    if (clients.length > 0) {
       modalClientsContainer.classList.remove("hidden");
-      modalClientsList.innerHTML = `<div class="spinner-small"></div>`;
+      modalClientsList.innerHTML = `<div class="spinner-small"></div> <span>Cargando recortes...</span>`;
       
       const itemsHtml = await Promise.all(clients.map(async (c, i) => {
         const cUrl = c.storagePath ? await resolveStorageUrl(c.storagePath) : "";
         return `
-          <div style="text-align: center; background: #0f172a; padding: 8px; border-radius: 8px; border: 1px solid var(--border);">
-            <img src="${cUrl}" style="max-width: 140px; max-height: 140px; object-fit: cover; border-radius: 6px; border: 2px solid #32DC32;" alt="Cliente en corte" />
-            <div style="margin-top: 4px; font-size: 0.72rem; color: #32DC32; font-weight: 600;">Cliente #${i + 1}</div>
+          <div class="modal-client-card">
+            <a href="${cUrl}" target="_blank" rel="noopener noreferrer" title="Abrir recorte en tamaño completo">
+              <img src="${cUrl}" class="modal-client-crop-img" alt="Cliente #${i + 1}" />
+            </a>
+            <div class="modal-client-meta">
+              <span class="client-name">Cliente #${i + 1}</span>
+              <span class="client-status">${escapeHtml(c.status || "en_corte")}</span>
+              ${c.confidence ? `<span class="client-conf">${Math.round(c.confidence * 100)}% conf</span>` : ""}
+            </div>
           </div>
         `;
       }));
@@ -350,17 +443,22 @@ async function openModal(imgUrl, dateStr, analysis, promptUsed, clients = []) {
       modalClientsList.innerHTML = "";
     }
   }
-
-  imageModal.classList.remove("hidden");
 }
 
 function closeModal() {
   imageModal.classList.add("hidden");
-  modalImage.src = "";
+  modalOriginalImage.src = "";
+  modalAnnotatedImage.src = "";
 }
 
 closeModalBtn.addEventListener("click", closeModal);
 imageModal.querySelector(".modal-overlay").addEventListener("click", closeModal);
+
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !imageModal.classList.contains("hidden")) {
+    closeModal();
+  }
+});
 
 /**
  * 3. Handle "Capturar Ahora" button via Firestore Realtime Command
