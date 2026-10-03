@@ -20,6 +20,18 @@
   padding: 0;
 }
 
+/* Font Loading Gate: Prevents FOUT / Font Flash */
+html.fonts-loading body {
+  opacity: 0 !important;
+  visibility: hidden !important;
+}
+
+html.fonts-loaded body {
+  opacity: 1 !important;
+  visibility: visible !important;
+  transition: opacity 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
 body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   background-color: var(--bg-primary);
@@ -1270,6 +1282,43 @@ textarea#promptInput:focus {
   flex-wrap: wrap;
 }
 
+.btn-danger-outline {
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: #fca5a5;
+  cursor: pointer;
+  border-radius: 6px;
+  font-weight: 500;
+  transition: all 0.15s ease;
+}
+
+.btn-danger-outline:hover {
+  background: rgba(239, 68, 68, 0.25);
+  border-color: #ef4444;
+  color: #fff;
+}
+
+.calibrator-tools-wrap .btn.active {
+  background: #2563eb !important;
+  color: #ffffff !important;
+  border-color: #3b82f6 !important;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.4);
+}
+
+.calibrator-overlay.drawing-mode {
+  cursor: crosshair !important;
+}
+
+.q-draw-preview {
+  position: absolute;
+  box-sizing: border-box;
+  border: 2px dashed #38bdf8;
+  background-color: rgba(56, 189, 248, 0.25);
+  border-radius: 4px;
+  pointer-events: none;
+  z-index: 50;
+}
+
 .calibrator-layout {
   display: grid;
   grid-template-columns: 1fr 340px;
@@ -1563,6 +1612,161 @@ textarea#promptInput:focus {
 .q-delete-btn:hover {
   opacity: 1;
   background: rgba(239, 68, 68, 0.15);
+}
+
+/* Settings Modal Styles */
+.settings-modal-content {
+  max-width: 580px;
+  width: 95vw;
+}
+
+.settings-modal-body {
+  padding: 20px 24px;
+}
+
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.settings-field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.settings-label {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text-main);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-textarea {
+  background: #0f172a;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-main);
+  padding: 10px 14px;
+  font-size: 0.88rem;
+  font-family: inherit;
+  resize: vertical;
+  min-height: 70px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.settings-textarea:focus {
+  border-color: var(--border-focus);
+}
+
+.settings-input {
+  background: #0f172a;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-main);
+  padding: 9px 12px;
+  font-size: 0.9rem;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.settings-input:focus {
+  border-color: var(--border-focus);
+}
+
+.input-with-suffix {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.input-with-suffix .settings-input {
+  width: 100px;
+  font-weight: 600;
+}
+
+.input-suffix {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.time-range-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.time-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.time-label {
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.time-input {
+  width: 100%;
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 600;
+  color-scheme: dark;
+}
+
+.time-info-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.status-hours-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--success);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.status-hours-badge.closed {
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--warning);
+  border-color: rgba(245, 158, 11, 0.3);
+}
+
+.settings-help {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.settings-footer {
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+  margin-top: 8px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.settings-footer-actions {
+  display: flex;
+  gap: 10px;
+  margin-left: auto;
 }
 
 

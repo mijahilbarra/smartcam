@@ -6,10 +6,32 @@
   <title>IOT Camera Catcher - Skip Bigotes</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=8">
+  <!-- Font Loading Visibility Gate: Prevents FOUT / Font Flash by holding render until fonts load -->
+  <script>
+    (function() {
+      document.documentElement.classList.add("fonts-loading");
+      var fontTimeout = setTimeout(function() {
+        document.documentElement.classList.remove("fonts-loading");
+        document.documentElement.classList.add("fonts-loaded");
+      }, 1000);
+      if ("fonts" in document) {
+        document.fonts.ready.then(function() {
+          clearTimeout(fontTimeout);
+          document.documentElement.classList.remove("fonts-loading");
+          document.documentElement.classList.add("fonts-loaded");
+        }).catch(function() {
+          clearTimeout(fontTimeout);
+          document.documentElement.classList.remove("fonts-loading");
+          document.documentElement.classList.add("fonts-loaded");
+        });
+      }
+    })();
+  </script>
+  <link rel="stylesheet" href="style.css?v=10">
   <!-- Firebase SDKs via CDN -->
-  <script type="module" src="app.js?v=8"></script>
+  <script type="module" src="app.js?v=10"></script>
 </head>
 <body>
   <div class="app-container">
@@ -22,6 +44,10 @@
         </div>
       </div>
       <div class="header-actions" style="display: flex; gap: 10px; align-items: center;">
+        <button id="openSettingsBtn" class="btn btn-secondary" title="Configuración del capturador y horario de atención">
+          <span class="btn-icon">⚙️</span>
+          <span class="btn-text">Configuración</span>
+        </button>
         <button id="openCalibratorBtn" class="btn btn-secondary">
           <span class="btn-icon">📐</span>
           <span class="btn-text">Calibrar Cuadrantes</span>
@@ -32,44 +58,6 @@
         </button>
       </div>
     </header>
-
-    <!-- Dynamic Configuration Card (Prompt & Interval) -->
-    <section class="card prompt-card">
-      <div class="card-header">
-        <div class="card-title">
-          <span class="card-icon">⚙️</span>
-          <h2>Configuración del Capturador (Prompt e Intervalo)</h2>
-        </div>
-        <span class="tag">camera_catcher/prompt</span>
-      </div>
-      <div class="prompt-body">
-        <div class="config-grid" style="display: grid; grid-template-columns: 1fr auto; gap: 16px; align-items: end;">
-          <div class="config-field">
-            <label for="promptInput" class="help-text" style="display: block; font-weight: 500; margin-bottom: 6px;">
-              🧠 Instrucción para Gemini Vision:
-            </label>
-            <textarea id="promptInput" rows="2" placeholder="Escribe el prompt aquí..."></textarea>
-          </div>
-          <div class="config-field" style="min-width: 220px;">
-            <label for="intervalInput" class="help-text" style="display: block; font-weight: 500; margin-bottom: 6px;">
-              ⏱️ Intervalo de captura (minutos):
-            </label>
-            <div style="display: flex; align-items: center; gap: 8px;">
-              <input type="number" id="intervalInput" min="0.1" step="0.1" value="15" 
-                     style="width: 90px; padding: 10px 12px; background: #0f172a; border: 1px solid var(--border); border-radius: 8px; color: var(--text-main); font-size: 0.9rem; font-weight: 600;">
-              <span style="font-size: 0.85rem; color: var(--text-muted);">min</span>
-              <button id="savePromptBtn" class="btn btn-secondary" style="margin-left: auto;">
-                Guardar
-              </button>
-            </div>
-            <small class="text-muted" style="display: block; margin-top: 6px; font-size: 0.75rem;">
-              Ej: 15 (15 min), 0.5 (30 seg), 1 (1 min)
-            </small>
-          </div>
-        </div>
-        <div id="promptStatus" class="status-badge hidden"></div>
-      </div>
-    </section>
 
     <!-- Google Cloud Cost & Quotas Monitor Card -->
     <section class="card cost-card" id="costMonitorCard">
@@ -479,11 +467,14 @@
           <span class="tag">camera_catcher/quadrants</span>
         </div>
         <div class="calibrator-header-actions">
-          <button id="resetQuadrantsBtn" class="btn btn-secondary btn-sm" title="Restablecer los cuadrantes a los valores iniciales">
-            ↺ Restablecer Defaults
-          </button>
           <button id="addQuadrantBtn" class="btn btn-secondary btn-sm" title="Añadir una nueva zona personalizada">
-            + Añadir Cuadrante
+            ➕ Crear Zona
+          </button>
+          <button id="deleteSelectedQuadrantBtn" class="btn btn-danger-outline btn-sm" title="Eliminar la zona seleccionada">
+            🗑️ Eliminar Zona
+          </button>
+          <button id="resetQuadrantsBtn" class="btn btn-secondary btn-sm" title="Restablecer los cuadrantes a los valores iniciales">
+            ↺ Defaults
           </button>
           <button id="saveQuadrantsBtn" class="btn btn-primary btn-sm" title="Guardar cuadrantes en Firestore">
             💾 Guardar en Firebase
@@ -498,13 +489,22 @@
         <div class="calibrator-canvas-pane">
           <div class="calibrator-toolbar">
             <div class="photo-selector-wrap">
-              <label for="calibratorPhotoSelect">📷 Foto de referencia:</label>
+              <label for="calibratorPhotoSelect">📷 Foto:</label>
               <select id="calibratorPhotoSelect" class="calibrator-select">
                 <option value="latest">Última captura disponible</option>
               </select>
             </div>
-            <div class="calibrator-tip">
-              💡 <em>Arrastra cualquier caja para moverla, o tira de sus 4 esquinas para redimensionarla.</em>
+            <div class="calibrator-tools-wrap" style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-size: 0.78rem; color: var(--text-muted);">Modo:</span>
+              <button id="toolModeMove" class="btn btn-secondary btn-sm active" title="Mover y redimensionar cajas existentes">
+                ✋ Mover/Ajustar
+              </button>
+              <button id="toolModeDraw" class="btn btn-secondary btn-sm" title="Haz clic y arrastra sobre la imagen para dibujar una nueva zona">
+                ✏️ Dibujar con Ratón
+              </button>
+            </div>
+            <div class="calibrator-tip" id="calibratorTipText">
+              💡 <em>Arrastra cualquier caja para moverla o ajusta sus 4 esquinas.</em>
             </div>
           </div>
 
@@ -514,7 +514,7 @@
               <span>Cargando imagen para calibración...</span>
             </div>
             <div class="calibrator-stage" id="calibratorStage">
-              <img id="calibratorImg" src="" alt="Foto para calibración" crossorigin="anonymous" />
+              <img id="calibratorImg" src="" alt="Foto para calibración" />
               <div id="calibratorOverlay" class="calibrator-overlay"></div>
             </div>
           </div>
@@ -528,6 +528,78 @@
           </div>
           <div id="quadrantsList" class="quadrants-list">
             <!-- Dynamic quadrant list items -->
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings Configuration Modal -->
+  <div id="settingsModal" class="modal hidden">
+    <div class="modal-overlay" id="settingsOverlayBg"></div>
+    <div class="modal-content settings-modal-content">
+      <button id="closeSettingsBtn" class="modal-close" title="Cerrar configuración">&times;</button>
+      
+      <div class="modal-header-bar">
+        <div class="modal-header-left">
+          <h3 class="modal-title">⚙️ Configuración del Capturador</h3>
+          <span class="tag">camera_catcher/prompt</span>
+        </div>
+      </div>
+
+      <div class="modal-body settings-modal-body">
+        <div class="settings-form">
+          <!-- Prompt field -->
+          <div class="settings-field-group">
+            <label for="promptInput" class="settings-label">
+              🧠 Instrucción para Gemini Vision:
+            </label>
+            <textarea id="promptInput" rows="3" placeholder="Escribe el prompt aquí..." class="settings-textarea"></textarea>
+            <small class="settings-help">Instrucción analítica enviada al modelo de visión en cada captura periódica.</small>
+          </div>
+
+          <!-- Capture interval -->
+          <div class="settings-field-group">
+            <label for="intervalInput" class="settings-label">
+              ⏱️ Intervalo entre capturas:
+            </label>
+            <div class="input-with-suffix">
+              <input type="number" id="intervalInput" min="0.1" step="0.1" value="15" class="settings-input">
+              <span class="input-suffix">minutos</span>
+            </div>
+            <small class="settings-help">Ej: 15 (cada 15 min), 1 (cada 1 min), 0.5 (cada 30 seg).</small>
+          </div>
+
+          <!-- Working Hours: Apertura y Cierre -->
+          <div class="settings-field-group">
+            <label class="settings-label">
+              🕒 Horario de Atención de la Barbería (Apertura y Cierre):
+            </label>
+            <div class="time-range-grid">
+              <div class="time-field">
+                <span class="time-label">🚪 Hora de Apertura:</span>
+                <input type="time" id="workStartTimeInput" value="11:00" class="settings-input time-input">
+              </div>
+              <div class="time-field">
+                <span class="time-label">🔒 Hora de Cierre:</span>
+                <input type="time" id="workEndTimeInput" value="23:00" class="settings-input time-input">
+              </div>
+            </div>
+            <div class="time-info-row">
+              <small class="settings-help">Zona horaria: <strong>America/Lima (UTC-5)</strong>. Fuera de este rango, las capturas automáticas se suspenden.</small>
+              <span id="workingHoursStatusBadge" class="status-hours-badge">Calculando...</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-footer">
+          <div id="promptStatus" class="status-badge hidden"></div>
+          <div class="settings-footer-actions">
+            <button id="cancelSettingsBtn" class="btn btn-secondary">Cancelar</button>
+            <button id="savePromptBtn" class="btn btn-primary">
+              <span class="btn-icon">💾</span>
+              <span class="btn-text">Guardar Configuración</span>
+            </button>
           </div>
         </div>
       </div>

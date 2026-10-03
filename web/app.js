@@ -48,6 +48,16 @@ const promptStatus = document.getElementById("promptStatus");
 const captureBtn = document.getElementById("captureBtn");
 const photosTableBody = document.getElementById("photosTableBody");
 
+// Settings Modal Elements
+const openSettingsBtn = document.getElementById("openSettingsBtn");
+const settingsModal = document.getElementById("settingsModal");
+const closeSettingsBtn = document.getElementById("closeSettingsBtn");
+const cancelSettingsBtn = document.getElementById("cancelSettingsBtn");
+const settingsOverlayBg = document.getElementById("settingsOverlayBg");
+const workStartTimeInput = document.getElementById("workStartTimeInput");
+const workEndTimeInput = document.getElementById("workEndTimeInput");
+const workingHoursStatusBadge = document.getElementById("workingHoursStatusBadge");
+
 // Pagination State & Elements
 let allDocs = [];
 let currentPage = 1;
@@ -128,7 +138,51 @@ async function resolveStorageUrl(imageStoragePath) {
 }
 
 /**
- * 1. Listen and update dynamic prompt & interval from camera_catcher/prompt
+ * Calculate if current Lima time is within working hours and update status badge
+ */
+function updateWorkingHoursStatus(startStr = "11:00", endStr = "23:00") {
+  if (!workingHoursStatusBadge) return;
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/Lima",
+      hour: "numeric",
+      minute: "numeric",
+      hour12: false
+    }).formatToParts(new Date());
+
+    let hour = 0, minute = 0;
+    for (const p of parts) {
+      if (p.type === "hour") hour = parseInt(p.value, 10);
+      if (p.type === "minute") minute = parseInt(p.value, 10);
+    }
+    const currentMins = hour * 60 + minute;
+
+    const [sH, sM] = String(startStr || "11:00").split(":").map(Number);
+    const [eH, eM] = String(endStr || "23:00").split(":").map(Number);
+    const startMins = sH * 60 + (sM || 0);
+    const endMins = eH * 60 + (eM || 0);
+
+    let isOpen = false;
+    if (startMins <= endMins) {
+      isOpen = currentMins >= startMins && currentMins < endMins;
+    } else {
+      isOpen = currentMins >= startMins || currentMins < endMins;
+    }
+
+    if (isOpen) {
+      workingHoursStatusBadge.className = "status-hours-badge";
+      workingHoursStatusBadge.textContent = "🟢 Dentro de horario de atención (Abierto)";
+    } else {
+      workingHoursStatusBadge.className = "status-hours-badge closed";
+      workingHoursStatusBadge.textContent = "🌙 Fuera de horario de atención (Cerrado)";
+    }
+  } catch (err) {
+    console.warn("[WorkingHours] Error evaluando estado de horario:", err);
+  }
+}
+
+/**
+ * 1. Listen and update dynamic prompt, interval & working hours from camera_catcher/prompt
  */
 function initPromptListener() {
   const promptDocRef = doc(db, "camera_catcher", "prompt");
@@ -140,6 +194,14 @@ function initPromptListener() {
       if (intervalInput) {
         intervalInput.value = data?.intervalMinutes !== undefined ? data.intervalMinutes : 15;
       }
+      if (workStartTimeInput) {
+        workStartTimeInput.value = data?.workStartTime || data?.workStart || "11:00";
+      }
+      if (workEndTimeInput) {
+        workEndTimeInput.value = data?.workEndTime || data?.workEnd || "23:00";
+      }
+      updateWorkingHoursStatus(workStartTimeInput?.value, workEndTimeInput?.value);
+
       if (data?.workStartTime && data?.workEndTime) {
         const [sH, sM] = data.workStartTime.split(":").map(Number);
         const [eH, eM] = data.workEndTime.split(":").map(Number);
@@ -150,10 +212,16 @@ function initPromptListener() {
     } else {
       promptInput.value = "Describe what do you see in the image";
       if (intervalInput) intervalInput.value = 15;
+      if (workStartTimeInput) workStartTimeInput.value = "11:00";
+      if (workEndTimeInput) workEndTimeInput.value = "23:00";
+      updateWorkingHoursStatus("11:00", "23:00");
       // Auto initialize if missing
       setDoc(promptDocRef, { 
         default: "Describe what do you see in the image",
-        intervalMinutes: 15
+        intervalMinutes: 15,
+        workStartTime: "11:00",
+        workEndTime: "23:00",
+        timezone: "America/Lima"
       }, { merge: true });
       updateCostMetrics(allDocs.length);
     }
@@ -168,23 +236,52 @@ function initPromptListener() {
     const intervalVal = parseFloat(intervalInput?.value);
     const validInterval = (!isNaN(intervalVal) && intervalVal > 0) ? intervalVal : 15;
 
+    const startTimeVal = workStartTimeInput?.value || "11:00";
+    const endTimeVal = workEndTimeInput?.value || "23:00";
+
     savePromptBtn.disabled = true;
     savePromptBtn.innerText = "Guardando...";
     try {
       await setDoc(promptDocRef, { 
         default: newPrompt,
         intervalMinutes: validInterval,
+        workStartTime: startTimeVal,
+        workEndTime: endTimeVal,
+        timezone: "America/Lima",
         updatedAt: new Date().toISOString()
       }, { merge: true });
-      showStatus(`¡Configuración guardada! (Intervalo: ${validInterval} min)`, "success");
+      showStatus(`¡Configuración guardada! (Horario: ${startTimeVal} - ${endTimeVal}, Intervalo: ${validInterval} min)`, "success");
+      updateWorkingHoursStatus(startTimeVal, endTimeVal);
       updateCostMetrics(allDocs.length);
     } catch (err) {
       console.error("[Firestore] Error saving config:", err);
       showStatus("Error al guardar: " + err.message, "error");
     } finally {
       savePromptBtn.disabled = false;
-      savePromptBtn.innerText = "Guardar";
+      savePromptBtn.innerText = "Guardar Configuración";
     }
+  });
+}
+
+function initSettingsModal() {
+  openSettingsBtn?.addEventListener("click", () => {
+    settingsModal?.classList.remove("hidden");
+    updateWorkingHoursStatus(workStartTimeInput?.value, workEndTimeInput?.value);
+  });
+
+  const closeSettings = () => {
+    settingsModal?.classList.add("hidden");
+  };
+
+  closeSettingsBtn?.addEventListener("click", closeSettings);
+  cancelSettingsBtn?.addEventListener("click", closeSettings);
+  settingsOverlayBg?.addEventListener("click", closeSettings);
+
+  workStartTimeInput?.addEventListener("change", () => {
+    updateWorkingHoursStatus(workStartTimeInput?.value, workEndTimeInput?.value);
+  });
+  workEndTimeInput?.addEventListener("change", () => {
+    updateWorkingHoursStatus(workStartTimeInput?.value, workEndTimeInput?.value);
   });
 }
 
@@ -582,8 +679,11 @@ closeModalBtn.addEventListener("click", closeModal);
 imageModal.querySelector(".modal-overlay").addEventListener("click", closeModal);
 
 window.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !imageModal.classList.contains("hidden")) {
-    closeModal();
+  if (e.key === "Escape") {
+    if (!imageModal.classList.contains("hidden")) closeModal();
+    if (settingsModal && !settingsModal.classList.contains("hidden")) settingsModal.classList.add("hidden");
+    const calibratorModal = document.getElementById("calibratorModal");
+    if (calibratorModal && !calibratorModal.classList.contains("hidden")) calibratorModal.classList.add("hidden");
   }
 });
 
@@ -991,7 +1091,11 @@ const closeCalibratorBtn = document.getElementById("closeCalibratorBtn");
 const calibratorOverlayBg = document.getElementById("calibratorOverlayBg");
 const resetQuadrantsBtn = document.getElementById("resetQuadrantsBtn");
 const addQuadrantBtn = document.getElementById("addQuadrantBtn");
+const deleteSelectedQuadrantBtn = document.getElementById("deleteSelectedQuadrantBtn");
 const saveQuadrantsBtn = document.getElementById("saveQuadrantsBtn");
+const toolModeMove = document.getElementById("toolModeMove");
+const toolModeDraw = document.getElementById("toolModeDraw");
+const calibratorTipText = document.getElementById("calibratorTipText");
 const calibratorStatusBadge = document.getElementById("calibratorStatusBadge");
 const calibratorPhotoSelect = document.getElementById("calibratorPhotoSelect");
 const calibratorLoading = document.getElementById("calibratorLoading");
@@ -999,6 +1103,10 @@ const calibratorImg = document.getElementById("calibratorImg");
 const calibratorOverlay = document.getElementById("calibratorOverlay");
 const quadrantsList = document.getElementById("quadrantsList");
 const quadrantCount = document.getElementById("quadrantCount");
+
+let currentToolMode = "move"; // 'move' | 'draw'
+let drawingContext = null;
+let drawPreviewEl = null;
 
 const DEFAULT_QUADRANTS = [
   {
@@ -1143,6 +1251,34 @@ async function loadCalibratorImage(targetDocId = null) {
   }
 }
 
+function setToolMode(mode) {
+  currentToolMode = mode;
+  if (toolModeMove) toolModeMove.classList.toggle("active", mode === "move");
+  if (toolModeDraw) toolModeDraw.classList.toggle("active", mode === "draw");
+  if (calibratorOverlay) calibratorOverlay.classList.toggle("drawing-mode", mode === "draw");
+  if (calibratorTipText) {
+    calibratorTipText.innerHTML = mode === "draw"
+      ? `✏️ <strong>Modo Dibujar activo:</strong> Haz clic y arrastra sobre la foto para crear la zona.`
+      : `💡 <em>Arrastra cualquier caja para moverla o ajusta sus 4 esquinas.</em>`;
+  }
+}
+
+function deleteQuadrant(idx) {
+  if (currentQuadrants.length <= 1) {
+    showCalibratorStatus("⚠️ Debe mantenerse al menos 1 zona definida.", "warn");
+    setTimeout(() => hideCalibratorStatus(), 3000);
+    return;
+  }
+  const removed = currentQuadrants.splice(idx, 1)[0];
+  if (selectedQuadrantIndex >= currentQuadrants.length) {
+    selectedQuadrantIndex = Math.max(0, currentQuadrants.length - 1);
+  }
+  renderQuadrantsSidebar();
+  renderBoxesOnStage();
+  showCalibratorStatus(`🗑️ Zona "${removed?.name || removed?.id}" eliminada. Pulsa "Guardar en Firebase" para persistir.`, "info");
+  setTimeout(() => hideCalibratorStatus(), 4000);
+}
+
 /**
  * Render list of quadrants in the sidebar
  */
@@ -1164,7 +1300,7 @@ function renderQuadrantsSidebar() {
           <input type="color" class="q-color-picker" value="${q.color || '#3b82f6'}" title="Cambiar color del cuadrante" />
           <input type="text" class="q-name-input" value="${q.name || q.id}" title="Editar nombre del cuadrante" />
         </div>
-        ${idx >= 5 ? `<button class="q-delete-btn" title="Eliminar este cuadrante">&times;</button>` : ''}
+        <button class="q-delete-btn" title="Eliminar esta zona" style="font-size: 0.95rem; cursor: pointer; padding: 2px 6px;">🗑️</button>
       </div>
       <div class="q-coords-row">
         <span>Y: <strong class="q-coord-pill">${ymin.toFixed(2)} - ${ymax.toFixed(2)}</strong></span>
@@ -1201,12 +1337,7 @@ function renderQuadrantsSidebar() {
     if (deleteBtn) {
       deleteBtn.addEventListener("click", (e) => {
         e.stopPropagation();
-        currentQuadrants.splice(idx, 1);
-        if (selectedQuadrantIndex >= currentQuadrants.length) {
-          selectedQuadrantIndex = Math.max(0, currentQuadrants.length - 1);
-        }
-        renderQuadrantsSidebar();
-        renderBoxesOnStage();
+        deleteQuadrant(idx);
       });
     }
 
@@ -1251,6 +1382,32 @@ function renderBoxesOnStage() {
   const stageW = calibratorImg.clientWidth;
   const stageH = calibratorImg.clientHeight;
 
+  // Drawing mode mousedown listener on overlay
+  calibratorOverlay.onmousedown = (e) => {
+    if (currentToolMode === "draw" || e.target === calibratorOverlay) {
+      e.preventDefault();
+      const rect = calibratorImg.getBoundingClientRect();
+      const startX = e.clientX - rect.left;
+      const startY = e.clientY - rect.top;
+
+      drawingContext = {
+        startX,
+        startY,
+        rect
+      };
+
+      if (!drawPreviewEl) {
+        drawPreviewEl = document.createElement("div");
+        drawPreviewEl.className = "q-draw-preview";
+      }
+      drawPreviewEl.style.left = `${startX}px`;
+      drawPreviewEl.style.top = `${startY}px`;
+      drawPreviewEl.style.width = "0px";
+      drawPreviewEl.style.height = "0px";
+      calibratorOverlay.appendChild(drawPreviewEl);
+    }
+  };
+
   currentQuadrants.forEach((q, idx) => {
     const [ymin, xmin, ymax, xmax] = q.boxNorm || [0, 0, 1, 1];
     const left = xmin * stageW;
@@ -1284,6 +1441,9 @@ function renderBoxesOnStage() {
 
     // Handle mousedown on box or resize handles
     box.addEventListener("mousedown", (e) => {
+      if (currentToolMode === "draw") {
+        return; // In draw mode, let the overlay trigger new rectangle drawing
+      }
       e.stopPropagation();
       e.preventDefault();
       selectedQuadrantIndex = idx;
@@ -1340,9 +1500,29 @@ function updateSidebarCoordDisplay(idx) {
 }
 
 /**
- * Setup Window Drag Listeners
+ * Setup Window Drag & Draw Listeners
  */
 window.addEventListener("mousemove", (e) => {
+  // 1. Drawing preview
+  if (drawingContext) {
+    const curX = Math.max(0, Math.min(drawingContext.rect.width, e.clientX - drawingContext.rect.left));
+    const curY = Math.max(0, Math.min(drawingContext.rect.height, e.clientY - drawingContext.rect.top));
+
+    const left = Math.min(drawingContext.startX, curX);
+    const top = Math.min(drawingContext.startY, curY);
+    const width = Math.abs(curX - drawingContext.startX);
+    const height = Math.abs(curY - drawingContext.startY);
+
+    if (drawPreviewEl) {
+      drawPreviewEl.style.left = `${left}px`;
+      drawPreviewEl.style.top = `${top}px`;
+      drawPreviewEl.style.width = `${width}px`;
+      drawPreviewEl.style.height = `${height}px`;
+    }
+    return;
+  }
+
+  // 2. Dragging/resizing existing boxes
   if (!dragContext) return;
   const dxNorm = (e.clientX - dragContext.startX) / dragContext.stageW;
   const dyNorm = (e.clientY - dragContext.startY) / dragContext.stageH;
@@ -1390,7 +1570,53 @@ window.addEventListener("mousemove", (e) => {
   updateSidebarCoordDisplay(dragContext.index);
 });
 
-window.addEventListener("mouseup", () => {
+window.addEventListener("mouseup", (e) => {
+  // 1. Commit drawn box
+  if (drawingContext) {
+    const stageW = drawingContext.rect.width;
+    const stageH = drawingContext.rect.height;
+    const curX = Math.max(0, Math.min(stageW, e.clientX - drawingContext.rect.left));
+    const curY = Math.max(0, Math.min(stageH, e.clientY - drawingContext.rect.top));
+
+    const left = Math.min(drawingContext.startX, curX);
+    const top = Math.min(drawingContext.startY, curY);
+    const width = Math.abs(curX - drawingContext.startX);
+    const height = Math.abs(curY - drawingContext.startY);
+
+    if (drawPreviewEl && drawPreviewEl.parentNode) {
+      drawPreviewEl.parentNode.removeChild(drawPreviewEl);
+    }
+
+    if (width > 20 && height > 20 && stageW > 0 && stageH > 0) {
+      const ymin = Number((top / stageH).toFixed(3));
+      const xmin = Number((left / stageW).toFixed(3));
+      const ymax = Number(((top + height) / stageH).toFixed(3));
+      const xmax = Number(((left + width) / stageW).toFixed(3));
+
+      const newId = `zona_personalizada_${Date.now().toString().slice(-4)}`;
+      const colors = ["#06b6d4", "#ec4899", "#8b5cf6", "#10b981", "#f97316", "#eab308"];
+      const randColor = colors[currentQuadrants.length % colors.length];
+
+      currentQuadrants.push({
+        id: newId,
+        name: `Zona ${currentQuadrants.length + 1}`,
+        type: "custom_zone",
+        color: randColor,
+        boxNorm: [ymin, xmin, ymax, xmax]
+      });
+
+      selectedQuadrantIndex = currentQuadrants.length - 1;
+      setToolMode("move");
+      renderQuadrantsSidebar();
+      renderBoxesOnStage();
+      showCalibratorStatus("✅ ¡Nueva zona trazada! Puedes renombrarla o ajustar sus límites.", "success");
+      setTimeout(() => hideCalibratorStatus(), 4000);
+    }
+    drawingContext = null;
+    return;
+  }
+
+  // 2. Clear box drag context
   if (dragContext) {
     dragContext = null;
   }
@@ -1458,11 +1684,26 @@ function initCalibratorUI() {
     });
   }
 
+  if (toolModeMove) {
+    toolModeMove.addEventListener("click", () => setToolMode("move"));
+  }
+
+  if (toolModeDraw) {
+    toolModeDraw.addEventListener("click", () => setToolMode("draw"));
+  }
+
+  if (deleteSelectedQuadrantBtn) {
+    deleteSelectedQuadrantBtn.addEventListener("click", () => {
+      deleteQuadrant(selectedQuadrantIndex);
+    });
+  }
+
   if (resetQuadrantsBtn) {
     resetQuadrantsBtn.addEventListener("click", () => {
       if (confirm("¿Estás seguro de restablecer todos los cuadrantes a los valores por defecto?")) {
         currentQuadrants = JSON.parse(JSON.stringify(DEFAULT_QUADRANTS));
         selectedQuadrantIndex = 0;
+        setToolMode("move");
         renderQuadrantsSidebar();
         renderBoxesOnStage();
         showCalibratorStatus("Valores restablecidos a defaults (pulsa Guardar para persistir en Firebase).", "info");
@@ -1473,7 +1714,7 @@ function initCalibratorUI() {
   if (addQuadrantBtn) {
     addQuadrantBtn.addEventListener("click", () => {
       const newId = `zona_personalizada_${Date.now().toString().slice(-4)}`;
-      const colors = ["#06b6d4", "#ec4899", "#8b5cf6", "#10b981", "#f97316"];
+      const colors = ["#06b6d4", "#ec4899", "#8b5cf6", "#10b981", "#f97316", "#eab308"];
       const randColor = colors[currentQuadrants.length % colors.length];
 
       const newQ = {
@@ -1486,9 +1727,10 @@ function initCalibratorUI() {
 
       currentQuadrants.push(newQ);
       selectedQuadrantIndex = currentQuadrants.length - 1;
+      setToolMode("move");
       renderQuadrantsSidebar();
       renderBoxesOnStage();
-      showCalibratorStatus("Nuevo cuadrante creado en el centro. Arrástralo a su posición.", "info");
+      showCalibratorStatus("➕ Nueva zona creada en el centro. Arrástrala a su posición o ajusta sus límites.", "info");
     });
   }
 
@@ -1520,6 +1762,7 @@ function initCalibratorUI() {
 }
 
 // Initialize
+initSettingsModal();
 initPromptListener();
 initPaginationListeners();
 initPhotosListener();
