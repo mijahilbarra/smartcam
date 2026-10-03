@@ -19,35 +19,35 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.VM_SSH_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H ${{ secrets.VM_HOST }} >> ~/.ssh/known_hosts
+          ssh-keyscan -H ${{ secrets.VM_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
 
       - name: Run Diagnostics on VM
         run: |
+          SSH_CMD="ssh -o StrictHostKeyChecking=accept-new ${{ secrets.VM_USER || 'deploy' }}@${{ secrets.VM_HOST }}"
+
           echo "=================================================="
           echo "=== 1. ESTADO DEL SERVICIO SYSTEMD ==="
           echo "=================================================="
-          ssh ${{ secrets.VM_USER || 'deploy' }}@${{ secrets.VM_HOST }} "
-            systemctl status camera-catcher.service --no-pager || true
-          "
+          $SSH_CMD "systemctl status camera-catcher.service --no-pager || true"
 
           echo "=================================================="
-          echo "=== 2. PROCESOS NODE Y DOCKER ACTIVOS ==="
+          echo "=== 2. PROCESOS NODE, DOCKER Y CONTENEDORES ==="
           echo "=================================================="
-          ssh ${{ secrets.VM_USER || 'deploy' }}@${{ secrets.VM_HOST }} "
+          $SSH_CMD "
             ps aux | grep -E 'node|neolink|docker' | grep -v grep || true
+            echo '--- Docker Containers ---'
+            docker ps -a 2>/dev/null || echo 'Sin permisos directos de docker CLI'
           "
 
           echo "=================================================="
           echo "=== 3. PRUEBA HEALTH CHECK LOCAL (Port 8085) ==="
           echo "=================================================="
-          ssh ${{ secrets.VM_USER || 'deploy' }}@${{ secrets.VM_HOST }} "
-            curl -sv http://127.0.0.1:8085/ || echo 'Fallo conectando al puerto 8085'
-          "
+          $SSH_CMD "curl -sv http://127.0.0.1:8085/ || echo 'Fallo conectando al puerto 8085'"
 
           echo "=================================================="
           echo "=== 4. TEST DE CARGA DE MODULOS EN SECO ==="
           echo "=================================================="
-          ssh ${{ secrets.VM_USER || 'deploy' }}@${{ secrets.VM_HOST }} "
+          $SSH_CMD "
             cd /opt/camera-catcher && node -e '
               import(\"./src/detector.js\").then(d => {
                 console.log(\"Detector import OK\");
@@ -58,18 +58,18 @@ jobs:
           "
 
           echo "=================================================="
-          echo "=== 5. ARCHIVOS DE LOG LOCALES (/tmp/daemon.log) ==="
+          echo "=== 5. ARCHIVOS DE LOG LOCALES (/opt/camera-catcher/daemon.log) ==="
           echo "=================================================="
-          ssh ${{ secrets.VM_USER || 'deploy' }}@${{ secrets.VM_HOST }} "
-            tail -n 100 /tmp/camera-catcher.log 2>/dev/null || \
-            tail -n 100 /opt/camera-catcher/daemon.log 2>/dev/null || \
+          $SSH_CMD "
+            tail -n ${{ inputs.lines || 100 }} /opt/camera-catcher/daemon.log 2>/dev/null || \
+            tail -n ${{ inputs.lines || 100 }} /tmp/camera-catcher.log 2>/dev/null || \
             echo 'No se encontraron archivos de log en disco'
           "
 
           echo "=================================================="
           echo "=== 6. JOURNALCTL DE SYSTEMD ==="
           echo "=================================================="
-          ssh ${{ secrets.VM_USER || 'deploy' }}@${{ secrets.VM_HOST }} "
+          $SSH_CMD "
             journalctl -u camera-catcher.service -n ${{ inputs.lines || 100 }} --no-pager 2>/dev/null || \
             sudo -n journalctl -u camera-catcher.service -n ${{ inputs.lines || 100 }} --no-pager 2>/dev/null || \
             echo 'Sin permisos para journalctl'

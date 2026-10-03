@@ -9,15 +9,25 @@ import { fileURLToPath } from "url";
 import { analyzeImageWithGemini } from "./gemini.js";
 import { detectObjectsAndQuadrants } from "./detector.js";
 
-// Tee all console logs to a local file for easy SSH/remote diagnosis
-const LOG_FILE = "/tmp/camera-catcher.log";
+const execPromise = util.promisify(exec);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const PROJECT_ROOT = path.resolve(__dirname, "..");
+const TOML_PATH = path.join(PROJECT_ROOT, "neolink.toml");
+const DAEMON_LOG_FILE = path.join(PROJECT_ROOT, "daemon.log");
+const TMP_LOG_FILE = "/tmp/camera-catcher.log";
+const DOCKER_CONTAINER_NAME = "neolink-capture";
+
+// Tee all console logs to local daemon.log and /tmp for easy SSH/remote diagnosis
 const origLog = console.log;
 const origErr = console.error;
 
 function appendToLog(prefix, args) {
   try {
     const text = args.map(a => typeof a === 'object' ? JSON.stringify(a) : a).join(' ');
-    fsSync.appendFileSync(LOG_FILE, `[${new Date().toISOString()}] ${prefix} ${text}\n`);
+    const logLine = `[${new Date().toISOString()}] ${prefix} ${text}\n`;
+    try { fsSync.appendFileSync(DAEMON_LOG_FILE, logLine); } catch (_) {}
+    try { fsSync.appendFileSync(TMP_LOG_FILE, logLine); } catch (_) {}
   } catch (_) {}
 }
 
@@ -30,12 +40,6 @@ console.error = (...args) => {
   origErr(...args);
   appendToLog("[ERROR]", args);
 };
-
-const execPromise = util.promisify(exec);
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const PROJECT_ROOT = path.resolve(__dirname, "..");
-const TOML_PATH = path.join(PROJECT_ROOT, "neolink.toml");
 
 // Initialize Firebase Admin (uses Application Default Credentials on GCP Compute Engine)
 admin.initializeApp({
@@ -93,6 +97,12 @@ async function getDynamicConfig() {
   }
 }
 
+async function killCaptureContainer() {
+  try {
+    await execPromise(`docker rm -f ${DOCKER_CONTAINER_NAME} 2>/dev/null || true`);
+  } catch (_) {}
+}
+
 /**
  * Execute single snapshot capture, upload, Gemini analysis and Firestore recording
  */
@@ -111,12 +121,17 @@ export async function executeCaptureProcess() {
     console.log(`\n========================================`);
     console.log(`[1/5] Ejecutando captura P2P (${docId})...`);
 
-    // Use Neolink docker container
-    const cmd = `docker run --rm -v "${TOML_PATH}":/etc/neolink.toml -v /tmp:/out quantumentangledandy/neolink:latest neolink image -c /etc/neolink.toml --use-stream -f /out/snap_${timestamp}.jpeg barberia`;
+    // Ensure any previously stuck capture container is forcibly removed before starting
+    await killCaptureContainer();
+
+    // Use Neolink docker container with explicit name and init to prevent zombie processes
+    const cmd = `docker run --rm --name ${DOCKER_CONTAINER_NAME} --init --stop-timeout 5 -v "${TOML_PATH}":/etc/neolink.toml -v /tmp:/out quantumentangledandy/neolink:latest neolink image -c /etc/neolink.toml --use-stream -f /out/snap_${timestamp}.jpeg barberia`;
 
     try {
       await execPromise(cmd, { timeout: 45000 });
     } catch (err) {
+      // Force kill container on error or timeout to release camera RTSP socket immediately
+      await killCaptureContainer();
       try {
         await fs.stat(localOutputPath);
       } catch (_) {
@@ -258,6 +273,7 @@ export async function executeCaptureProcess() {
     throw err;
   } finally {
     isCapturing = false;
+    await killCaptureContainer();
   }
 }
 
@@ -322,16 +338,42 @@ function setupCronTimer(minutes) {
   }, intervalMs);
 }
 
+// Clean up any zombie capture containers or processes left behind from previous runs
+async function cleanupZombies() {
+  try {
+    console.log("[Startup] Limpiando procesos y contenedores huérfanos de capturas anteriores...");
+    await execPromise(`docker rm -f ${DOCKER_CONTAINER_NAME} 2>/dev/null || true`);
+    await execPromise(`docker ps -q --filter ancestor=quantumentangledandy/neolink:latest | xargs -r docker rm -f 2>/dev/null || true`);
+    await execPromise(`pkill -9 -f 'neolink image' 2>/dev/null || true`);
+  } catch (err) {
+    console.warn("[Startup] Aviso durante limpieza inicial:", err.message);
+  }
+}
+
+// Initial status report to Firestore
+try {
+  db.doc("camera_catcher/status").set({
+    service: "camera-catcher",
+    status: "running",
+    startedAt: new Date().toISOString(),
+    pid: process.pid,
+    nodeVersion: process.version
+  }, { merge: true }).catch(() => {});
+} catch (_) {}
+
 // Initial scheduler setup
 setupCronTimer(15);
 
-// Execute initial capture 5 seconds after startup so we don't have to wait 15 minutes for the first photo
-setTimeout(() => {
-  console.log("[Startup] Ejecutando captura inicial automática de arranque...");
-  executeCaptureProcess().catch(err => {
-    console.error("[Startup] Error en captura inicial:", err.message);
-  });
-}, 5000);
+// Run cleanup immediately on startup, then trigger initial capture
+cleanupZombies().then(() => {
+  console.log("[Startup] Limpieza de procesos completada. Sistema listo.");
+  setTimeout(() => {
+    console.log("[Startup] Ejecutando captura inicial automática de arranque...");
+    executeCaptureProcess().catch(err => {
+      console.error("[Startup] Error en captura inicial:", err.message);
+    });
+  }, 4000);
+});
 
 // Listen to Firestore prompt & interval changes in real time
 db.doc("camera_catcher/prompt").onSnapshot((snapshot) => {
