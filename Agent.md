@@ -50,8 +50,22 @@ El repositorio utiliza GitHub Actions con filtros por ruta (`paths:`):
 | `web/**`, `firebase.json`, `storage.rules` | Firebase Hosting CDN + Storage Rules | `.github/workflows/deploy-hosting.yml` |
 | `agent/**`, `Agent.md`, `*.md` | Solo repositorio (sin despliegues automáticos) | N/A |
 
-> [!NOTE]
-> Modificar archivos de documentación no dispara pipelines de despliegue, protegiendo los recursos de cómputo y minutos de CI/CD.
+---
+
+### 4. Estándar de Tipografía e Iconografía Frontend (Google Fonts)
+> [!IMPORTANT]
+> **GOOGLE FONTS COMO ESTÁNDAR ÚNICO DE DISEÑO**:
+> El frontend del proyecto (`web/`) utiliza exclusivamente la infraestructura de **Google Fonts**:
+> 1. **Tipografía**:
+>    - `Inter` (sans-serif): Interfaz de usuario general, títulos, botones y textos descriptivos.
+>    - `JetBrains Mono` (monospace): Timestamps, IDs de documentos de Firestore, métricas técnicas y bitácoras.
+> 2. **Iconografía**:
+>    - **Google Fonts Material Symbols Outlined**: Es la biblioteca estándar y obligatoria de iconos vectoriales para toda la aplicación web.
+>    - **Regla Estricta**: Queda prohibido el uso de emojis sueltos de sistema operativo (`📸`, `⚙️`, `⚡`, `👤`, `📐`, etc.) como iconos representativos en la interfaz de usuario. Todo icono debe declararse mediante:
+>      ```html
+>      <span class="material-symbols-outlined">nombre_icono</span>
+>      ```
+>    - **Ventajas**: Garantiza consistencia visual idéntica sin distorsión entre sistemas operativos (macOS, Windows, Linux, iOS, Android), escalabilidad vectorial precisa y estilización reactiva con variables CSS del tema (`var(--primary)`, `var(--text-muted)`, etc.).
 
 ---
 

@@ -32,6 +32,82 @@ html.fonts-loaded body {
   transition: opacity 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+/* Google Fonts - Material Symbols Outlined Standard */
+.material-symbols-outlined {
+  font-family: 'Material Symbols Outlined';
+  font-weight: normal;
+  font-style: normal;
+  font-size: 20px;
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
+  word-wrap: normal;
+  direction: ltr;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: 'liga';
+  user-select: none;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+
+.brand-icon {
+  background: #1e293b;
+  padding: 10px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.brand-icon .material-symbols-outlined {
+  font-size: 2.1rem;
+  color: var(--primary);
+}
+
+.btn .material-symbols-outlined,
+.btn-icon.material-symbols-outlined {
+  font-size: 1.15rem;
+  line-height: 1;
+}
+
+.card-icon.material-symbols-outlined {
+  font-size: 1.3rem;
+  color: var(--primary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tab-icon.material-symbols-outlined {
+  font-size: 1.25rem;
+}
+
+.step-icon.material-symbols-outlined {
+  font-size: 1.1rem;
+}
+
+.kpi-icon.material-symbols-outlined {
+  font-size: 1.3rem;
+  color: #38bdf8;
+}
+
+.summary-icon .material-symbols-outlined {
+  font-size: 1.8rem;
+  color: #38bdf8;
+}
+
+.placeholder-icon .material-symbols-outlined {
+  font-size: 3rem;
+  color: var(--text-muted);
+}
+
 body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   background-color: var(--bg-primary);
@@ -62,14 +138,6 @@ body {
   display: flex;
   align-items: center;
   gap: 14px;
-}
-
-.brand-icon {
-  font-size: 2rem;
-  background: #1e293b;
-  padding: 10px;
-  border-radius: var(--radius);
-  border: 1px solid var(--border);
 }
 
 h1 {

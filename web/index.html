@@ -8,6 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" />
   <!-- Font Loading Visibility Gate: Prevents FOUT / Font Flash by holding render until fonts load -->
   <script>
     (function() {
@@ -29,15 +30,17 @@
       }
     })();
   </script>
-  <link rel="stylesheet" href="style.css?v=16">
+  <link rel="stylesheet" href="style.css?v=17">
   <!-- Firebase SDKs via CDN -->
-  <script type="module" src="app.js?v=16"></script>
+  <script type="module" src="app.js?v=17"></script>
 </head>
 <body>
   <div class="app-container">
     <header class="header">
       <div class="header-brand">
-        <div class="brand-icon">📸</div>
+        <div class="brand-icon">
+          <span class="material-symbols-outlined">videocam</span>
+        </div>
         <div>
           <h1>IOT Camera Catcher</h1>
           <p class="subtitle">Monitoreo y Análisis Visual con Gemini Vision • Barbería</p>
@@ -45,11 +48,11 @@
       </div>
       <div class="header-actions" style="display: flex; gap: 10px; align-items: center;">
         <button id="openSettingsBtn" class="btn btn-secondary" title="Configuración del capturador y horario de atención">
-          <span class="btn-icon">⚙️</span>
+          <span class="material-symbols-outlined btn-icon">settings</span>
           <span class="btn-text">Configuración</span>
         </button>
         <button id="openCalibratorBtn" class="btn btn-secondary">
-          <span class="btn-icon">📐</span>
+          <span class="material-symbols-outlined btn-icon">aspect_ratio</span>
           <span class="btn-text">Calibrar Cuadrantes</span>
         </button>
       </div>
@@ -58,12 +61,12 @@
     <!-- Main Navigation Tabs -->
     <nav class="main-tabs" role="tablist">
       <button id="tabDaemonLiveBtn" class="tab-nav-btn active" role="tab" aria-selected="true">
-        <span class="tab-icon">📡</span>
+        <span class="material-symbols-outlined tab-icon">sensors</span>
         <span class="tab-label">Monitor en Vivo del Daemon</span>
         <span class="live-pill"><span class="live-dot-pulse"></span>EN VIVO</span>
       </button>
       <button id="tabHistoryBtn" class="tab-nav-btn" role="tab" aria-selected="false">
-        <span class="tab-icon">🖼️</span>
+        <span class="material-symbols-outlined tab-icon">photo_library</span>
         <span class="tab-label">Historial y Métricas</span>
       </button>
     </nav>
@@ -74,7 +77,7 @@
         <!-- Live Header Bar -->
         <div class="daemon-live-header">
           <div class="daemon-title-wrap">
-            <span class="card-icon">⚡</span>
+            <span class="material-symbols-outlined card-icon">bolt</span>
             <div>
               <h2>Flujo Operativo del Daemon en Tiempo Real</h2>
               <p class="card-subtitle">
@@ -88,7 +91,7 @@
               <span id="daemonStatusPillText">Daemon Conectado</span>
             </div>
             <button id="triggerLiveCycleBtn" class="btn btn-primary" title="Iniciar prueba en vivo y disparar captura">
-              <span class="btn-icon">⚡</span>
+              <span class="material-symbols-outlined btn-icon">bolt</span>
               <span class="btn-text">Capturar Ahora (Prueba en Vivo)</span>
             </button>
           </div>
@@ -111,8 +114,8 @@
             </div>
             <div class="countdown-info">
               <div class="countdown-badge-row">
-                <span class="countdown-tag" id="daemonIntervalTag">⏱️ Intervalo: Sincronizando...</span>
-                <span class="countdown-tag" id="daemonWorkingHoursTag">🕒 Horario: Sincronizando...</span>
+                <span class="countdown-tag" id="daemonIntervalTag"><span class="material-symbols-outlined" style="font-size: 14px;">timer</span> Intervalo: Sincronizando...</span>
+                <span class="countdown-tag" id="daemonWorkingHoursTag"><span class="material-symbols-outlined" style="font-size: 14px;">schedule</span> Horario: Sincronizando...</span>
                 <span class="countdown-tag" id="daemonHoursStatusTag">Verificando horario...</span>
               </div>
               <h3 id="daemonCurrentStepTitle" class="countdown-step-title">Contador de Ciclo</h3>
@@ -127,7 +130,7 @@
         <div class="daemon-stepper-container">
           <div class="stepper-track">
             <div class="step-node active" id="stepNode0" data-step="0">
-              <div class="step-circle"><span class="step-num">0</span><span class="step-icon">⏱️</span></div>
+              <div class="step-circle"><span class="step-num">0</span><span class="material-symbols-outlined step-icon">timer</span></div>
               <div class="step-content">
                 <div class="step-name">Contador de Ciclo</div>
                 <div class="step-sub" id="stepSub0">Cuenta regresiva</div>
@@ -135,7 +138,7 @@
             </div>
             <div class="step-connector" id="stepConnector1"></div>
             <div class="step-node" id="stepNode1" data-step="1">
-              <div class="step-circle"><span class="step-num">1</span><span class="step-icon">📡</span></div>
+              <div class="step-circle"><span class="step-num">1</span><span class="material-symbols-outlined step-icon">sensors</span></div>
               <div class="step-content">
                 <div class="step-name">Consulta a Cámara</div>
                 <div class="step-sub" id="stepSub1">P2P Baichuan</div>
@@ -143,7 +146,7 @@
             </div>
             <div class="step-connector" id="stepConnector2"></div>
             <div class="step-node" id="stepNode2" data-step="2">
-              <div class="step-circle"><span class="step-num">2</span><span class="step-icon">🖼️</span></div>
+              <div class="step-circle"><span class="step-num">2</span><span class="material-symbols-outlined step-icon">image</span></div>
               <div class="step-content">
                 <div class="step-name">Llega la Imagen</div>
                 <div class="step-sub" id="stepSub2">Imprime en Canvas</div>
@@ -151,7 +154,7 @@
             </div>
             <div class="step-connector" id="stepConnector3"></div>
             <div class="step-node" id="stepNode3" data-step="3">
-              <div class="step-circle"><span class="step-num">3</span><span class="step-icon">📐</span></div>
+              <div class="step-circle"><span class="step-num">3</span><span class="material-symbols-outlined step-icon">crop_free</span></div>
               <div class="step-content">
                 <div class="step-name">Activan Cuadrantes</div>
                 <div class="step-sub" id="stepSub3">Proyección ROI</div>
@@ -159,7 +162,7 @@
             </div>
             <div class="step-connector" id="stepConnector4"></div>
             <div class="step-node" id="stepNode4" data-step="4">
-              <div class="step-circle"><span class="step-num">4</span><span class="step-icon">👤</span></div>
+              <div class="step-circle"><span class="step-num">4</span><span class="material-symbols-outlined step-icon">person_search</span></div>
               <div class="step-content">
                 <div class="step-name">Detecta Humanos</div>
                 <div class="step-sub" id="stepSub4">YOLOv8: ¿Sí o No?</div>
@@ -167,7 +170,7 @@
             </div>
             <div class="step-connector" id="stepConnector5"></div>
             <div class="step-node" id="stepNode5" data-step="5">
-              <div class="step-circle"><span class="step-num">5</span><span class="step-icon">👥</span></div>
+              <div class="step-circle"><span class="step-num">5</span><span class="material-symbols-outlined step-icon">badge</span></div>
               <div class="step-content">
                 <div class="step-name">Biometría y Perfil</div>
                 <div class="step-sub" id="stepSub5">Barbero / Frecuentes</div>
@@ -195,7 +198,9 @@
             <div class="canvas-viewport" id="daemonCanvasViewport">
               <canvas id="daemonCanvas" width="1024" height="576"></canvas>
               <div id="canvasOverlayPlaceholder" class="canvas-placeholder">
-                <div class="placeholder-icon">📸</div>
+                <div class="placeholder-icon">
+                  <span class="material-symbols-outlined">photo_camera</span>
+                </div>
                 <h3>Lienzo en Vivo del Daemon</h3>
                 <p>En cuanto el Daemon consulte la cámara o se dispare una captura, la imagen, cuadrantes y detecciones se dibujarán aquí en tiempo real.</p>
               </div>
@@ -215,7 +220,7 @@
           <div class="daemon-log-pane">
             <div class="log-pane-header">
               <div class="log-title">
-                <span>📋</span>
+                <span class="material-symbols-outlined" style="font-size: 18px; color: var(--primary);">terminal</span>
                 <h4>Bitácora de Procesos Reales</h4>
               </div>
               <span class="log-badge-count" id="logCountBadge">0 eventos</span>
@@ -234,7 +239,7 @@
     <section class="card cost-card" id="costMonitorCard">
       <div class="card-header" style="cursor: pointer;" id="costMonitorHeader" title="Clic para expandir o contraer">
         <div class="card-title">
-          <span class="card-icon">💰</span>
+          <span class="material-symbols-outlined card-icon">payments</span>
           <div>
             <h2>Monitor de Costos y Cuotas de Google Cloud</h2>
             <p class="card-subtitle" style="font-size: 0.78rem; color: var(--text-muted); margin-top: 2px;">
@@ -245,7 +250,7 @@
         <div class="cost-header-actions" style="display: flex; align-items: center; gap: 10px;">
           <span id="costTrafficBadge" class="cost-badge cost-badge-safe">
             <span class="cost-indicator-dot"></span>
-            <span id="costTrafficText">🟢 Seguro: $0.00 / mes (Always Free)</span>
+            <span id="costTrafficText">Seguro: $0.00 / mes (Always Free)</span>
           </span>
           <button id="toggleCostBtn" class="btn btn-secondary btn-sm" style="padding: 4px 10px; font-size: 0.75rem;">
             Contraer ▾
@@ -256,7 +261,9 @@
       <div class="cost-body" id="costMonitorBody">
         <!-- Banner informativo -->
         <div class="cost-summary-banner">
-          <div class="summary-icon">🛡️</div>
+          <div class="summary-icon">
+            <span class="material-symbols-outlined">shield</span>
+          </div>
           <div class="summary-details">
             <strong>Protección de Facturación Activa:</strong> Tu stack opera principalmente dentro del <em>Always Free Tier</em> de Google Cloud.
             El único rubro a tener presente es la dirección IPv4 pública (~$3.65/mes según políticas de GCP), mientras que el cómputo, almacenamiento y base de datos se mantienen en $0.00 bajo uso habitual.
@@ -268,7 +275,7 @@
           <!-- Compute Engine -->
           <div class="cost-kpi-card">
             <div class="kpi-top">
-              <span class="kpi-icon">🖥️</span>
+              <span class="material-symbols-outlined kpi-icon">memory</span>
               <span class="kpi-service">Compute Engine</span>
               <span class="kpi-tag free">100% Free Tier</span>
             </div>
@@ -294,7 +301,7 @@
           <!-- Firebase Storage -->
           <div class="cost-kpi-card">
             <div class="kpi-top">
-              <span class="kpi-icon">📦</span>
+              <span class="material-symbols-outlined kpi-icon">cloud_upload</span>
               <span class="kpi-service">Cloud Storage</span>
               <span class="kpi-tag" id="storageQuotaTag">En Cuota</span>
             </div>
@@ -322,7 +329,7 @@
           <!-- Cloud Firestore -->
           <div class="cost-kpi-card">
             <div class="kpi-top">
-              <span class="kpi-icon">🗄️</span>
+              <span class="material-symbols-outlined kpi-icon">database</span>
               <span class="kpi-service">Cloud Firestore</span>
               <span class="kpi-tag free">Free Tier</span>
             </div>
@@ -350,7 +357,7 @@
           <!-- Local ML (ONNX) -->
           <div class="cost-kpi-card">
             <div class="kpi-top">
-              <span class="kpi-icon">🧠</span>
+              <span class="material-symbols-outlined kpi-icon">psychology</span>
               <span class="kpi-service">ML Local (ONNX)</span>
               <span class="kpi-tag free">100% Offline</span>
             </div>
@@ -376,7 +383,7 @@
           <!-- Google Gemini Vision API -->
           <div class="cost-kpi-card">
             <div class="kpi-top">
-              <span class="kpi-icon">✨</span>
+              <span class="material-symbols-outlined kpi-icon">auto_awesome</span>
               <span class="kpi-service">Gemini Vision AI</span>
               <span class="kpi-tag free">AI Studio Free</span>
             </div>
@@ -410,11 +417,11 @@
         <div class="simulator-box">
           <div class="simulator-header">
             <div style="display: flex; align-items: center; gap: 8px;">
-              <span style="font-size: 1.2rem;">🎛️</span>
+              <span class="material-symbols-outlined" style="font-size: 1.25rem;">tune</span>
               <h3 style="font-size: 0.95rem; font-weight: 600;">Simulador Interactivo de Consumos según Intervalo</h3>
             </div>
             <button id="syncSimWithIntervalBtn" class="btn btn-secondary btn-sm" style="font-size: 0.75rem; padding: 4px 10px;">
-              🔄 Sincronizar con intervalo actual
+              <span class="material-symbols-outlined btn-icon" style="font-size: 14px;">sync</span> Sincronizar con intervalo actual
             </button>
           </div>
           
@@ -460,7 +467,7 @@
 
           <!-- Dynamic Warning / Alert inside Simulator -->
           <div id="simAlertBox" class="sim-alert sim-alert-info">
-            <span id="simAlertIcon">💡</span>
+            <span class="material-symbols-outlined" id="simAlertIcon">lightbulb</span>
             <span id="simAlertText">
               Con un intervalo de 15 minutos te mantienes prácticamente en $0.00. Para evitar exceder los 5 GB de Storage con los meses, se recomienda una regla de ciclo de vida de 30 días.
             </span>
@@ -470,13 +477,13 @@
         <!-- Best Practices / Recomendaciones -->
         <div class="cost-tips-grid">
           <div class="tip-card">
-            <div class="tip-title">🧹 Política de Ciclo de Vida (Auto-limpieza)</div>
+            <div class="tip-title"><span class="material-symbols-outlined" style="font-size: 16px; vertical-align: middle;">cleaning_services</span> Política de Ciclo de Vida (Auto-limpieza)</div>
             <p class="tip-desc">
               Para no pagar nunca por Cloud Storage, puedes activar una regla de ciclo de vida en el bucket <code>skip-bigotes.firebasestorage.app</code> para que elimine automáticamente fotos de más de 30 días. Con 30 días a 15 min, el almacenamiento nunca superará los 5 GB gratuitos.
             </p>
           </div>
           <div class="tip-card">
-            <div class="tip-title">⚡ Cuidado con intervalos < 2 minutos 24/7</div>
+            <div class="tip-title"><span class="material-symbols-outlined" style="font-size: 16px; vertical-align: middle;">warning</span> Cuidado con intervalos &lt; 2 minutos 24/7</div>
             <p class="tip-desc">
               Si dejas un intervalo de 30 segundos corriendo las 24 horas del día, generarás ~170 GB de imágenes al mes (~$4.30 en Storage) y ~172,800 operaciones de subida (~$0.86). Úsalo solo para pruebas temporales.
             </p>
@@ -489,7 +496,7 @@
     <section class="card people-card" id="peopleCard">
       <div class="card-header" style="cursor: pointer;" id="peopleCardHeader">
         <div class="card-title">
-          <span class="card-icon">👥</span>
+          <span class="material-symbols-outlined card-icon">group</span>
           <div>
             <h2>Reconocimiento de Personas y Clientes Frecuentes</h2>
             <p class="card-subtitle" style="font-size: 0.78rem; color: var(--text-muted); margin-top: 2px;">
@@ -499,7 +506,7 @@
         </div>
         <div class="people-header-actions" style="display: flex; align-items: center; gap: 10px;">
           <span id="peopleStatsBadge" class="tag" style="background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3);">
-            👤 0 personas registradas
+            <span class="material-symbols-outlined" style="font-size: 13px; vertical-align: middle;">badge</span> 0 personas registradas
           </span>
           <button id="togglePeopleBtn" class="btn btn-secondary btn-sm" style="padding: 4px 10px; font-size: 0.75rem;">
             Contraer ▾
@@ -520,7 +527,7 @@
     <section class="card table-card">
       <div class="card-header">
         <div class="card-title">
-          <span class="card-icon">🖼️</span>
+          <span class="material-symbols-outlined card-icon">photo_library</span>
           <h2>Registro de Fotogramas y Análisis</h2>
         </div>
         <div class="table-meta">
@@ -587,14 +594,14 @@
             <span class="doc-id-label">Doc ID:</span>
             <code id="modalDocId" class="doc-id-value">photo_...</code>
             <button id="copyDocIdBtn" class="btn-copy-id" title="Copiar Doc ID al portapapeles">
-              <span id="copyIcon">📋</span> Copiar
+              <span class="material-symbols-outlined" id="copyIcon" style="font-size: 15px; vertical-align: middle;">content_copy</span> Copiar
             </button>
             <span id="copyFeedback" class="copy-feedback hidden">¡Copiado!</span>
           </div>
         </div>
         <div style="display: flex; align-items: center; gap: 10px;">
           <button id="modalCalibrateWithPhotoBtn" class="btn btn-secondary btn-sm" title="Abrir esta foto en el calibrador para ajustar cuadrantes" style="padding: 5px 12px; font-size: 0.80rem;">
-            <span>📐 Calibrar con esta foto</span>
+            <span class="material-symbols-outlined btn-icon" style="font-size: 14px;">aspect_ratio</span> Calibrar con esta foto
           </button>
           <div id="modalTimestamp" class="modal-time"></div>
         </div>
@@ -605,7 +612,7 @@
         <div class="modal-comparison-grid">
           <div class="modal-image-pane">
             <div class="pane-header">
-              <span class="pane-tag">📷 Foto Original</span>
+              <span class="pane-tag"><span class="material-symbols-outlined" style="font-size: 14px; vertical-align: middle;">photo_camera</span> Foto Original</span>
               <a id="modalOriginalLink" href="#" target="_blank" rel="noopener noreferrer" class="pane-link" title="Abrir imagen original completa">Ver HD ↗</a>
             </div>
             <div class="image-wrapper">
@@ -619,7 +626,7 @@
 
           <div class="modal-image-pane">
             <div class="pane-header">
-              <span class="pane-tag annotated">🎯 Foto con Marcos (Frontend SVG)</span>
+              <span class="pane-tag annotated"><span class="material-symbols-outlined" style="font-size: 14px; vertical-align: middle;">center_focus_strong</span> Foto con Marcos (Frontend SVG)</span>
               <a id="modalAnnotatedLink" href="#" target="_blank" rel="noopener noreferrer" class="pane-link" title="Abrir imagen original completa">Ver HD ↗</a>
             </div>
             <div class="image-wrapper" id="modalAnnotatedWrapper">
@@ -639,11 +646,11 @@
           <!-- ML Reference Box -->
           <div class="modal-meta-box">
             <div class="meta-row">
-              <span class="meta-label">🔑 Document ID (ML Ref):</span>
+              <span class="meta-label"><span class="material-symbols-outlined" style="font-size: 14px; vertical-align: middle;">key</span> Document ID (ML Ref):</span>
               <code id="modalMetaDocId" class="meta-code"></code>
             </div>
             <div class="meta-row">
-              <span class="meta-label">📂 Ruta Firestore:</span>
+              <span class="meta-label"><span class="material-symbols-outlined" style="font-size: 14px; vertical-align: middle;">folder_open</span> Ruta Firestore:</span>
               <span id="modalMetaFirestorePath" class="meta-value"></span>
             </div>
           </div>
@@ -652,7 +659,7 @@
           
           <div id="modalClientsContainer" class="modal-clients hidden" style="margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border);">
             <div style="font-size: 0.80rem; font-weight: 600; color: #32DC32; text-transform: uppercase; margin-bottom: 8px;">
-              ✂️ Clientes Sentados Extraídos:
+              <span class="material-symbols-outlined" style="font-size: 15px; vertical-align: middle;">content_cut</span> Clientes Sentados Extraídos:
             </div>
             <div id="modalClientsList" style="display: flex; gap: 12px; flex-wrap: wrap;"></div>
           </div>
@@ -669,21 +676,21 @@
       
       <div class="modal-header-bar">
         <div class="modal-header-left">
-          <h3 class="modal-title">📐 Calibrador Visual de Cuadrantes (Zonas ROI)</h3>
+          <h3 class="modal-title"><span class="material-symbols-outlined" style="font-size: 20px; vertical-align: middle;">aspect_ratio</span> Calibrador Visual de Cuadrantes (Zonas ROI)</h3>
           <span class="tag">camera_catcher/quadrants</span>
         </div>
         <div class="calibrator-header-actions">
           <button id="addQuadrantBtn" class="btn btn-secondary btn-sm" title="Añadir una nueva zona personalizada">
-            ➕ Crear Zona
+            <span class="material-symbols-outlined btn-icon" style="font-size: 15px;">add_box</span> Crear Zona
           </button>
           <button id="deleteSelectedQuadrantBtn" class="btn btn-danger-outline btn-sm" title="Eliminar la zona seleccionada">
-            🗑️ Eliminar Zona
+            <span class="material-symbols-outlined btn-icon" style="font-size: 15px;">delete</span> Eliminar Zona
           </button>
           <button id="resetQuadrantsBtn" class="btn btn-secondary btn-sm" title="Restablecer los cuadrantes a los valores iniciales">
-            ↺ Defaults
+            <span class="material-symbols-outlined btn-icon" style="font-size: 15px;">restart_alt</span> Defaults
           </button>
           <button id="saveQuadrantsBtn" class="btn btn-primary btn-sm" title="Guardar cuadrantes en Firestore">
-            💾 Guardar en Firebase
+            <span class="material-symbols-outlined btn-icon" style="font-size: 15px;">save</span> Guardar en Firebase
           </button>
         </div>
       </div>
@@ -695,7 +702,7 @@
         <div class="calibrator-canvas-pane">
           <div class="calibrator-toolbar">
             <div class="photo-selector-wrap">
-              <label for="calibratorPhotoSelect">📷 Foto:</label>
+              <label for="calibratorPhotoSelect"><span class="material-symbols-outlined" style="font-size: 14px; vertical-align: middle;">photo_camera</span> Foto:</label>
               <select id="calibratorPhotoSelect" class="calibrator-select">
                 <option value="latest">Última captura disponible</option>
               </select>
@@ -703,14 +710,14 @@
             <div class="calibrator-tools-wrap" style="display: flex; align-items: center; gap: 8px;">
               <span style="font-size: 0.78rem; color: var(--text-muted);">Modo:</span>
               <button id="toolModeMove" class="btn btn-secondary btn-sm active" title="Mover y redimensionar cajas existentes">
-                ✋ Mover/Ajustar
+                <span class="material-symbols-outlined btn-icon" style="font-size: 14px;">pan_tool</span> Mover/Ajustar
               </button>
               <button id="toolModeDraw" class="btn btn-secondary btn-sm" title="Haz clic y arrastra sobre la imagen para dibujar una nueva zona">
-                ✏️ Dibujar con Ratón
+                <span class="material-symbols-outlined btn-icon" style="font-size: 14px;">draw</span> Dibujar con Ratón
               </button>
             </div>
             <div class="calibrator-tip" id="calibratorTipText">
-              💡 <em>Arrastra cualquier caja para moverla o ajusta sus 4 esquinas.</em>
+              <span class="material-symbols-outlined" style="font-size: 16px; vertical-align: middle;">lightbulb</span> <em>Arrastra cualquier caja para moverla o ajusta sus 4 esquinas.</em>
             </div>
           </div>
 
@@ -749,7 +756,7 @@
       
       <div class="modal-header-bar">
         <div class="modal-header-left">
-          <h3 class="modal-title">⚙️ Configuración del Capturador</h3>
+          <h3 class="modal-title"><span class="material-symbols-outlined" style="font-size: 20px; vertical-align: middle;">settings</span> Configuración del Capturador</h3>
           <span class="tag">camera_catcher/prompt</span>
         </div>
       </div>
@@ -759,7 +766,7 @@
           <!-- Prompt field -->
           <div class="settings-field-group">
             <label for="promptInput" class="settings-label">
-              🧠 Instrucción para Gemini Vision:
+              <span class="material-symbols-outlined" style="font-size: 16px; vertical-align: middle;">psychology</span> Instrucción para Gemini Vision:
             </label>
             <textarea id="promptInput" rows="3" placeholder="Escribe el prompt aquí..." class="settings-textarea"></textarea>
             <small class="settings-help">Instrucción analítica enviada al modelo de visión en cada captura periódica.</small>
@@ -768,7 +775,7 @@
           <!-- Capture interval -->
           <div class="settings-field-group">
             <label for="intervalInput" class="settings-label">
-              ⏱️ Intervalo entre capturas:
+              <span class="material-symbols-outlined" style="font-size: 16px; vertical-align: middle;">timer</span> Intervalo entre capturas:
             </label>
             <div class="input-with-suffix">
               <input type="number" id="intervalInput" min="0.1" step="0.1" value="15" class="settings-input">
@@ -780,15 +787,15 @@
           <!-- Working Hours: Apertura y Cierre -->
           <div class="settings-field-group">
             <label class="settings-label">
-              🕒 Horario de Atención de la Barbería (Apertura y Cierre):
+              <span class="material-symbols-outlined" style="font-size: 16px; vertical-align: middle;">schedule</span> Horario de Atención de la Barbería (Apertura y Cierre):
             </label>
             <div class="time-range-grid">
               <div class="time-field">
-                <span class="time-label">🚪 Hora de Apertura:</span>
+                <span class="time-label"><span class="material-symbols-outlined" style="font-size: 14px; vertical-align: middle;">storefront</span> Hora de Apertura:</span>
                 <input type="time" id="workStartTimeInput" value="11:00" class="settings-input time-input">
               </div>
               <div class="time-field">
-                <span class="time-label">🔒 Hora de Cierre:</span>
+                <span class="time-label"><span class="material-symbols-outlined" style="font-size: 14px; vertical-align: middle;">lock</span> Hora de Cierre:</span>
                 <input type="time" id="workEndTimeInput" value="23:00" class="settings-input time-input">
               </div>
             </div>
@@ -804,7 +811,7 @@
           <div class="settings-footer-actions">
             <button id="cancelSettingsBtn" class="btn btn-secondary">Cancelar</button>
             <button id="savePromptBtn" class="btn btn-primary">
-              <span class="btn-icon">💾</span>
+              <span class="material-symbols-outlined btn-icon">save</span>
               <span class="btn-text">Guardar Configuración</span>
             </button>
           </div>

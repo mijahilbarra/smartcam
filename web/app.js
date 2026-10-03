@@ -184,10 +184,10 @@ function updateWorkingHoursStatus(startStr = "11:00", endStr = "23:00") {
   const isOpen = checkIsWithinWorkingHours(startStr, endStr);
   if (isOpen) {
     workingHoursStatusBadge.className = "status-hours-badge";
-    workingHoursStatusBadge.textContent = "🟢 Dentro de horario de atención (Abierto)";
+    workingHoursStatusBadge.innerHTML = '<span class="material-symbols-outlined" style="font-size: 14px; vertical-align: middle;">check_circle</span> Dentro de horario de atención (Abierto)';
   } else {
     workingHoursStatusBadge.className = "status-hours-badge closed";
-    workingHoursStatusBadge.textContent = "🌙 Fuera de horario de atención (Cerrado)";
+    workingHoursStatusBadge.innerHTML = '<span class="material-symbols-outlined" style="font-size: 14px; vertical-align: middle;">bedtime</span> Fuera de horario de atención (Cerrado)';
   }
 }
 
@@ -256,16 +256,18 @@ function initPromptListener() {
       // Sincronizar etiquetas de la Vista en Vivo del Daemon inmediatamente
       const daemonIntervalTag = document.getElementById("daemonIntervalTag");
       if (daemonIntervalTag) {
-        daemonIntervalTag.textContent = `⏱️ Intervalo: ${currentInterval} min`;
+        daemonIntervalTag.innerHTML = `<span class="material-symbols-outlined" style="font-size: 14px; vertical-align: middle;">timer</span> Intervalo: ${currentInterval} min`;
       }
       const daemonHoursTag = document.getElementById("daemonWorkingHoursTag");
       if (daemonHoursTag) {
-        daemonHoursTag.textContent = `🕒 Horario: ${startH} - ${endH}`;
+        daemonHoursTag.innerHTML = `<span class="material-symbols-outlined" style="font-size: 14px; vertical-align: middle;">schedule</span> Horario: ${startH} - ${endH}`;
       }
       const daemonHoursStatusTag = document.getElementById("daemonHoursStatusTag");
       if (daemonHoursStatusTag) {
         const isWithin = checkIsWithinWorkingHours(startH, endH);
-        daemonHoursStatusTag.textContent = isWithin ? "🟢 En jornada de atención" : "⏸️ Fuera de horario laboral";
+        daemonHoursStatusTag.innerHTML = isWithin
+          ? '<span class="status-dot-pulse-green"></span> En jornada de atención'
+          : '<span class="material-symbols-outlined" style="font-size: 14px; vertical-align: middle;">pause_circle</span> Fuera de horario laboral';
         daemonHoursStatusTag.className = `countdown-tag ${isWithin ? "tag-success" : "tag-warning"}`;
       }
 
@@ -680,7 +682,7 @@ async function openModal(docData) {
   if (modalMetaFirestorePath) modalMetaFirestorePath.textContent = `camera_catcher/photos/photos/${currentModalDocId}`;
 
   const dateStr = formatDateTime(docData.timestamp || docData.createdAt, docData.epoch);
-  modalTimestamp.textContent = `📅 ${dateStr}`;
+  modalTimestamp.innerHTML = `<span class="material-symbols-outlined" style="font-size: 14px; vertical-align: middle; margin-right: 4px;">calendar_today</span> ${dateStr}`;
   modalAnalysis.innerHTML = `<strong>Resumen y Cuadrantes ML:</strong><br>${escapeHtml(docData.analysis || "Sin análisis")}` +
     (docData.promptUsed ? `<br><br><small class="text-muted">Prompt utilizado: "${escapeHtml(docData.promptUsed)}"</small>` : "");
 
@@ -1163,13 +1165,13 @@ function updateCostMetrics(photoCount = 0) {
   if (costTrafficBadge && costTrafficText) {
     if (currentInterval >= 10) {
       costTrafficBadge.className = "cost-badge cost-badge-safe";
-      costTrafficText.textContent = "🟢 Seguro: $0.00 / mes (Always Free)";
+      costTrafficText.textContent = "Seguro: $0.00 / mes (Always Free)";
     } else if (currentInterval >= 2) {
       costTrafficBadge.className = "cost-badge cost-badge-warn";
-      costTrafficText.textContent = "🟡 Moderado: ~$0.10 - $0.50 / mes (Storage ops)";
+      costTrafficText.textContent = "Moderado: ~$0.10 - $0.50 / mes (Storage ops)";
     } else {
       costTrafficBadge.className = "cost-badge cost-badge-danger";
-      costTrafficText.textContent = "🔴 Intensivo: Puede exceder 5 GB Storage";
+      costTrafficText.textContent = "Intensivo: Puede exceder 5 GB Storage";
     }
   }
 }
@@ -1227,7 +1229,7 @@ function updateSimulator(intervalMinutes) {
   if (simAlertBox && simAlertText && simAlertIcon) {
     if (intervalMinutes >= 10) {
       simAlertBox.className = "sim-alert sim-alert-info";
-      simAlertIcon.textContent = "💡";
+      simAlertIcon.textContent = "lightbulb";
       simAlertText.innerHTML = `
         <strong>Excelente para producción (Costo: $0.00/mes):</strong> Con ${intervalMinutes} min, generas ~${storageMonthGB.toFixed(1)} GB/mes. 
         Mantienes todas las escrituras y lecturas 100% dentro de la capa gratuita perpetua de Google Cloud.
@@ -1236,7 +1238,7 @@ function updateSimulator(intervalMinutes) {
       const excessOps = Math.max(0, opsStorageMonth - FREE_TIER.storageOpsA);
       const costOps = (excessOps / 10000) * FREE_TIER.priceOpsAPer10k;
       simAlertBox.className = "sim-alert sim-alert-warn";
-      simAlertIcon.textContent = "⚠️";
+      simAlertIcon.textContent = "warning";
       simAlertText.innerHTML = `
         <strong>Consumo moderado:</strong> Las operaciones de subida a Storage (~${Math.round(opsStorageMonth).toLocaleString()}) superarán la cuota gratuita de 5,000/mes.
         El costo adicional por operaciones será mínimo (<strong>~$${costOps.toFixed(2)}/mes</strong>), pero vigila el espacio acumulado (~${storageMonthGB.toFixed(1)} GB/mes).
@@ -1249,7 +1251,7 @@ function updateSimulator(intervalMinutes) {
       const totalEstimated = costOps + costGB;
 
       simAlertBox.className = "sim-alert sim-alert-danger";
-      simAlertIcon.textContent = "🚨";
+      simAlertIcon.textContent = "error";
       simAlertText.innerHTML = `
         <strong>Intervalo de alta frecuencia:</strong> Generarás <strong>~${storageMonthGB.toFixed(0)} GB de fotos al mes</strong>.
         Excederá los 5.0 GB gratuitos de Cloud Storage rápidamente. Costo extra estimado si corre 24/7 sin rotación: <strong>~$${totalEstimated.toFixed(2)} / mes</strong>.
@@ -1302,13 +1304,13 @@ function initPeopleListener() {
     const staffCount = people.filter(p => p.isStaff).length;
     const clientCount = people.filter(p => !p.isStaff).length;
     if (peopleStatsBadge) {
-      peopleStatsBadge.textContent = `👥 ${people.length} registradas (${staffCount} Staff • ${clientCount} Clientes)`;
+      peopleStatsBadge.innerHTML = `<span class="material-symbols-outlined" style="font-size: 13px; vertical-align: middle;">badge</span> ${people.length} registradas (${staffCount} Staff • ${clientCount} Clientes)`;
     }
 
     if (people.length === 0) {
       peopleListGrid.innerHTML = `
         <div class="people-empty-state" style="grid-column: 1 / -1; padding: 24px; text-align: center; background: rgba(15, 23, 42, 0.6); border-radius: 8px; border: 1px dashed rgba(255, 255, 255, 0.1);">
-          <div style="font-size: 2rem; margin-bottom: 8px;">👤</div>
+          <div style="font-size: 2rem; margin-bottom: 8px;"><span class="material-symbols-outlined" style="font-size: 36px; color: var(--text-muted);">person_off</span></div>
           <strong style="color: var(--text-main); font-size: 0.95rem;">No hay personas registradas todavía</strong>
           <p style="font-size: 0.82rem; color: var(--text-muted); margin-top: 6px; max-width: 500px; margin-left: auto; margin-right: auto;">
             A medida que la cámara capture y el backend procese los fotogramas con el modelo MobileFaceNet ArcFace, catalogará automáticamente aquí a clientes y barberos para re-identificación facial.
@@ -1332,10 +1334,10 @@ function initPeopleListener() {
       const isStaff = !!p.isStaff;
       const visits = p.visitCount || 1;
       const roleBadge = isStaff
-        ? `<span class="person-role-tag staff">💈 Staff / Barbero</span>`
+        ? `<span class="person-role-tag staff"><span class="material-symbols-outlined" style="font-size: 13px; vertical-align: middle;">content_cut</span> Staff / Barbero</span>`
         : visits > 1
-          ? `<span class="person-role-tag frequent">⭐ Frecuente (${visits} visitas)</span>`
-          : `<span class="person-role-tag new">👤 Cliente (1 visita)</span>`;
+          ? `<span class="person-role-tag frequent"><span class="material-symbols-outlined" style="font-size: 13px; vertical-align: middle;">grade</span> Frecuente (${visits} visitas)</span>`
+          : `<span class="person-role-tag new"><span class="material-symbols-outlined" style="font-size: 13px; vertical-align: middle;">person</span> Cliente (1 visita)</span>`;
 
       const lastDate = p.lastSeen ? formatDateTime(p.lastSeen) : "Desconocido";
 
@@ -1352,7 +1354,7 @@ function initPeopleListener() {
           <div class="person-details">
             <div class="person-name-row">
               <input type="text" class="person-name-input" id="p-name-${idx}" value="${escapeHtml(p.name || 'Persona')}" title="Clic para renombrar (Enter o salir del campo para guardar)" />
-              <button class="person-del-btn" id="p-del-${idx}" title="Eliminar perfil">🗑️</button>
+              <button class="person-del-btn" id="p-del-${idx}" title="Eliminar perfil"><span class="material-symbols-outlined" style="font-size: 15px;">delete</span></button>
             </div>
             <div class="person-meta-row">
               <span>Visitas: <strong>${visits}</strong></span>
@@ -1360,7 +1362,7 @@ function initPeopleListener() {
             </div>
             <div class="person-actions-row">
               <button class="btn btn-secondary btn-sm person-role-toggle-btn" id="p-role-${idx}">
-                ${isStaff ? "⇄ Cambiar a Cliente" : "💈 Marcar como Staff"}
+                ${isStaff ? '<span class="material-symbols-outlined" style="font-size: 13px; vertical-align: middle;">person</span> Cambiar a Cliente' : '<span class="material-symbols-outlined" style="font-size: 13px; vertical-align: middle;">badge</span> Marcar como Staff'}
               </button>
             </div>
           </div>
@@ -1719,8 +1721,8 @@ function setToolMode(mode) {
   if (calibratorOverlay) calibratorOverlay.classList.toggle("drawing-mode", mode === "draw");
   if (calibratorTipText) {
     calibratorTipText.innerHTML = mode === "draw"
-      ? `✏️ <strong>Modo Dibujar activo:</strong> Haz clic y arrastra sobre la foto para crear la zona.`
-      : `💡 <em>Arrastra cualquier zona para moverla o ajusta libremente sus 4 esquinas (perspectiva).</em>`;
+      ? `<span class="material-symbols-outlined" style="font-size: 15px; vertical-align: middle;">draw</span> <strong>Modo Dibujar activo:</strong> Haz clic y arrastra sobre la foto para crear la zona.`
+      : `<span class="material-symbols-outlined" style="font-size: 15px; vertical-align: middle;">lightbulb</span> <em>Arrastra cualquier zona para moverla o ajusta libremente sus 4 esquinas (perspectiva).</em>`;
   }
 }
 
@@ -1763,7 +1765,7 @@ function renderQuadrantsSidebar() {
           <input type="color" class="q-color-picker" value="${q.color || '#3b82f6'}" title="Cambiar color de la zona" />
           <input type="text" class="q-name-input" value="${escapeHtml(q.name || q.id)}" title="Editar nombre de la zona" />
         </div>
-        <button class="q-delete-btn" title="Eliminar esta zona" style="font-size: 0.95rem; cursor: pointer; padding: 2px 6px;">🗑️</button>
+        <button class="q-delete-btn" title="Eliminar esta zona" style="font-size: 0.95rem; cursor: pointer; padding: 2px 6px;"><span class="material-symbols-outlined" style="font-size: 15px;">delete</span></button>
       </div>
       <div class="q-type-row">
         <select class="q-type-select" title="Regla de negocio / Función asignada a esta zona">
@@ -2260,7 +2262,7 @@ function initCalibratorUI() {
       showCalibratorStatus(`❌ Error al guardar en Firebase: ${err.message}`, "error");
     } finally {
       saveQuadrantsBtn.disabled = false;
-      saveQuadrantsBtn.innerHTML = `<span>💾 Guardar en Firebase</span>`;
+      saveQuadrantsBtn.innerHTML = `<span class="material-symbols-outlined btn-icon" style="font-size: 15px;">save</span> Guardar en Firebase`;
     }
   });
 }
@@ -2539,27 +2541,6 @@ class DaemonCanvasRenderer {
 let daemonCanvasRenderer = null;
 let countdownIntervalId = null;
 let currentDaemonState = null;
-
-/**
- * Inicializa el listener en tiempo real de camera_catcher/daemon_state
- */
-function initDaemonLiveMonitor() {
-  const daemonCanvas = document.getElementById("daemonCanvas");
-  if (!daemonCanvas) return;
-
-  daemonCanvasRenderer = new DaemonCanvasRenderer("daemonCanvas");
-
-  // Layer Checkbox handlers
-  document.getElementById("chkLayerQuadrants")?.addEventListener("change", (e) => {
-    daemonCanvasRenderer.setLayer("quadrants", e.target.checked);
-  });
-  document.getElementById("chkLayerHumans")?.addEventListener("change", (e) => {
-    daemonCanvasRenderer.setLayer("humans", e.target.checked);
-  });
-  document.getElementById("chkLayerPeople")?.addEventListener("change", (e) => {
-    daemonCanvasRenderer.setLayer("people", e.target.checked);
-  });
-
 let isDemonstratingCycle = false;
 
 /**
@@ -2885,14 +2866,16 @@ async function updateDaemonUI(data) {
   const effectiveInterval = data.countdown?.intervalMinutes || parseFloat(intervalInput?.value) || 3;
 
   if (intervalTag) {
-    intervalTag.textContent = `⏱️ Intervalo: ${effectiveInterval} min`;
+    intervalTag.innerHTML = `<span class="material-symbols-outlined" style="font-size: 14px; vertical-align: middle;">timer</span> Intervalo: ${effectiveInterval} min`;
   }
   if (hoursTag && data.countdown?.workHours) {
-    hoursTag.textContent = `🕒 Horario: ${data.countdown.workHours}`;
+    hoursTag.innerHTML = `<span class="material-symbols-outlined" style="font-size: 14px; vertical-align: middle;">schedule</span> Horario: ${data.countdown.workHours}`;
   }
   if (hoursStatusTag) {
     const isWithin = data.countdown?.isWithinWorkingHours !== false;
-    hoursStatusTag.textContent = isWithin ? "🟢 En jornada de atención" : "⏸️ Fuera de horario laboral";
+    hoursStatusTag.innerHTML = isWithin
+      ? '<span class="status-dot-pulse-green"></span> En jornada de atención'
+      : '<span class="material-symbols-outlined" style="font-size: 14px; vertical-align: middle;">pause_circle</span> Fuera de horario laboral';
     hoursStatusTag.className = `countdown-tag ${isWithin ? "tag-success" : "tag-warning"}`;
   }
 

@@ -123,6 +123,7 @@ sequenceDiagram
 | **CI/CD Automatizado** | GitHub Actions | Despliegue continuo selectivo por carpetas hacia GCP VM y Hosting | [07-github-actions-cicd.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/07-github-actions-cicd.md) |
 | **Monitoreo de Costos & Cuotas** | Calculador Reactivo Vanilla JS | Supervisión preventiva de cuotas GCP Free Tier y simulador de intervalos | [09-google-cloud-cost-monitoring.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/09-google-cloud-cost-monitoring.md) |
 | **Telemetría & Vista en Vivo** | Firestore State Machine + HTML5 Canvas | Transmisión de fases de ejecución y renderizado visual interactivo del Daemon | [10-daemon-live-workflow-viewer.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/10-daemon-live-workflow-viewer.md) |
+| **Iconografía & Tipografía** | Google Fonts (Inter + Material Symbols) | Estandarización visual vectorial y tipográfica profesional libre de emojis nativos | [11-google-fonts-iconography.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/11-google-fonts-iconography.md) |
 
 ---
 
