@@ -67,31 +67,109 @@ const DEFAULT_PROMPT = "Describe what do you see in the image";
 
 let isCapturing = false;
 
+// Dynamic Configuration State (loaded and updated in real-time from Firestore: camera_catcher/prompt)
+let currentIntervalMinutes = 15;
+let workStart = "11:00"; // 11 AM por defecto
+let workEnd = "23:00";   // 11 PM por defecto
+let configuredTimeZone = "America/Lima"; // Zona horaria de la barbería
+
 /**
- * Fetch or initialize dynamic prompt and interval from Firestore: camera_catcher/prompt
+ * Convierte un formato de hora (ej: "11:00", "11:00 AM", "11pm", "23:00", 11) a minutos desde las 00:00
+ */
+export function parseTimeToMinutes(timeVal) {
+  if (typeof timeVal === "number") {
+    return Math.floor(timeVal * 60);
+  }
+  if (!timeVal || typeof timeVal !== "string") return null;
+  const match = timeVal.trim().match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/i);
+  if (!match) return null;
+  let hours = parseInt(match[1], 10);
+  const minutes = match[2] ? parseInt(match[2], 10) : 0;
+  const period = match[3]?.toLowerCase();
+
+  if (period === "pm" && hours < 12) hours += 12;
+  if (period === "am" && hours === 12) hours = 0;
+
+  return hours * 60 + minutes;
+}
+
+/**
+ * Evalúa si la fecha/hora actual se encuentra dentro del rango de trabajo configurado
+ */
+export function isWithinWorkingHours(date = new Date(), start = workStart, end = workEnd, tz = configuredTimeZone) {
+  try {
+    const formatter = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz,
+      hour: "numeric",
+      minute: "numeric",
+      hour12: false
+    });
+    const parts = formatter.formatToParts(date);
+    const hour = parseInt(parts.find(p => p.type === "hour")?.value || "0", 10);
+    const minute = parseInt(parts.find(p => p.type === "minute")?.value || "0", 10);
+    const currentMins = hour * 60 + minute;
+
+    const startMins = parseTimeToMinutes(start) ?? (11 * 60);
+    const endMins = parseTimeToMinutes(end) ?? (23 * 60);
+
+    if (startMins <= endMins) {
+      return currentMins >= startMins && currentMins < endMins;
+    } else {
+      // Para rangos nocturnos (ej: 22:00 a 04:00)
+      return currentMins >= startMins || currentMins < endMins;
+    }
+  } catch (err) {
+    console.warn("[WorkingHours] Error evaluando horario:", err.message);
+    return true; // En caso de fallo con la zona horaria, permitir para no bloquear
+  }
+}
+
+/**
+ * Fetch or initialize dynamic prompt, interval and working hours from Firestore: camera_catcher/prompt
  */
 async function getDynamicConfig() {
   try {
     const promptRef = db.doc("camera_catcher/prompt");
     const doc = await promptRef.get();
     if (!doc.exists) {
-      console.log("[Config] camera_catcher/prompt no existe. Creando con configuración por defecto...");
+      console.log("[Config] camera_catcher/prompt no existe. Creando con configuración por defecto (11am a 11pm)...");
       const initialConfig = {
         default: DEFAULT_PROMPT,
         intervalMinutes: 15,
+        workStartTime: "11:00",
+        workEndTime: "23:00",
+        timezone: "America/Lima",
         updatedAt: new Date().toISOString()
       };
       await promptRef.set(initialConfig);
       return initialConfig;
     }
     const data = doc.data();
+
+    // Ensure working hours defaults exist in Firestore if not already set
+    const missingDefaults = {};
+    if (!data?.workStartTime && !data?.workStart) missingDefaults.workStartTime = "11:00";
+    if (!data?.workEndTime && !data?.workEnd) missingDefaults.workEndTime = "23:00";
+    if (!data?.timezone) missingDefaults.timezone = "America/Lima";
+
+    if (Object.keys(missingDefaults).length > 0) {
+      await promptRef.set(missingDefaults, { merge: true });
+    }
+
+    workStart = String(data?.workStartTime || data?.workStart || "11:00");
+    workEnd = String(data?.workEndTime || data?.workEnd || "23:00");
+    configuredTimeZone = data?.timezone || "America/Lima";
+
     return {
       prompt: data?.default || DEFAULT_PROMPT,
-      intervalMinutes: data?.intervalMinutes !== undefined ? Number(data.intervalMinutes) : 15
+      intervalMinutes: data?.intervalMinutes !== undefined ? Number(data.intervalMinutes) : 15,
+      workStartTime: workStart,
+      workEndTime: workEnd,
+      timezone: configuredTimeZone
     };
   } catch (err) {
     console.warn("[Config] Error leyendo configuración de Firestore, usando defaults:", err.message);
-    return { prompt: DEFAULT_PROMPT, intervalMinutes: 15 };
+    return { prompt: DEFAULT_PROMPT, intervalMinutes: 15, workStartTime: "11:00", workEndTime: "23:00", timezone: "America/Lima" };
   }
 }
 
@@ -282,6 +360,12 @@ app.get("/", (req, res) => {
     service: "iot-camera-catcher",
     vm: "gcp-e2-micro",
     currentIntervalMinutes,
+    workingHours: {
+      workStart,
+      workEnd,
+      timezone: configuredTimeZone,
+      isWithinWorkingHours: isWithinWorkingHours()
+    },
     timestamp: new Date().toISOString()
   });
 });
@@ -310,7 +394,6 @@ app.listen(PORT, () => {
 });
 
 // Dynamic Interval Cron Scheduler
-let currentIntervalMinutes = 15;
 let cronTimerId = null;
 
 function setupCronTimer(minutes) {
@@ -324,9 +407,13 @@ function setupCronTimer(minutes) {
   currentIntervalMinutes = (!isNaN(num) && num > 0) ? Math.max(0.1, num) : 15;
   const intervalMs = Math.round(currentIntervalMinutes * 60 * 1000);
 
-  console.log(`[Cron] Programador de captura configurado cada ${currentIntervalMinutes} min (${intervalMs / 1000} seg).`);
+  console.log(`[Cron] Programador de captura configurado cada ${currentIntervalMinutes} min (${intervalMs / 1000} seg). Horario laboral: ${workStart} a ${workEnd} (${configuredTimeZone}).`);
 
   cronTimerId = setInterval(async () => {
+    if (!isWithinWorkingHours()) {
+      console.log(`[Cron] Fuera de horario laboral (${workStart} a ${workEnd} ${configuredTimeZone}). Omitiendo captura programada.`);
+      return;
+    }
     console.log(`[Cron] Ejecutando captura programada periódica (${currentIntervalMinutes} min)...`);
     try {
       await executeCaptureProcess();
@@ -359,13 +446,22 @@ try {
   }, { merge: true }).catch(() => {});
 } catch (_) {}
 
-// Initial scheduler setup
-setupCronTimer(15);
+// Load dynamic config from Firestore and start scheduler
+getDynamicConfig().then(cfg => {
+  console.log(`[Startup] Configuración cargada: Intervalo ${cfg.intervalMinutes} min, Horario ${cfg.workStartTime} a ${cfg.workEndTime} (${cfg.timezone}).`);
+  setupCronTimer(cfg.intervalMinutes);
+}).catch(() => {
+  setupCronTimer(15);
+});
 
-// Run cleanup immediately on startup, then trigger initial capture
+// Run cleanup immediately on startup, then trigger initial capture if within working hours
 cleanupZombies().then(() => {
   console.log("[Startup] Limpieza de procesos completada. Sistema listo.");
   setTimeout(() => {
+    if (!isWithinWorkingHours()) {
+      console.log(`[Startup] Fuera de horario laboral (${workStart} a ${workEnd} ${configuredTimeZone}). Omitiendo captura inicial automática.`);
+      return;
+    }
     console.log("[Startup] Ejecutando captura inicial automática de arranque...");
     executeCaptureProcess().catch(err => {
       console.error("[Startup] Error en captura inicial:", err.message);
@@ -373,15 +469,53 @@ cleanupZombies().then(() => {
   }, 4000);
 });
 
-// Listen to Firestore prompt & interval changes in real time
-db.doc("camera_catcher/prompt").onSnapshot((snapshot) => {
+// Listen to Firestore prompt, interval & working hours changes in real time
+db.doc("camera_catcher/prompt").onSnapshot(async (snapshot) => {
   const data = snapshot.data();
-  if (data && data.intervalMinutes !== undefined) {
+  if (!data) return;
+
+  // 1. Update interval if changed
+  if (data.intervalMinutes !== undefined) {
     const newInterval = Number(data.intervalMinutes);
     if (!isNaN(newInterval) && newInterval !== currentIntervalMinutes) {
       console.log(`[Config] Actualización de intervalo detectada en Firestore: ${newInterval} minutos.`);
       setupCronTimer(newInterval);
     }
+  }
+
+  // 2. Update working hours if changed
+  const newStart = data.workStartTime || data.workStart || data.startHour || "11:00";
+  const newEnd = data.workEndTime || data.workEnd || data.endHour || "23:00";
+  const newTz = data.timezone || "America/Lima";
+
+  let hoursChanged = false;
+  if (String(newStart) !== String(workStart)) {
+    workStart = String(newStart);
+    hoursChanged = true;
+  }
+  if (String(newEnd) !== String(workEnd)) {
+    workEnd = String(newEnd);
+    hoursChanged = true;
+  }
+  if (newTz !== configuredTimeZone) {
+    configuredTimeZone = newTz;
+    hoursChanged = true;
+  }
+
+  if (hoursChanged) {
+    console.log(`[Config] Horario de trabajo actualizado en tiempo real: ${workStart} a ${workEnd} (${configuredTimeZone}). ¿Dentro de horario?: ${isWithinWorkingHours() ? "SÍ" : "NO"}`);
+  }
+
+  // Ensure default values exist in Firestore if missing
+  const missingDefaults = {};
+  if (!data.workStartTime && !data.workStart) missingDefaults.workStartTime = "11:00";
+  if (!data.workEndTime && !data.workEnd) missingDefaults.workEndTime = "23:00";
+  if (!data.timezone) missingDefaults.timezone = "America/Lima";
+  if (Object.keys(missingDefaults).length > 0) {
+    try {
+      await db.doc("camera_catcher/prompt").set(missingDefaults, { merge: true });
+      console.log(`[Config] Guardados valores por defecto de horario en camera_catcher/prompt:`, missingDefaults);
+    } catch (_) {}
   }
 }, (err) => {
   console.warn(`[Config] Error escuchando camera_catcher/prompt:`, err.message);
