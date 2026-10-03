@@ -165,14 +165,14 @@ async function getDynamicConfig() {
 
     return {
       prompt: data?.default || DEFAULT_PROMPT,
-      intervalMinutes: data?.intervalMinutes !== undefined ? Number(data.intervalMinutes) : 15,
+      intervalMinutes: data?.intervalMinutes !== undefined ? Number(data.intervalMinutes) : 3,
       workStartTime: workStart,
       workEndTime: workEnd,
       timezone: configuredTimeZone
     };
   } catch (err) {
     console.warn("[Config] Error leyendo configuración de Firestore, usando defaults:", err.message);
-    return { prompt: DEFAULT_PROMPT, intervalMinutes: 15, workStartTime: "11:00", workEndTime: "23:00", timezone: "America/Lima" };
+    return { prompt: DEFAULT_PROMPT, intervalMinutes: 3, workStartTime: "11:00", workEndTime: "23:00", timezone: "America/Lima" };
   }
 }
 

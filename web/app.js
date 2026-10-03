@@ -206,18 +206,23 @@ function syncCountdownWithConfig(intervalMinutes, startH = "11:00", endH = "23:0
     return;
   }
 
-  // Calculate target based on latest photo timestamp if available
-  let lastTime = Date.now();
-  if (allDocs && allDocs.length > 0 && allDocs[0].epoch) {
-    lastTime = allDocs[0].epoch;
-  }
-  const intervalMs = intervalMinutes * 60 * 1000;
-  let nextTime = lastTime + intervalMs;
-  while (nextTime <= Date.now()) {
-    nextTime += intervalMs;
+  // Priorizar el próximo disparo registrado por el Daemon si está en el futuro
+  let nextTimeIso = currentDaemonState?.countdown?.nextCaptureAt;
+  const now = Date.now();
+  if (!nextTimeIso || new Date(nextTimeIso).getTime() <= now) {
+    let lastTime = now;
+    if (allDocs && allDocs.length > 0 && allDocs[0].epoch) {
+      lastTime = allDocs[0].epoch;
+    }
+    const intervalMs = intervalMinutes * 60 * 1000;
+    let nextTime = lastTime + intervalMs;
+    while (nextTime <= now) {
+      nextTime += intervalMs;
+    }
+    nextTimeIso = new Date(nextTime).toISOString();
   }
 
-  const remainingMin = ((nextTime - Date.now()) / 60000).toFixed(1);
+  const remainingMin = Math.max(0, ((new Date(nextTimeIso).getTime() - now) / 60000)).toFixed(1);
   if (currentStepTitle && (!currentDaemonState || currentDaemonState.step === "countdown" || currentDaemonState.step === "idle")) {
     currentStepTitle.textContent = "Contador de Ciclo Activo";
   }
@@ -225,7 +230,7 @@ function syncCountdownWithConfig(intervalMinutes, startH = "11:00", endH = "23:0
     currentStepDesc.textContent = `Contador activo (configurado en Firebase: ${intervalMinutes} min). Próxima consulta en ~${remainingMin} min.`;
   }
 
-  setupDynamicCountdownTicker(new Date(nextTime).toISOString(), intervalMinutes);
+  setupDynamicCountdownTicker(nextTimeIso, intervalMinutes);
 }
 
 /**
@@ -238,7 +243,7 @@ function initPromptListener() {
     if (snap.exists()) {
       const data = snap.data();
       promptInput.value = data?.default || "Describe what do you see in the image";
-      const currentInterval = data?.intervalMinutes !== undefined ? Number(data.intervalMinutes) : 15;
+      const currentInterval = data?.intervalMinutes !== undefined ? Number(data.intervalMinutes) : 3;
       const startH = data?.workStartTime || data?.workStart || "11:00";
       const endH = data?.workEndTime || data?.workEnd || "23:00";
 
@@ -288,14 +293,14 @@ function initPromptListener() {
       updateCostMetrics(allDocs.length);
     } else {
       promptInput.value = "Describe what do you see in the image";
-      if (intervalInput) intervalInput.value = 15;
+      if (intervalInput) intervalInput.value = 3;
       if (workStartTimeInput) workStartTimeInput.value = "11:00";
       if (workEndTimeInput) workEndTimeInput.value = "23:00";
       updateWorkingHoursStatus("11:00", "23:00");
       // Auto initialize if missing
       setDoc(promptDocRef, { 
         default: "Describe what do you see in the image",
-        intervalMinutes: 15,
+        intervalMinutes: 3,
         workStartTime: "11:00",
         workEndTime: "23:00",
         timezone: "America/Lima"

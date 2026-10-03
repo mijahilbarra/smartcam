@@ -16,7 +16,7 @@ class DaemonReporter {
       timestamp: new Date().toISOString(),
       countdown: {
         nextCaptureAt: null,
-        intervalMinutes: 15,
+        intervalMinutes: 3,
         remainingSeconds: 0,
         isWithinWorkingHours: true,
         workHours: "11:00 - 23:00 (America/Lima)"
@@ -96,7 +96,7 @@ class DaemonReporter {
 
     this.currentState.countdown = {
       nextCaptureAt: nextIso,
-      intervalMinutes: Number(intervalMinutes) || 15,
+      intervalMinutes: Number(intervalMinutes) || 3,
       remainingSeconds: remainingSec,
       isWithinWorkingHours: workInfo.isWithinWorkingHours !== false,
       workHours: `${workInfo.workStart || "11:00"} - ${workInfo.workEnd || "23:00"} (${workInfo.timezone || "America/Lima"})`
@@ -290,7 +290,7 @@ class DaemonReporter {
         ...this.currentState.countdown,
         nextCaptureAt: nextIso,
         remainingSeconds: remainingSec,
-        intervalMinutes: Number(intervalMinutes) || 15
+        intervalMinutes: Number(intervalMinutes) || 3
       };
     }
 
