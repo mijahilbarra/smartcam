@@ -32,9 +32,9 @@ Se implementaron flujos de trabajo (**Workflows**) separados en GitHub Actions u
   ```
 * **Mecanismo de Despliegue**:
   * Autenticación SSH segura mediante llave privada dedicada almacenada en GitHub Secrets (`VM_SSH_KEY`).
-  * Sincronización atómica de archivos con `rsync` hacia `/opt/camera-catcher/` en la VM.
-  * Ejecución de `npm install --omit=dev` y reinicio sin caída del servicio con `sudo systemctl restart camera-catcher.service`.
-  * Verificación del estado activo con `systemctl is-active`.
+  * Sincronización atómica de archivos con `rsync` hacia `/opt/camera-catcher/` en la VM (incluyendo `package-lock.json`).
+  * **Verificación inteligente de dependencias**: Validación vía checksum SHA-256 de `package-lock.json` para evitar ejecuciones innecesarias de `npm` y prevenir el agotamiento de CPU burst credits / swap thrashing en la instancia `e2-micro`. Si no hay cambios, se omite `npm ci`.
+  * Reinicio sin caída del servicio con `sudo systemctl restart camera-catcher.service` y verificación con `systemctl is-active`.
 
 ### 2. Despliegue de Hosting (`.github/workflows/deploy-hosting.yml`)
 * **Filtro de rutas**:

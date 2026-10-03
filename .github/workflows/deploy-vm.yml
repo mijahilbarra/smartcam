@@ -33,15 +33,28 @@ jobs:
           rsync -avz --delete \
             --exclude 'node_modules' \
             --exclude '.git' \
-            src package.json neolink.toml \
+            --exclude '.package-lock.hash' \
+            --exclude '.env' \
+            src package.json package-lock.json neolink.toml \
             ${{ secrets.VM_USER || 'deploy' }}@${{ secrets.VM_HOST }}:/opt/camera-catcher/
 
       - name: Install Dependencies & Restart Service
         run: |
-          echo "Actualizando dependencias e iniciando el servicio systemd..."
+          echo "Verificando dependencias e iniciando el servicio systemd..."
           ssh ${{ secrets.VM_USER || 'deploy' }}@${{ secrets.VM_HOST }} "
             cd /opt/camera-catcher && \
-            npm install --omit=dev && \
+            CURRENT_HASH=\$(sha256sum package-lock.json 2>/dev/null | cut -d ' ' -f 1) && \
+            if [ -d 'node_modules' ] && [ ! -f .package-lock.hash ]; then
+              echo \"\$CURRENT_HASH\" > .package-lock.hash;
+            fi && \
+            PREV_HASH=\$(cat .package-lock.hash 2>/dev/null || echo '') && \
+            if [ \"\$CURRENT_HASH\" != \"\$PREV_HASH\" ] || [ ! -d 'node_modules' ]; then
+              echo '⚠️ Cambio en dependencias detectado. Instalando con npm ci...' && \
+              npm ci --omit=dev && \
+              echo \"\$CURRENT_HASH\" > .package-lock.hash;
+            else
+              echo '⚡ Dependencias sin cambios. Saltando npm install para optimizar tiempo.';
+            fi && \
             sudo systemctl restart camera-catcher.service && \
             sudo systemctl is-active camera-catcher.service
           "
