@@ -125,6 +125,13 @@ sequenceDiagram
 
 ---
 
+## Esquema y Referencia de Firebase
+
+Para consultar la referencia completa de todos los documentos, colecciones, campos y rutas de almacenamiento en Firestore y Storage, consulta:
+👉 **[FIREBASE_SCHEMA_REFERENCE.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/FIREBASE_SCHEMA_REFERENCE.md)**
+
+---
+
 ## Tecnologías Descartadas y Registro de Eliminaciones
 
 Para conocer las tecnologías que fueron evaluadas, probadas y posteriormente descartadas (como Cloud Functions serverless, decodificadores en JavaScript puro, sockets UDP en navegadores y puertos HTTP públicos), consulta el archivo histórico:

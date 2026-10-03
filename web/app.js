@@ -981,9 +981,550 @@ function updateSimulator(intervalMinutes) {
   }
 }
 
+/* ========================================================
+   CALIBRADOR VISUAL DE CUADRANTES (ZONAS ROI)
+   ======================================================== */
+const openCalibratorBtn = document.getElementById("openCalibratorBtn");
+const modalCalibrateWithPhotoBtn = document.getElementById("modalCalibrateWithPhotoBtn");
+const calibratorModal = document.getElementById("calibratorModal");
+const closeCalibratorBtn = document.getElementById("closeCalibratorBtn");
+const calibratorOverlayBg = document.getElementById("calibratorOverlayBg");
+const resetQuadrantsBtn = document.getElementById("resetQuadrantsBtn");
+const addQuadrantBtn = document.getElementById("addQuadrantBtn");
+const saveQuadrantsBtn = document.getElementById("saveQuadrantsBtn");
+const calibratorStatusBadge = document.getElementById("calibratorStatusBadge");
+const calibratorPhotoSelect = document.getElementById("calibratorPhotoSelect");
+const calibratorLoading = document.getElementById("calibratorLoading");
+const calibratorImg = document.getElementById("calibratorImg");
+const calibratorOverlay = document.getElementById("calibratorOverlay");
+const quadrantsList = document.getElementById("quadrantsList");
+const quadrantCount = document.getElementById("quadrantCount");
+
+const DEFAULT_QUADRANTS = [
+  {
+    id: "puerta_entrada",
+    name: "Entrada / Pasillo peatonal",
+    boxNorm: [0.30, 0.40, 0.88, 0.60],
+    type: "walking_zone",
+    color: "#007BFF"
+  },
+  {
+    id: "silla_barbero_puesto1",
+    name: "Silla de barbero (Puesto 1)",
+    boxNorm: [0.65, 0.80, 1.00, 1.00],
+    type: "barber_chair",
+    color: "#FFD700"
+  },
+  {
+    id: "silla_barbero_puesto2",
+    name: "Silla de barbero (Frente)",
+    boxNorm: [0.80, 0.36, 1.00, 0.67],
+    type: "barber_chair",
+    color: "#FFD700"
+  },
+  {
+    id: "silla_espera",
+    name: "Silla de espera",
+    boxNorm: [0.55, 0.73, 0.92, 0.90],
+    type: "waiting_chair",
+    color: "#D250DC"
+  },
+  {
+    id: "zona_barbero",
+    name: "Zona de trabajo de barbero",
+    boxNorm: [0.45, 0.65, 0.95, 0.82],
+    type: "barber_workstation",
+    color: "#FF4500"
+  }
+];
+
+let currentQuadrants = JSON.parse(JSON.stringify(DEFAULT_QUADRANTS));
+let selectedQuadrantIndex = 0;
+let dragContext = null;
+let currentCalibratorDocId = null;
+
+function showCalibratorStatus(msg, type = "info") {
+  if (!calibratorStatusBadge) return;
+  calibratorStatusBadge.className = `status-badge ${type}`;
+  calibratorStatusBadge.textContent = msg;
+  calibratorStatusBadge.classList.remove("hidden");
+}
+
+function hideCalibratorStatus() {
+  if (calibratorStatusBadge) {
+    calibratorStatusBadge.classList.add("hidden");
+  }
+}
+
+/**
+ * Real-time listener for camera_catcher/quadrants in Firestore
+ */
+function initQuadrantsListener() {
+  const quadrantsDocRef = doc(db, "camera_catcher", "quadrants");
+  onSnapshot(quadrantsDocRef, (snap) => {
+    if (snap.exists()) {
+      const data = snap.data();
+      if (Array.isArray(data?.quadrants) && data.quadrants.length > 0) {
+        currentQuadrants = JSON.parse(JSON.stringify(data.quadrants));
+      } else if (data?.quadrants && typeof data.quadrants === "object") {
+        currentQuadrants = Object.values(data.quadrants);
+      }
+      renderQuadrantsSidebar();
+      renderBoxesOnStage();
+    }
+  }, (err) => {
+    console.warn("[Calibrator] Error leyendo camera_catcher/quadrants:", err);
+  });
+}
+
+/**
+ * Populate reference photo selector dropdown
+ */
+function updateCalibratorPhotoSelectOptions(preselectDocId = null) {
+  if (!calibratorPhotoSelect) return;
+  calibratorPhotoSelect.innerHTML = "";
+
+  const latestOpt = document.createElement("option");
+  latestOpt.value = "latest";
+  latestOpt.textContent = "⚡ Última captura disponible";
+  calibratorPhotoSelect.appendChild(latestOpt);
+
+  allDocs.forEach((docItem, idx) => {
+    const opt = document.createElement("option");
+    opt.value = docItem.id;
+    const formatted = formatDateTime(docItem.timestamp, docItem.epoch);
+    opt.textContent = `${idx + 1}. [${formatted}] - ${docItem.id}`;
+    if (preselectDocId && docItem.id === preselectDocId) {
+      opt.selected = true;
+    }
+    calibratorPhotoSelect.appendChild(opt);
+  });
+
+  if (preselectDocId && calibratorPhotoSelect.value !== preselectDocId) {
+    // If not found yet, default to first option
+    calibratorPhotoSelect.value = "latest";
+  }
+}
+
+/**
+ * Load reference photo into the calibrator stage
+ */
+async function loadCalibratorImage(targetDocId = null) {
+  if (!calibratorImg || !calibratorLoading) return;
+  calibratorLoading.classList.remove("hidden");
+  calibratorImg.style.opacity = "0.3";
+
+  let docToLoad = null;
+  if (targetDocId && targetDocId !== "latest") {
+    docToLoad = allDocs.find(d => d.id === targetDocId);
+  }
+
+  if (!docToLoad && allDocs.length > 0) {
+    docToLoad = allDocs[0];
+  }
+
+  let photoUrl = "";
+  if (docToLoad && docToLoad.imageStoragePath) {
+    photoUrl = await resolveStorageUrl(docToLoad.imageStoragePath);
+  }
+
+  if (photoUrl) {
+    calibratorImg.onload = () => {
+      calibratorLoading.classList.add("hidden");
+      calibratorImg.style.opacity = "1";
+      renderBoxesOnStage();
+    };
+    calibratorImg.onerror = () => {
+      calibratorLoading.innerHTML = `<span style="color: var(--danger)">Error cargando imagen</span>`;
+    };
+    calibratorImg.src = photoUrl;
+  } else {
+    calibratorLoading.innerHTML = `<span>No hay fotos capturadas aún para calibrar</span>`;
+  }
+}
+
+/**
+ * Render list of quadrants in the sidebar
+ */
+function renderQuadrantsSidebar() {
+  if (!quadrantsList) return;
+  if (quadrantCount) quadrantCount.textContent = currentQuadrants.length;
+  quadrantsList.innerHTML = "";
+
+  currentQuadrants.forEach((q, idx) => {
+    const item = document.createElement("div");
+    item.className = `q-item ${idx === selectedQuadrantIndex ? "active" : ""}`;
+    item.dataset.index = idx;
+
+    const [ymin, xmin, ymax, xmax] = q.boxNorm || [0, 0, 1, 1];
+
+    item.innerHTML = `
+      <div class="q-item-header">
+        <div class="q-item-left">
+          <input type="color" class="q-color-picker" value="${q.color || '#3b82f6'}" title="Cambiar color del cuadrante" />
+          <input type="text" class="q-name-input" value="${q.name || q.id}" title="Editar nombre del cuadrante" />
+        </div>
+        ${idx >= 5 ? `<button class="q-delete-btn" title="Eliminar este cuadrante">&times;</button>` : ''}
+      </div>
+      <div class="q-coords-row">
+        <span>Y: <strong class="q-coord-pill">${ymin.toFixed(2)} - ${ymax.toFixed(2)}</strong></span>
+        <span>X: <strong class="q-coord-pill">${xmin.toFixed(2)} - ${xmax.toFixed(2)}</strong></span>
+      </div>
+    `;
+
+    // Click item to select
+    item.addEventListener("click", (e) => {
+      if (e.target.classList.contains("q-name-input") || e.target.classList.contains("q-color-picker") || e.target.classList.contains("q-delete-btn")) {
+        return;
+      }
+      selectedQuadrantIndex = idx;
+      renderQuadrantsSidebar();
+      renderBoxesOnStage();
+    });
+
+    // Name change
+    const nameInput = item.querySelector(".q-name-input");
+    nameInput.addEventListener("input", (e) => {
+      q.name = e.target.value;
+      updateBoxBadge(idx);
+    });
+
+    // Color change
+    const colorPicker = item.querySelector(".q-color-picker");
+    colorPicker.addEventListener("input", (e) => {
+      q.color = e.target.value;
+      updateBoxColor(idx);
+    });
+
+    // Delete
+    const deleteBtn = item.querySelector(".q-delete-btn");
+    if (deleteBtn) {
+      deleteBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        currentQuadrants.splice(idx, 1);
+        if (selectedQuadrantIndex >= currentQuadrants.length) {
+          selectedQuadrantIndex = Math.max(0, currentQuadrants.length - 1);
+        }
+        renderQuadrantsSidebar();
+        renderBoxesOnStage();
+      });
+    }
+
+    quadrantsList.appendChild(item);
+  });
+}
+
+function updateBoxBadge(idx) {
+  const box = calibratorOverlay?.querySelector(`.q-box[data-index="${idx}"]`);
+  const badge = box?.querySelector(".q-box-badge");
+  if (badge && currentQuadrants[idx]) {
+    badge.textContent = currentQuadrants[idx].name || currentQuadrants[idx].id;
+  }
+}
+
+function updateBoxColor(idx) {
+  const box = calibratorOverlay?.querySelector(`.q-box[data-index="${idx}"]`);
+  const badge = box?.querySelector(".q-box-badge");
+  const q = currentQuadrants[idx];
+  if (box && q) {
+    box.style.borderColor = q.color;
+    box.style.backgroundColor = hexToRgba(q.color, 0.20);
+    if (badge) badge.style.backgroundColor = q.color;
+  }
+}
+
+function hexToRgba(hex, alpha = 0.2) {
+  if (!hex || !hex.startsWith("#")) return `rgba(59, 130, 246, ${alpha})`;
+  let c = hex.substring(1);
+  if (c.length === 3) c = c.split("").map(ch => ch + ch).join("");
+  const num = parseInt(c, 16);
+  return `rgba(${(num >> 16) & 255}, ${(num >> 8) & 255}, ${num & 255}, ${alpha})`;
+}
+
+/**
+ * Render interactive boxes and handles on the stage overlay
+ */
+function renderBoxesOnStage() {
+  if (!calibratorOverlay || !calibratorImg || !calibratorImg.clientWidth) return;
+  calibratorOverlay.innerHTML = "";
+
+  const stageW = calibratorImg.clientWidth;
+  const stageH = calibratorImg.clientHeight;
+
+  currentQuadrants.forEach((q, idx) => {
+    const [ymin, xmin, ymax, xmax] = q.boxNorm || [0, 0, 1, 1];
+    const left = xmin * stageW;
+    const top = ymin * stageH;
+    const width = Math.max(20, (xmax - xmin) * stageW);
+    const height = Math.max(20, (ymax - ymin) * stageH);
+
+    const box = document.createElement("div");
+    box.className = `q-box ${idx === selectedQuadrantIndex ? "active" : ""}`;
+    box.dataset.index = idx;
+    box.style.left = `${left}px`;
+    box.style.top = `${top}px`;
+    box.style.width = `${width}px`;
+    box.style.height = `${height}px`;
+    box.style.borderColor = q.color || "#00ff00";
+    box.style.backgroundColor = hexToRgba(q.color || "#00ff00", 0.20);
+
+    const badge = document.createElement("div");
+    badge.className = "q-box-badge";
+    badge.style.backgroundColor = q.color || "#00ff00";
+    badge.textContent = q.name || q.id;
+    box.appendChild(badge);
+
+    // Resize Handles: NW, NE, SW, SE
+    ["nw", "ne", "sw", "se"].forEach(pos => {
+      const handle = document.createElement("div");
+      handle.className = `q-handle q-handle-${pos}`;
+      handle.dataset.handle = pos;
+      box.appendChild(handle);
+    });
+
+    // Handle mousedown on box or resize handles
+    box.addEventListener("mousedown", (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      selectedQuadrantIndex = idx;
+      renderQuadrantsSidebar();
+
+      // Refresh active class on boxes
+      calibratorOverlay.querySelectorAll(".q-box").forEach((b, bIdx) => {
+        b.classList.toggle("active", bIdx === idx);
+      });
+
+      const handlePos = e.target.dataset.handle;
+      const mode = handlePos || "move";
+
+      dragContext = {
+        mode,
+        index: idx,
+        startX: e.clientX,
+        startY: e.clientY,
+        stageW: calibratorImg.clientWidth,
+        stageH: calibratorImg.clientHeight,
+        origBox: [...q.boxNorm]
+      };
+    });
+
+    calibratorOverlay.appendChild(box);
+  });
+}
+
+function updateBoxPositionsDOM() {
+  if (!calibratorOverlay || !calibratorImg) return;
+  const stageW = calibratorImg.clientWidth;
+  const stageH = calibratorImg.clientHeight;
+
+  currentQuadrants.forEach((q, idx) => {
+    const box = calibratorOverlay.querySelector(`.q-box[data-index="${idx}"]`);
+    if (!box) return;
+    const [ymin, xmin, ymax, xmax] = q.boxNorm;
+    box.style.left = `${xmin * stageW}px`;
+    box.style.top = `${ymin * stageH}px`;
+    box.style.width = `${Math.max(15, (xmax - xmin) * stageW)}px`;
+    box.style.height = `${Math.max(15, (ymax - ymin) * stageH)}px`;
+  });
+}
+
+function updateSidebarCoordDisplay(idx) {
+  const item = quadrantsList?.querySelector(`.q-item[data-index="${idx}"]`);
+  if (!item || !currentQuadrants[idx]) return;
+  const [ymin, xmin, ymax, xmax] = currentQuadrants[idx].boxNorm;
+  const pills = item.querySelectorAll(".q-coord-pill");
+  if (pills && pills.length >= 2) {
+    pills[0].textContent = `${ymin.toFixed(2)} - ${ymax.toFixed(2)}`;
+    pills[1].textContent = `${xmin.toFixed(2)} - ${xmax.toFixed(2)}`;
+  }
+}
+
+/**
+ * Setup Window Drag Listeners
+ */
+window.addEventListener("mousemove", (e) => {
+  if (!dragContext) return;
+  const dxNorm = (e.clientX - dragContext.startX) / dragContext.stageW;
+  const dyNorm = (e.clientY - dragContext.startY) / dragContext.stageH;
+  const [origYmin, origXmin, origYmax, origXmax] = dragContext.origBox;
+  const q = currentQuadrants[dragContext.index];
+  if (!q) return;
+
+  const clamp = (v, min = 0, max = 1) => Math.max(min, Math.min(max, v));
+  const minSize = 0.03;
+
+  if (dragContext.mode === "move") {
+    const w = origXmax - origXmin;
+    const h = origYmax - origYmin;
+    let newXmin = clamp(origXmin + dxNorm, 0, 1 - w);
+    let newYmin = clamp(origYmin + dyNorm, 0, 1 - h);
+    q.boxNorm = [
+      Number(newYmin.toFixed(3)),
+      Number(newXmin.toFixed(3)),
+      Number((newYmin + h).toFixed(3)),
+      Number((newXmin + w).toFixed(3))
+    ];
+  } else if (dragContext.mode === "nw") {
+    let newYmin = clamp(origYmin + dyNorm, 0, origYmax - minSize);
+    let newXmin = clamp(origXmin + dxNorm, 0, origXmax - minSize);
+    q.boxNorm[0] = Number(newYmin.toFixed(3));
+    q.boxNorm[1] = Number(newXmin.toFixed(3));
+  } else if (dragContext.mode === "ne") {
+    let newYmin = clamp(origYmin + dyNorm, 0, origYmax - minSize);
+    let newXmax = clamp(origXmax + dxNorm, origXmin + minSize, 1);
+    q.boxNorm[0] = Number(newYmin.toFixed(3));
+    q.boxNorm[3] = Number(newXmax.toFixed(3));
+  } else if (dragContext.mode === "sw") {
+    let newYmax = clamp(origYmax + dyNorm, origYmin + minSize, 1);
+    let newXmin = clamp(origXmin + dxNorm, 0, origXmax - minSize);
+    q.boxNorm[2] = Number(newYmax.toFixed(3));
+    q.boxNorm[1] = Number(newXmin.toFixed(3));
+  } else if (dragContext.mode === "se") {
+    let newYmax = clamp(origYmax + dyNorm, origYmin + minSize, 1);
+    let newXmax = clamp(origXmax + dxNorm, origXmin + minSize, 1);
+    q.boxNorm[2] = Number(newYmax.toFixed(3));
+    q.boxNorm[3] = Number(newXmax.toFixed(3));
+  }
+
+  updateBoxPositionsDOM();
+  updateSidebarCoordDisplay(dragContext.index);
+});
+
+window.addEventListener("mouseup", () => {
+  if (dragContext) {
+    dragContext = null;
+  }
+});
+
+/**
+ * Handle Window Resize to keep boxes aligned with image
+ */
+window.addEventListener("resize", () => {
+  if (calibratorModal && !calibratorModal.classList.contains("hidden")) {
+    renderBoxesOnStage();
+  }
+});
+
+/**
+ * Open Calibrator Modal
+ */
+function openCalibrator(targetDocId = null) {
+  if (!calibratorModal) return;
+  hideCalibratorStatus();
+  updateCalibratorPhotoSelectOptions(targetDocId);
+  currentCalibratorDocId = targetDocId;
+
+  calibratorModal.classList.remove("hidden");
+  document.body.style.overflow = "hidden";
+
+  loadCalibratorImage(targetDocId);
+}
+
+function closeCalibrator() {
+  if (!calibratorModal) return;
+  calibratorModal.classList.add("hidden");
+  document.body.style.overflow = "";
+}
+
+/**
+ * Initialize Calibrator UI and Event Listeners
+ */
+function initCalibratorUI() {
+  if (openCalibratorBtn) {
+    openCalibratorBtn.addEventListener("click", () => {
+      openCalibrator();
+    });
+  }
+
+  if (modalCalibrateWithPhotoBtn) {
+    modalCalibrateWithPhotoBtn.addEventListener("click", () => {
+      const activeDocId = currentModalDocId || (allDocs.length > 0 ? allDocs[0].id : null);
+      if (imageModal) imageModal.classList.add("hidden");
+      openCalibrator(activeDocId);
+    });
+  }
+
+  if (closeCalibratorBtn) {
+    closeCalibratorBtn.addEventListener("click", closeCalibrator);
+  }
+
+  if (calibratorOverlayBg) {
+    calibratorOverlayBg.addEventListener("click", closeCalibrator);
+  }
+
+  if (calibratorPhotoSelect) {
+    calibratorPhotoSelect.addEventListener("change", (e) => {
+      loadCalibratorImage(e.target.value);
+    });
+  }
+
+  if (resetQuadrantsBtn) {
+    resetQuadrantsBtn.addEventListener("click", () => {
+      if (confirm("¿Estás seguro de restablecer todos los cuadrantes a los valores por defecto?")) {
+        currentQuadrants = JSON.parse(JSON.stringify(DEFAULT_QUADRANTS));
+        selectedQuadrantIndex = 0;
+        renderQuadrantsSidebar();
+        renderBoxesOnStage();
+        showCalibratorStatus("Valores restablecidos a defaults (pulsa Guardar para persistir en Firebase).", "info");
+      }
+    });
+  }
+
+  if (addQuadrantBtn) {
+    addQuadrantBtn.addEventListener("click", () => {
+      const newId = `zona_personalizada_${Date.now().toString().slice(-4)}`;
+      const colors = ["#06b6d4", "#ec4899", "#8b5cf6", "#10b981", "#f97316"];
+      const randColor = colors[currentQuadrants.length % colors.length];
+
+      const newQ = {
+        id: newId,
+        name: `Nueva Zona ${currentQuadrants.length + 1}`,
+        type: "custom_zone",
+        color: randColor,
+        boxNorm: [0.35, 0.35, 0.65, 0.65]
+      };
+
+      currentQuadrants.push(newQ);
+      selectedQuadrantIndex = currentQuadrants.length - 1;
+      renderQuadrantsSidebar();
+      renderBoxesOnStage();
+      showCalibratorStatus("Nuevo cuadrante creado en el centro. Arrástralo a su posición.", "info");
+    });
+  }
+
+  if (saveQuadrantsBtn) {
+    saveQuadrantsBtn.addEventListener("click", async () => {
+      saveQuadrantsBtn.disabled = true;
+      saveQuadrantsBtn.innerHTML = `<span>⏳ Guardando...</span>`;
+      showCalibratorStatus("Guardando cuadrantes en Firestore: camera_catcher/quadrants...", "info");
+
+      try {
+        const quadrantsDocRef = doc(db, "camera_catcher", "quadrants");
+        await setDoc(quadrantsDocRef, {
+          updatedAt: new Date().toISOString(),
+          updatedBy: "web-dashboard",
+          quadrants: currentQuadrants
+        });
+
+        showCalibratorStatus("✅ ¡Cuadrantes guardados y sincronizados con el backend en tiempo real!", "success");
+        setTimeout(() => hideCalibratorStatus(), 5000);
+      } catch (err) {
+        console.error("[Calibrator] Error guardando cuadrantes:", err);
+        showCalibratorStatus(`❌ Error al guardar en Firebase: ${err.message}`, "error");
+      } finally {
+        saveQuadrantsBtn.disabled = false;
+        saveQuadrantsBtn.innerHTML = `<span>💾 Guardar en Firebase</span>`;
+      }
+    });
+  }
+}
+
 // Initialize
 initPromptListener();
 initPaginationListeners();
 initPhotosListener();
 initCostMonitor();
+initQuadrantsListener();
+initCalibratorUI();
+
 

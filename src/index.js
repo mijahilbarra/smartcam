@@ -6,7 +6,7 @@ import fsSync from "fs";
 import path from "path";
 import util from "util";
 import { fileURLToPath } from "url";
-import { detectObjectsAndQuadrants } from "./detector.js";
+import { detectObjectsAndQuadrants, setCustomQuadrants, getDefaultQuadrantsArray } from "./detector.js";
 
 const execPromise = util.promisify(exec);
 const __filename = fileURLToPath(import.meta.url);
@@ -536,3 +536,30 @@ db.doc("camera_catcher/commands").onSnapshot((snapshot) => {
 }, (err) => {
   console.warn(`[Listener] Error en snapshot listener de commands:`, err.message);
 });
+
+// Real-time listener for physical quadrants configuration in Firestore
+console.log(`[Quadrants] Escuchando configuración de cuadrantes en tiempo real: camera_catcher/quadrants...`);
+db.doc("camera_catcher/quadrants").onSnapshot(async (snapshot) => {
+  if (!snapshot.exists) {
+    console.log(`[Quadrants] camera_catcher/quadrants no existe. Creando con valores por defecto...`);
+    try {
+      await db.doc("camera_catcher/quadrants").set({
+        updatedAt: new Date().toISOString(),
+        updatedBy: "system_init",
+        quadrants: getDefaultQuadrantsArray()
+      });
+      console.log(`[Quadrants] Valores iniciales de cuadrantes guardados en Firestore.`);
+    } catch (e) {
+      console.warn(`[Quadrants] No se pudo autoinicializar camera_catcher/quadrants:`, e.message);
+    }
+    return;
+  }
+
+  const data = snapshot.data();
+  if (data && data.quadrants) {
+    setCustomQuadrants(data.quadrants);
+  }
+}, (err) => {
+  console.warn(`[Quadrants] Error escuchando camera_catcher/quadrants:`, err.message);
+});
+

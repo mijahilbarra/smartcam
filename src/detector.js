@@ -31,33 +31,67 @@ export const BARBERSHOP_QUADRANTS = {
     id: "puerta_entrada",
     name: "Entrada / Pasillo peatonal",
     boxNorm: [0.30, 0.40, 0.88, 0.60], // [ymin, xmin, ymax, xmax]
-    type: "walking_zone"
+    type: "walking_zone",
+    color: "#007BFF"
   },
   silla_barbero_puesto1: {
     id: "silla_barbero_puesto1",
     name: "Silla de barbero (Puesto 1)",
     boxNorm: [0.65, 0.80, 1.00, 1.00],
-    type: "barber_chair"
+    type: "barber_chair",
+    color: "#FFD700"
   },
   silla_barbero_puesto2: {
     id: "silla_barbero_puesto2",
     name: "Silla de barbero (Frente)",
     boxNorm: [0.80, 0.36, 1.00, 0.67],
-    type: "barber_chair"
+    type: "barber_chair",
+    color: "#FFD700"
   },
   silla_espera: {
     id: "silla_espera",
     name: "Silla de espera",
     boxNorm: [0.55, 0.73, 0.92, 0.90],
-    type: "waiting_chair"
+    type: "waiting_chair",
+    color: "#D250DC"
   },
   zona_barbero: {
     id: "zona_barbero",
     name: "Zona de trabajo de barbero",
     boxNorm: [0.45, 0.65, 0.95, 0.82],
-    type: "barber_workstation"
+    type: "barber_workstation",
+    color: "#FF4500"
   }
 };
+
+let dynamicQuadrants = { ...BARBERSHOP_QUADRANTS };
+
+/**
+ * Update dynamic quadrants in memory (received from Firestore: camera_catcher/quadrants)
+ */
+export function setCustomQuadrants(newQuadrants) {
+  if (!newQuadrants) return;
+  if (Array.isArray(newQuadrants)) {
+    const map = {};
+    for (const q of newQuadrants) {
+      if (q && q.id) {
+        map[q.id] = q;
+      }
+    }
+    dynamicQuadrants = map;
+  } else if (typeof newQuadrants === "object") {
+    dynamicQuadrants = { ...newQuadrants };
+  }
+  console.log(`[Detector] Cuadrantes actualizados dinámicamente: ${Object.keys(dynamicQuadrants).join(", ")}`);
+}
+
+export function getActiveQuadrants() {
+  return dynamicQuadrants || BARBERSHOP_QUADRANTS;
+}
+
+export function getDefaultQuadrantsArray() {
+  return Object.values(BARBERSHOP_QUADRANTS);
+}
 
 let inferenceSession = null;
 let lastFrameThumbnail = null;
@@ -178,32 +212,36 @@ async function preprocessImage(imageBuffer) {
 }
 
 /**
+ * Evaluates whether a normalized point (cx, cy) is within a boxNorm [ymin, xmin, ymax, xmax]
+ */
+function isPointInNormBox(cx, cy, boxNorm) {
+  if (!boxNorm || boxNorm.length < 4) return false;
+  return cy >= boxNorm[0] && cx >= boxNorm[1] && cy <= boxNorm[2] && cx <= boxNorm[3];
+}
+
+/**
  * Classify detected objects into semantic barber shop quadrants
  */
-function mapDetectionsToBarbershopQuadrants(detections, width, height) {
+function mapDetectionsToBarbershopQuadrants(detections, width, height, customQuadrants = null) {
   const quadrants = [];
+  const activeCfg = customQuadrants || getActiveQuadrants();
 
-  // Permanent reference quadrants
-  const silla1Box = [
-    Math.round(BARBERSHOP_QUADRANTS.silla_barbero_puesto1.boxNorm[1] * width),
-    Math.round(BARBERSHOP_QUADRANTS.silla_barbero_puesto1.boxNorm[0] * height),
-    Math.round(BARBERSHOP_QUADRANTS.silla_barbero_puesto1.boxNorm[3] * width),
-    Math.round(BARBERSHOP_QUADRANTS.silla_barbero_puesto1.boxNorm[2] * height)
+  const cfgSilla1 = activeCfg.silla_barbero_puesto1 || BARBERSHOP_QUADRANTS.silla_barbero_puesto1;
+  const cfgSilla2 = activeCfg.silla_barbero_puesto2 || BARBERSHOP_QUADRANTS.silla_barbero_puesto2;
+  const cfgEspera = activeCfg.silla_espera || BARBERSHOP_QUADRANTS.silla_espera;
+  const cfgPuerta = activeCfg.puerta_entrada || BARBERSHOP_QUADRANTS.puerta_entrada;
+  const cfgBarbero = activeCfg.zona_barbero || BARBERSHOP_QUADRANTS.zona_barbero;
+
+  const toBox = (bNorm) => [
+    Math.round(bNorm[1] * width),
+    Math.round(bNorm[0] * height),
+    Math.round(bNorm[3] * width),
+    Math.round(bNorm[2] * height)
   ];
 
-  const silla2Box = [
-    Math.round(BARBERSHOP_QUADRANTS.silla_barbero_puesto2.boxNorm[1] * width),
-    Math.round(BARBERSHOP_QUADRANTS.silla_barbero_puesto2.boxNorm[0] * height),
-    Math.round(BARBERSHOP_QUADRANTS.silla_barbero_puesto2.boxNorm[3] * width),
-    Math.round(BARBERSHOP_QUADRANTS.silla_barbero_puesto2.boxNorm[2] * height)
-  ];
-
-  const esperaBox = [
-    Math.round(BARBERSHOP_QUADRANTS.silla_espera.boxNorm[1] * width),
-    Math.round(BARBERSHOP_QUADRANTS.silla_espera.boxNorm[0] * height),
-    Math.round(BARBERSHOP_QUADRANTS.silla_espera.boxNorm[3] * width),
-    Math.round(BARBERSHOP_QUADRANTS.silla_espera.boxNorm[2] * height)
-  ];
+  const silla1Box = toBox(cfgSilla1.boxNorm);
+  const silla2Box = toBox(cfgSilla2.boxNorm);
+  const esperaBox = toBox(cfgEspera.boxNorm);
 
   let silla1Ocupada = false;
   let clienteSilla1Det = null;
@@ -216,12 +254,12 @@ function mapDetectionsToBarbershopQuadrants(detections, width, height) {
 
     if (det.class === "person") {
       // Walking person in door / entrance corridor
-      if (cx >= 0.35 && cx <= 0.65 && cy <= 0.85) {
+      if (isPointInNormBox(cx, cy, cfgPuerta.boxNorm)) {
         quadrants.push({
           id: "persona_caminando",
           label: "Persona caminando",
           category: "transito",
-          color: "#007BFF", // Blue
+          color: cfgPuerta.color || "#007BFF", // Blue
           confidence: det.score,
           box: [x1, y1, x2, y2],
           status: "en_transito",
@@ -229,24 +267,24 @@ function mapDetectionsToBarbershopQuadrants(detections, width, height) {
         });
       }
       // Seated client on chair 1
-      else if (cx >= 0.78 && cy >= 0.60) {
+      else if (isPointInNormBox(cx, cy, cfgSilla1.boxNorm) || (cx >= 0.78 && cy >= 0.60)) {
         silla1Ocupada = true;
         clienteSilla1Det = det;
       }
       // Barber standing working next to chair
-      else if (cx >= 0.65 && cx < 0.80 && cy >= 0.35) {
+      else if (isPointInNormBox(cx, cy, cfgBarbero.boxNorm) || (cx >= 0.65 && cx < 0.80 && cy >= 0.35)) {
         quadrants.push({
           id: "barbero_servicio",
-          label: "Barbero",
+          label: cfgBarbero.name || "Barbero",
           category: "personal",
-          color: "#FF4500", // OrangeRed
+          color: cfgBarbero.color || "#FF4500", // OrangeRed
           confidence: det.score,
           box: [x1, y1, x2, y2],
           status: "en_servicio",
           description: "Barbero de pie atendiendo puesto"
         });
       }
-    } else if (det.class === "cell phone" && cx >= 0.80 && cy >= 0.60) {
+    } else if (det.class === "cell phone" && (isPointInNormBox(cx, cy, cfgSilla1.boxNorm) || (cx >= 0.80 && cy >= 0.60))) {
       // Cell phone held by client confirms seated customer presence
       silla1Ocupada = true;
     } else if (det.class === "chair") {
@@ -260,10 +298,10 @@ function mapDetectionsToBarbershopQuadrants(detections, width, height) {
 
   // Register Barber Chair 1
   quadrants.push({
-    id: "silla_barbero_puesto1",
-    label: "Silla de barbero",
+    id: cfgSilla1.id || "silla_barbero_puesto1",
+    label: cfgSilla1.name || "Silla de barbero",
     category: "silla_barbero",
-    color: "#FFD700", // Gold
+    color: cfgSilla1.color || "#FFD700", // Gold
     box: silla1Box,
     status: silla1Ocupada ? "ocupada" : "disponible",
     description: "Sillón hidráulico de servicio principal"
@@ -286,10 +324,10 @@ function mapDetectionsToBarbershopQuadrants(detections, width, height) {
 
   // Register Barber Chair 2 (Foreground)
   quadrants.push({
-    id: "silla_barbero_puesto2",
-    label: "Silla de barbero (Frente)",
+    id: cfgSilla2.id || "silla_barbero_puesto2",
+    label: cfgSilla2.name || "Silla de barbero (Frente)",
     category: "silla_barbero",
-    color: "#FFD700",
+    color: cfgSilla2.color || "#FFD700",
     box: silla2Box,
     status: "disponible",
     description: "Cabezal y sillón de barbero en primer plano"
@@ -297,10 +335,10 @@ function mapDetectionsToBarbershopQuadrants(detections, width, height) {
 
   // Register Waiting Chair / Bench
   quadrants.push({
-    id: "silla_espera",
-    label: "Silla de espera",
+    id: cfgEspera.id || "silla_espera",
+    label: cfgEspera.name || "Silla de espera",
     category: "silla_espera",
-    color: "#D250DC", // Purple
+    color: cfgEspera.color || "#D250DC", // Purple
     box: esperaBox,
     status: "disponible",
     description: "Banca para clientes en espera"
@@ -436,7 +474,7 @@ export async function detectObjectsAndQuadrants(imageBuffer, options = {}) {
   const detections = applyNMS(rawDetections, 0.45);
 
   // Map to barber shop quadrants
-  const quadrants = mapDetectionsToBarbershopQuadrants(detections, origWidth, origHeight);
+  const quadrants = mapDetectionsToBarbershopQuadrants(detections, origWidth, origHeight, options.quadrants);
 
   // Extract cropped images for seated clients
   const clientCrops = [];

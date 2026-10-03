@@ -7,9 +7,9 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=7">
+  <link rel="stylesheet" href="style.css?v=8">
   <!-- Firebase SDKs via CDN -->
-  <script type="module" src="app.js?v=7"></script>
+  <script type="module" src="app.js?v=8"></script>
 </head>
 <body>
   <div class="app-container">
@@ -21,7 +21,11 @@
           <p class="subtitle">Monitoreo y Análisis Visual con Gemini Vision • Barbería</p>
         </div>
       </div>
-      <div class="header-actions">
+      <div class="header-actions" style="display: flex; gap: 10px; align-items: center;">
+        <button id="openCalibratorBtn" class="btn btn-secondary">
+          <span class="btn-icon">📐</span>
+          <span class="btn-text">Calibrar Cuadrantes</span>
+        </button>
         <button id="captureBtn" class="btn btn-primary">
           <span class="btn-icon">⚡</span>
           <span class="btn-text">Capturar Ahora</span>
@@ -397,7 +401,12 @@
             <span id="copyFeedback" class="copy-feedback hidden">¡Copiado!</span>
           </div>
         </div>
-        <div id="modalTimestamp" class="modal-time"></div>
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <button id="modalCalibrateWithPhotoBtn" class="btn btn-secondary btn-sm" title="Abrir esta foto en el calibrador para ajustar cuadrantes" style="padding: 5px 12px; font-size: 0.80rem;">
+            <span>📐 Calibrar con esta foto</span>
+          </button>
+          <div id="modalTimestamp" class="modal-time"></div>
+        </div>
       </div>
 
       <div class="modal-body">
@@ -452,6 +461,73 @@
               ✂️ Clientes Sentados Extraídos:
             </div>
             <div id="modalClientsList" style="display: flex; gap: 12px; flex-wrap: wrap;"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Calibrador Visual de Cuadrantes Modal -->
+  <div id="calibratorModal" class="modal hidden">
+    <div class="modal-overlay" id="calibratorOverlayBg"></div>
+    <div class="modal-content calibrator-modal-content">
+      <button id="closeCalibratorBtn" class="modal-close" title="Cerrar calibrador">&times;</button>
+      
+      <div class="modal-header-bar">
+        <div class="modal-header-left">
+          <h3 class="modal-title">📐 Calibrador Visual de Cuadrantes (Zonas ROI)</h3>
+          <span class="tag">camera_catcher/quadrants</span>
+        </div>
+        <div class="calibrator-header-actions">
+          <button id="resetQuadrantsBtn" class="btn btn-secondary btn-sm" title="Restablecer los cuadrantes a los valores iniciales">
+            ↺ Restablecer Defaults
+          </button>
+          <button id="addQuadrantBtn" class="btn btn-secondary btn-sm" title="Añadir una nueva zona personalizada">
+            + Añadir Cuadrante
+          </button>
+          <button id="saveQuadrantsBtn" class="btn btn-primary btn-sm" title="Guardar cuadrantes en Firestore">
+            💾 Guardar en Firebase
+          </button>
+        </div>
+      </div>
+
+      <div id="calibratorStatusBadge" class="status-badge hidden" style="margin: 0 24px 12px 24px;"></div>
+
+      <div class="calibrator-layout">
+        <!-- Canvas / Interactive Image Container -->
+        <div class="calibrator-canvas-pane">
+          <div class="calibrator-toolbar">
+            <div class="photo-selector-wrap">
+              <label for="calibratorPhotoSelect">📷 Foto de referencia:</label>
+              <select id="calibratorPhotoSelect" class="calibrator-select">
+                <option value="latest">Última captura disponible</option>
+              </select>
+            </div>
+            <div class="calibrator-tip">
+              💡 <em>Arrastra cualquier caja para moverla, o tira de sus 4 esquinas para redimensionarla.</em>
+            </div>
+          </div>
+
+          <div class="calibrator-viewport" id="calibratorViewport">
+            <div id="calibratorLoading" class="image-loading-placeholder">
+              <div class="spinner-small"></div>
+              <span>Cargando imagen para calibración...</span>
+            </div>
+            <div class="calibrator-stage" id="calibratorStage">
+              <img id="calibratorImg" src="" alt="Foto para calibración" crossorigin="anonymous" />
+              <div id="calibratorOverlay" class="calibrator-overlay"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Quadrants Configuration List -->
+        <div class="calibrator-sidebar">
+          <div class="sidebar-header">
+            <h4>Zonas y Cuadrantes (<span id="quadrantCount">0</span>)</h4>
+            <span class="help-text">Valores normalizados [ymin, xmin, ymax, xmax]</span>
+          </div>
+          <div id="quadrantsList" class="quadrants-list">
+            <!-- Dynamic quadrant list items -->
           </div>
         </div>
       </div>
