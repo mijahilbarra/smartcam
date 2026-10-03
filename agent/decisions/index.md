@@ -121,6 +121,7 @@ sequenceDiagram
 | **Detección Local & Cuadrantes** | ONNX Runtime Node + YOLOv8 | Detección de objetos, clientes, sillas y personas en cuadrantes locales ($0) | [08-local-ml-onnx-quadrants.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/08-local-ml-onnx-quadrants.md) |
 | **Frontend Web** | Firebase Hosting + Vanilla JS | Dashboard reactivo en tiempo real sin backend server-rendered | [06-firebase-hosting-web-dashboard.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/06-firebase-hosting-web-dashboard.md) |
 | **CI/CD Automatizado** | GitHub Actions | Despliegue continuo selectivo por carpetas hacia GCP VM y Hosting | [07-github-actions-cicd.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/07-github-actions-cicd.md) |
+| **Monitoreo de Costos & Cuotas** | Calculador Reactivo Vanilla JS | Supervisión preventiva de cuotas GCP Free Tier y simulador de intervalos | [09-google-cloud-cost-monitoring.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/09-google-cloud-cost-monitoring.md) |
 
 ---
 
