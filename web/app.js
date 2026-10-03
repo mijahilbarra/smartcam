@@ -140,6 +140,12 @@ function initPromptListener() {
       if (intervalInput) {
         intervalInput.value = data?.intervalMinutes !== undefined ? data.intervalMinutes : 15;
       }
+      if (data?.workStartTime && data?.workEndTime) {
+        const [sH, sM] = data.workStartTime.split(":").map(Number);
+        const [eH, eM] = data.workEndTime.split(":").map(Number);
+        const diffH = (eH + (eM || 0) / 60) - (sH + (sM || 0) / 60);
+        if (diffH > 0 && diffH <= 24) currentActiveHours = diffH;
+      }
       updateCostMetrics(allDocs.length);
     } else {
       promptInput.value = "Describe what do you see in the image";
@@ -707,6 +713,9 @@ const FREE_TIER = {
 // Base storage in MB measured from bucket skip-bigotes.firebasestorage.app
 const BASE_STORAGE_MB = 144.3;
 
+// Active working hours per day (loaded from camera_catcher/prompt, default 11:00 to 23:00 = 12h)
+let currentActiveHours = 12;
+
 function initCostMonitor() {
   if (!costMonitorHeader || !costMonitorBody) return;
 
@@ -818,17 +827,19 @@ function updateCostMetrics(photoCount = 0) {
     kpiPhotosCount.textContent = `${photoCount} fotos`;
   }
 
-  // Rate of growth based on current active interval
-  const capturesPerDay = currentInterval > 0 ? (24 * 60) / currentInterval : 0;
+  // Rate of growth based on current active interval and working hours
+  const capturesPerDay = currentInterval > 0 ? (currentActiveHours * 60) / currentInterval : 0;
   const mbPerDay = capturesPerDay * FREE_TIER.approxMBPerCapture;
 
   if (kpiDailyStorage) {
     kpiDailyStorage.textContent = `+${mbPerDay.toFixed(0)} MB / día`;
+    kpiDailyStorage.title = `Calculado a ritmo de ${Math.round(capturesPerDay)} fotos/día en ${currentActiveHours}h de atención laboral`;
   }
 
   if (kpiDaysToLimit) {
     const remainingMB = Math.max(0, FREE_TIER.storageMB - estimatedBucketMB);
     const daysRemaining = mbPerDay > 0 ? Math.floor(remainingMB / mbPerDay) : 999;
+    kpiDaysToLimit.title = `Calculado a ritmo de ${Math.round(capturesPerDay)} capturas/día (${currentActiveHours}h laborales) antes de superar los 5 GB gratuitos`;
     if (daysRemaining > 365) {
       kpiDaysToLimit.textContent = "> 1 año";
       kpiDaysToLimit.className = "text-success";
