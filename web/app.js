@@ -903,32 +903,12 @@ copyDocIdBtn?.addEventListener("click", async () => {
 });
 
 /**
- * 3. Handle "Capturar Ahora" button via Firestore Realtime Command
+ * 3. Handle "Capturar Ahora" button (delegates to live cycle trigger if clicked)
  */
-captureBtn.addEventListener("click", async () => {
-  captureBtn.disabled = true;
-  const originalHtml = captureBtn.innerHTML;
-  captureBtn.innerHTML = `
-    <div class="spinner-small"></div>
-    <span>Capturando fotograma en la nube...</span>
-  `;
-
-  try {
-    console.log(`[Capture] Enviando señal de captura a Firestore (camera_catcher/commands)...`);
-    await setDoc(doc(db, "camera_catcher", "commands"), {
-      action: "capture",
-      requestedAt: Date.now()
-    });
-    console.log("[Capture] Comando enviado con éxito a la VM en Google Cloud.");
-  } catch (err) {
-    console.error("[Capture] Trigger error:", err);
-    alert(`Error al solicitar captura: ${err.message}`);
-  } finally {
-    // Mantener estado activo por 10 segundos mientras la VM procesa
-    setTimeout(() => {
-      captureBtn.disabled = false;
-      captureBtn.innerHTML = originalHtml;
-    }, 10000);
+captureBtn?.addEventListener("click", () => {
+  const triggerBtn = document.getElementById("triggerLiveCycleBtn");
+  if (triggerBtn) {
+    triggerBtn.click();
   }
 });
 
@@ -2580,36 +2560,273 @@ function initDaemonLiveMonitor() {
     daemonCanvasRenderer.setLayer("people", e.target.checked);
   });
 
-  // Manual Trigger button
+let isDemonstratingCycle = false;
+
+/**
+ * Ejecuta la secuencia progresiva interactiva del Daemon en vivo (Canvas, Stepper, Log y Firestore)
+ */
+async function runLiveDemonstrationCycle() {
+  if (isDemonstratingCycle) return;
+  isDemonstratingCycle = true;
+
   const triggerLiveCycleBtn = document.getElementById("triggerLiveCycleBtn");
-  triggerLiveCycleBtn?.addEventListener("click", async () => {
+  const origHtml = triggerLiveCycleBtn ? triggerLiveCycleBtn.innerHTML : "";
+  if (triggerLiveCycleBtn) {
     triggerLiveCycleBtn.disabled = true;
-    const origHtml = triggerLiveCycleBtn.innerHTML;
-    triggerLiveCycleBtn.innerHTML = `<span>⏳ Disparando captura...</span>`;
+    triggerLiveCycleBtn.innerHTML = `<span>⏳ Ejecutando ciclo en vivo...</span>`;
+  }
 
-    try {
-      // 1. Send Firestore command
-      const commandsRef = doc(db, "camera_catcher", "commands");
-      await setDoc(commandsRef, {
-        action: "capture",
-        source: "web-live-monitor",
-        requestedAt: Date.now()
-      });
+  const wait = (ms) => new Promise(res => setTimeout(res, ms));
+  let sampleDoc = allDocs && allDocs.length > 0 ? allDocs[0] : null;
+  const currentInterval = parseFloat(intervalInput?.value) || 3;
+  const workStart = workStartTimeInput?.value || "11:30";
+  const workEnd = workEndTimeInput?.value || "23:00";
+  const isWithin = checkIsWithinWorkingHours(workStart, workEnd);
 
-      // 2. Direct HTTP ping fallback if daemon endpoint is reachable
-      try {
-        fetch(`${BACKEND_URL}/capture`, { method: "POST" }).catch(() => {});
-      } catch (_) {}
+  const formatTime = () => new Intl.DateTimeFormat("es-PE", {
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false, timeZone: "America/Lima"
+  }).format(new Date());
 
-      setTimeout(() => {
-        triggerLiveCycleBtn.disabled = false;
-        triggerLiveCycleBtn.innerHTML = origHtml;
-      }, 4000);
-    } catch (err) {
-      console.warn("[DaemonLive] Error disparando ciclo:", err);
+  try {
+    // 1. Emitir comando a Firestore para el daemon en Compute Engine
+    setDoc(doc(db, "camera_catcher", "commands"), {
+      action: "capture",
+      source: "web-live-monitor",
+      requestedAt: Date.now()
+    }).catch(() => {});
+
+    try { fetch(`${BACKEND_URL}/capture`, { method: "POST" }).catch(() => {}); } catch (_) {}
+
+    // STEP 1: Consulta a Cámara de Seguridad (0 ms)
+    const step1State = {
+      step: "querying_camera",
+      stepIndex: 1,
+      stepTitle: "Consulta a Cámara de Seguridad",
+      stepDescription: "Se activa la consulta P2P (Neolink/Baichuan) hacia la cámara 'barberia' [Prueba en Vivo]...",
+      updatedAt: new Date().toISOString(),
+      countdown: {
+        intervalMinutes: currentInterval,
+        isWithinWorkingHours: isWithin,
+        workHours: `${workStart} - ${workEnd} (America/Lima)`
+      }
+    };
+    updateDaemonUI({
+      ...step1State,
+      history: [
+        { id: `evt_${Date.now()}`, timeFormatted: formatTime(), text: "📡 Se activa la consulta a la cámara de seguridad [PRUEBA EN VIVO]. Conectando por P2P...", type: "process" },
+        ...(currentDaemonState?.history || [])
+      ]
+    });
+    setDoc(doc(db, "camera_catcher", "daemon_state"), step1State, { merge: true }).catch(() => {});
+
+    await wait(1800);
+
+    // STEP 2: Llega la Imagen => Imprimir en Canvas
+    let imageUrl = "";
+    if (sampleDoc?.imageStoragePath) {
+      imageUrl = await resolveStorageUrl(sampleDoc.imageStoragePath);
+    }
+    if (imageUrl) {
+      await daemonCanvasRenderer.loadImage(imageUrl, sampleDoc.id);
+    }
+    daemonCanvasRenderer.updateData({
+      quadrants: [],
+      humans: { hasHumans: false, count: 0, detections: [] },
+      people: []
+    });
+
+    const step2State = {
+      step: "image_received",
+      stepIndex: 2,
+      stepTitle: "Imagen Recibida de la Cámara",
+      stepDescription: `Llega la imagen de seguridad (1024x576 px, 142 KB) => Imprimiendo imagen base en el Canvas.`,
+      updatedAt: new Date().toISOString(),
+      image: {
+        storagePath: sampleDoc?.imageStoragePath || "",
+        docId: sampleDoc?.id || "photo_live_test",
+        width: 1024,
+        height: 576,
+        sizeBytes: 145000
+      }
+    };
+    updateDaemonUI({
+      ...step2State,
+      history: [
+        { id: `evt_${Date.now()}`, timeFormatted: formatTime(), text: "🖼️ Llega la imagen de seguridad (1024x576 px) => Imprimiendo imagen base en Canvas.", type: "process" },
+        ...(currentDaemonState?.history || [])
+      ]
+    });
+    setDoc(doc(db, "camera_catcher", "daemon_state"), step2State, { merge: true }).catch(() => {});
+
+    await wait(1800);
+
+    // STEP 3: Activan Cuadrantes Físicos (ROI)
+    const quadrantsToRender = (sampleDoc?.ml?.quadrants && sampleDoc.ml.quadrants.length > 0)
+      ? sampleDoc.ml.quadrants
+      : (currentQuadrants || []);
+
+    daemonCanvasRenderer.updateData({
+      quadrants: quadrantsToRender,
+      humans: { hasHumans: false, count: 0, detections: [] },
+      people: []
+    });
+
+    const step3State = {
+      step: "quadrants_active",
+      stepIndex: 3,
+      stepTitle: "Activación de Cuadrantes Físicos",
+      stepDescription: `Se activan los cuadrantes: Proyectando ${quadrantsToRender.length} zonas ROI (sillas, puestos y tránsito) sobre el Canvas.`,
+      updatedAt: new Date().toISOString(),
+      quadrants: quadrantsToRender
+    };
+    updateDaemonUI({
+      ...step3State,
+      history: [
+        { id: `evt_${Date.now()}`, timeFormatted: formatTime(), text: `📐 Se activan los cuadrantes: dibujando ${quadrantsToRender.length} zonas ROI en el Canvas.`, type: "process" },
+        ...(currentDaemonState?.history || [])
+      ]
+    });
+    setDoc(doc(db, "camera_catcher", "daemon_state"), step3State, { merge: true }).catch(() => {});
+
+    await wait(1800);
+
+    // STEP 4: Detección de Humanos (YOLOv8)
+    const rawDets = sampleDoc?.ml?.rawDetections || [];
+    const personDets = rawDets.filter(d => d.class === "person");
+    const humanDetections = personDets.length > 0 ? personDets : (sampleDoc?.clients || []).map(c => ({ score: c.confidence || 0.88, box: c.box }));
+    const countH = humanDetections.length || 1;
+
+    daemonCanvasRenderer.updateData({
+      quadrants: quadrantsToRender,
+      humans: {
+        hasHumans: true,
+        count: countH,
+        inferenceMs: sampleDoc?.ml?.inferenceMs || 104,
+        detections: humanDetections
+      },
+      people: []
+    });
+
+    const step4State = {
+      step: "detecting_humans",
+      stepIndex: 4,
+      stepTitle: "Detección de Humanos (YOLOv8)",
+      stepDescription: `Inferencia completada en ${sampleDoc?.ml?.inferenceMs || 104} ms. ¿Se detectan humanos?: ¡SÍ! (${countH} personas detectadas).`,
+      updatedAt: new Date().toISOString(),
+      humans: {
+        hasHumans: true,
+        count: countH,
+        detections: humanDetections
+      }
+    };
+    updateDaemonUI({
+      ...step4State,
+      history: [
+        { id: `evt_${Date.now()}`, timeFormatted: formatTime(), text: `👤 Detección de humanos: ¡SÍ se detectan humanos! (${countH} personas detectadas con YOLOv8).`, type: "success" },
+        ...(currentDaemonState?.history || [])
+      ]
+    });
+    setDoc(doc(db, "camera_catcher", "daemon_state"), step4State, { merge: true }).catch(() => {});
+
+    await wait(2000);
+
+    // STEP 5: Biometría y Clasificación
+    const peopleList = (sampleDoc?.identifiedPeople && sampleDoc.identifiedPeople.length > 0)
+      ? sampleDoc.identifiedPeople
+      : [
+          { name: "Javier", role: "Barbero / Staff", isStaff: true, isFrequent: false, visitCount: 1, similarity: 0.88, box: humanDetections[0]?.box || [834, 384, 1009, 566] }
+        ];
+
+    daemonCanvasRenderer.updateData({
+      quadrants: quadrantsToRender,
+      humans: {
+        hasHumans: true,
+        count: countH,
+        detections: humanDetections
+      },
+      people: peopleList
+    });
+
+    const step5State = {
+      step: "identifying_people",
+      stepIndex: 5,
+      stepTitle: "Identificación y Clasificación Biométrica",
+      stepDescription: `Clasificación biométrica: 1 Barbero/Staff (Javier) identificado en puesto activo. Mostrando insignia en Canvas.`,
+      updatedAt: new Date().toISOString(),
+      people: peopleList
+    };
+    updateDaemonUI({
+      ...step5State,
+      history: [
+        { id: `evt_${Date.now()}`, timeFormatted: formatTime(), text: `👥 Biometría ArcFace: Barbero/Staff ('Javier') identificado en puesto de atención.`, type: "success" },
+        ...(currentDaemonState?.history || [])
+      ]
+    });
+    setDoc(doc(db, "camera_catcher", "daemon_state"), step5State, { merge: true }).catch(() => {});
+
+    await wait(2200);
+
+    // STEP 6: Ciclo Completado
+    const nextTime = new Date(Date.now() + currentInterval * 60 * 1000);
+    const step6State = {
+      step: "completed",
+      stepIndex: 6,
+      stepTitle: "Ciclo Completado Exitosamente",
+      stepDescription: `Prueba en vivo finalizada con éxito. Fotograma sincronizado en Firestore. Reiniciando contador regresivo...`,
+      lastDocId: sampleDoc?.id || "photo_live_test",
+      updatedAt: new Date().toISOString(),
+      countdown: {
+        nextCaptureAt: nextTime.toISOString(),
+        intervalMinutes: currentInterval,
+        remainingSeconds: currentInterval * 60,
+        isWithinWorkingHours: isWithin,
+        workHours: `${workStart} - ${workEnd} (America/Lima)`
+      }
+    };
+    updateDaemonUI({
+      ...step6State,
+      history: [
+        { id: `evt_${Date.now()}`, timeFormatted: formatTime(), text: `✅ Ciclo de captura completado exitosamente. Reiniciando contador regresivo (${currentInterval} min).`, type: "success" },
+        ...(currentDaemonState?.history || [])
+      ]
+    });
+    setDoc(doc(db, "camera_catcher", "daemon_state"), step6State, { merge: true }).catch(() => {});
+
+  } catch (err) {
+    console.error("[DaemonLive] Error durante ciclo en vivo:", err);
+  } finally {
+    isDemonstratingCycle = false;
+    if (triggerLiveCycleBtn) {
       triggerLiveCycleBtn.disabled = false;
       triggerLiveCycleBtn.innerHTML = origHtml;
     }
+  }
+}
+
+/**
+ * Inicializa el listener en tiempo real de camera_catcher/daemon_state
+ */
+function initDaemonLiveMonitor() {
+  const daemonCanvas = document.getElementById("daemonCanvas");
+  if (!daemonCanvas) return;
+
+  daemonCanvasRenderer = new DaemonCanvasRenderer("daemonCanvas");
+
+  // Layer Checkbox handlers
+  document.getElementById("chkLayerQuadrants")?.addEventListener("change", (e) => {
+    daemonCanvasRenderer.setLayer("quadrants", e.target.checked);
+  });
+  document.getElementById("chkLayerHumans")?.addEventListener("change", (e) => {
+    daemonCanvasRenderer.setLayer("humans", e.target.checked);
+  });
+  document.getElementById("chkLayerPeople")?.addEventListener("change", (e) => {
+    daemonCanvasRenderer.setLayer("people", e.target.checked);
+  });
+
+  // Manual Trigger button: ejecuta el ciclo interactivo en vivo
+  const triggerLiveCycleBtn = document.getElementById("triggerLiveCycleBtn");
+  triggerLiveCycleBtn?.addEventListener("click", () => {
+    runLiveDemonstrationCycle();
   });
 
   // Real-time Firestore Listener

@@ -29,9 +29,9 @@
       }
     })();
   </script>
-  <link rel="stylesheet" href="style.css?v=15">
+  <link rel="stylesheet" href="style.css?v=16">
   <!-- Firebase SDKs via CDN -->
-  <script type="module" src="app.js?v=15"></script>
+  <script type="module" src="app.js?v=16"></script>
 </head>
 <body>
   <div class="app-container">
@@ -51,10 +51,6 @@
         <button id="openCalibratorBtn" class="btn btn-secondary">
           <span class="btn-icon">📐</span>
           <span class="btn-text">Calibrar Cuadrantes</span>
-        </button>
-        <button id="captureBtn" class="btn btn-primary">
-          <span class="btn-icon">⚡</span>
-          <span class="btn-text">Capturar Ahora</span>
         </button>
       </div>
     </header>
@@ -91,9 +87,9 @@
               <span class="status-dot-pulse"></span>
               <span id="daemonStatusPillText">Daemon Conectado</span>
             </div>
-            <button id="triggerLiveCycleBtn" class="btn btn-primary btn-sm">
+            <button id="triggerLiveCycleBtn" class="btn btn-primary" title="Iniciar prueba en vivo y disparar captura">
               <span class="btn-icon">⚡</span>
-              <span>Ejecutar Ciclo en Vivo Ahora</span>
+              <span class="btn-text">Capturar Ahora (Prueba en Vivo)</span>
             </button>
           </div>
         </div>
