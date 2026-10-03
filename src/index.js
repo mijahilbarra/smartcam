@@ -282,6 +282,14 @@ function setupCronTimer(minutes) {
 // Initial scheduler setup
 setupCronTimer(15);
 
+// Execute initial capture 5 seconds after startup so we don't have to wait 15 minutes for the first photo
+setTimeout(() => {
+  console.log("[Startup] Ejecutando captura inicial automática de arranque...");
+  executeCaptureProcess().catch(err => {
+    console.error("[Startup] Error en captura inicial:", err.message);
+  });
+}, 5000);
+
 // Listen to Firestore prompt & interval changes in real time
 db.doc("camera_catcher/prompt").onSnapshot((snapshot) => {
   const data = snapshot.data();

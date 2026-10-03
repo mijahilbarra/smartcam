@@ -46,18 +46,13 @@ jobs:
             CURRENT_HASH=\$(sha256sum package-lock.json 2>/dev/null | cut -d ' ' -f 1) && \
             PREV_HASH=\$(cat .package-lock.hash 2>/dev/null || echo '') && \
             if [ \"\$CURRENT_HASH\" != \"\$PREV_HASH\" ] || [ ! -d 'node_modules' ] || [ ! -d 'node_modules/onnxruntime-node' ] || [ ! -d 'node_modules/sharp' ]; then
-              echo '⚠️ Cambio en dependencias detectado (o faltan módulos nativos). Instalando con npm ci...' && \
-              npm ci --omit=dev && \
+              echo '⚠️ Cambio en dependencias detectado. Instalando paquetes faltantes...' && \
+              npm install --omit=dev && \
               echo \"\$CURRENT_HASH\" > .package-lock.hash;
             else
               echo '⚡ Dependencias sin cambios. Saltando npm install para optimizar tiempo.';
             fi && \
-            sudo usermod -aG docker ${{ secrets.VM_USER || 'deploy' }} 2>/dev/null || true && \
-            sudo chmod 666 /var/run/docker.sock 2>/dev/null || true && \
             sudo systemctl restart camera-catcher.service && \
-            sleep 3 && \
-            sudo systemctl is-active camera-catcher.service && \
-            echo '📋 Últimos logs del servicio:' && \
-            sudo journalctl -u camera-catcher.service -n 25 --no-pager
+            sudo systemctl is-active camera-catcher.service
           "
           echo "✅ Despliegue en la VM completado exitosamente y servicio activo!"
