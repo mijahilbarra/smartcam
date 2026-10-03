@@ -29,9 +29,9 @@
       }
     })();
   </script>
-  <link rel="stylesheet" href="style.css?v=14">
+  <link rel="stylesheet" href="style.css?v=15">
   <!-- Firebase SDKs via CDN -->
-  <script type="module" src="app.js?v=14"></script>
+  <script type="module" src="app.js?v=15"></script>
 </head>
 <body>
   <div class="app-container">
@@ -115,13 +115,13 @@
             </div>
             <div class="countdown-info">
               <div class="countdown-badge-row">
-                <span class="countdown-tag" id="daemonIntervalTag">⏱️ Intervalo: 15 min</span>
-                <span class="countdown-tag" id="daemonWorkingHoursTag">🕒 Horario: 11:00 - 23:00</span>
-                <span class="countdown-tag tag-success" id="daemonHoursStatusTag">🟢 Dentro de jornada</span>
+                <span class="countdown-tag" id="daemonIntervalTag">⏱️ Intervalo: Sincronizando...</span>
+                <span class="countdown-tag" id="daemonWorkingHoursTag">🕒 Horario: Sincronizando...</span>
+                <span class="countdown-tag" id="daemonHoursStatusTag">Verificando horario...</span>
               </div>
-              <h3 id="daemonCurrentStepTitle" class="countdown-step-title">Contador activo</h3>
+              <h3 id="daemonCurrentStepTitle" class="countdown-step-title">Contador de Ciclo</h3>
               <p id="daemonCurrentStepDesc" class="countdown-step-desc">
-                Esperando siguiente consulta a la cámara de seguridad Reolink...
+                Sincronizando estado con Firestore...
               </p>
             </div>
           </div>

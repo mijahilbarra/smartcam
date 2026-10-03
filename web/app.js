@@ -142,10 +142,10 @@ async function resolveStorageUrl(imageStoragePath) {
 }
 
 /**
- * Calculate if current Lima time is within working hours and update status badge
+/**
+ * Calculate if current Lima time is within working hours (reusable)
  */
-function updateWorkingHoursStatus(startStr = "11:00", endStr = "23:00") {
-  if (!workingHoursStatusBadge) return;
+export function checkIsWithinWorkingHours(startStr = "11:00", endStr = "23:00") {
   try {
     const parts = new Intl.DateTimeFormat("en-US", {
       timeZone: "America/Lima",
@@ -166,23 +166,66 @@ function updateWorkingHoursStatus(startStr = "11:00", endStr = "23:00") {
     const startMins = sH * 60 + (sM || 0);
     const endMins = eH * 60 + (eM || 0);
 
-    let isOpen = false;
     if (startMins <= endMins) {
-      isOpen = currentMins >= startMins && currentMins < endMins;
+      return currentMins >= startMins && currentMins < endMins;
     } else {
-      isOpen = currentMins >= startMins || currentMins < endMins;
+      return currentMins >= startMins || currentMins < endMins;
     }
-
-    if (isOpen) {
-      workingHoursStatusBadge.className = "status-hours-badge";
-      workingHoursStatusBadge.textContent = "🟢 Dentro de horario de atención (Abierto)";
-    } else {
-      workingHoursStatusBadge.className = "status-hours-badge closed";
-      workingHoursStatusBadge.textContent = "🌙 Fuera de horario de atención (Cerrado)";
-    }
-  } catch (err) {
-    console.warn("[WorkingHours] Error evaluando estado de horario:", err);
+  } catch (_) {
+    return true;
   }
+}
+
+/**
+ * Calculate if current Lima time is within working hours and update status badge
+ */
+function updateWorkingHoursStatus(startStr = "11:00", endStr = "23:00") {
+  if (!workingHoursStatusBadge) return;
+  const isOpen = checkIsWithinWorkingHours(startStr, endStr);
+  if (isOpen) {
+    workingHoursStatusBadge.className = "status-hours-badge";
+    workingHoursStatusBadge.textContent = "🟢 Dentro de horario de atención (Abierto)";
+  } else {
+    workingHoursStatusBadge.className = "status-hours-badge closed";
+    workingHoursStatusBadge.textContent = "🌙 Fuera de horario de atención (Cerrado)";
+  }
+}
+
+/**
+ * Sincroniza el temporizador y etiquetas del Daemon Live View con la configuración de Firebase
+ */
+function syncCountdownWithConfig(intervalMinutes, startH = "11:00", endH = "23:00") {
+  const isWithin = checkIsWithinWorkingHours(startH, endH);
+  const currentStepTitle = document.getElementById("daemonCurrentStepTitle");
+  const currentStepDesc = document.getElementById("daemonCurrentStepDesc");
+
+  if (!isWithin) {
+    if (currentStepTitle) currentStepTitle.textContent = "Horario Laboral en Pausa";
+    if (currentStepDesc) currentStepDesc.textContent = `Fuera de horario de atención (${startH} a ${endH} America/Lima). Capturas programadas en pausa.`;
+    setupDynamicCountdownTicker(null, intervalMinutes);
+    return;
+  }
+
+  // Calculate target based on latest photo timestamp if available
+  let lastTime = Date.now();
+  if (allDocs && allDocs.length > 0 && allDocs[0].epoch) {
+    lastTime = allDocs[0].epoch;
+  }
+  const intervalMs = intervalMinutes * 60 * 1000;
+  let nextTime = lastTime + intervalMs;
+  while (nextTime <= Date.now()) {
+    nextTime += intervalMs;
+  }
+
+  const remainingMin = ((nextTime - Date.now()) / 60000).toFixed(1);
+  if (currentStepTitle && (!currentDaemonState || currentDaemonState.step === "countdown" || currentDaemonState.step === "idle")) {
+    currentStepTitle.textContent = "Contador de Ciclo Activo";
+  }
+  if (currentStepDesc && (!currentDaemonState || currentDaemonState.step === "countdown" || currentDaemonState.step === "idle")) {
+    currentStepDesc.textContent = `Contador activo (configurado en Firebase: ${intervalMinutes} min). Próxima consulta en ~${remainingMin} min.`;
+  }
+
+  setupDynamicCountdownTicker(new Date(nextTime).toISOString(), intervalMinutes);
 }
 
 /**
@@ -195,16 +238,44 @@ function initPromptListener() {
     if (snap.exists()) {
       const data = snap.data();
       promptInput.value = data?.default || "Describe what do you see in the image";
+      const currentInterval = data?.intervalMinutes !== undefined ? Number(data.intervalMinutes) : 15;
+      const startH = data?.workStartTime || data?.workStart || "11:00";
+      const endH = data?.workEndTime || data?.workEnd || "23:00";
+
       if (intervalInput) {
-        intervalInput.value = data?.intervalMinutes !== undefined ? data.intervalMinutes : 15;
+        intervalInput.value = currentInterval;
       }
       if (workStartTimeInput) {
-        workStartTimeInput.value = data?.workStartTime || data?.workStart || "11:00";
+        workStartTimeInput.value = startH;
       }
       if (workEndTimeInput) {
-        workEndTimeInput.value = data?.workEndTime || data?.workEnd || "23:00";
+        workEndTimeInput.value = endH;
       }
-      updateWorkingHoursStatus(workStartTimeInput?.value, workEndTimeInput?.value);
+      updateWorkingHoursStatus(startH, endH);
+
+      // Sincronizar etiquetas de la Vista en Vivo del Daemon inmediatamente
+      const daemonIntervalTag = document.getElementById("daemonIntervalTag");
+      if (daemonIntervalTag) {
+        daemonIntervalTag.textContent = `⏱️ Intervalo: ${currentInterval} min`;
+      }
+      const daemonHoursTag = document.getElementById("daemonWorkingHoursTag");
+      if (daemonHoursTag) {
+        daemonHoursTag.textContent = `🕒 Horario: ${startH} - ${endH}`;
+      }
+      const daemonHoursStatusTag = document.getElementById("daemonHoursStatusTag");
+      if (daemonHoursStatusTag) {
+        const isWithin = checkIsWithinWorkingHours(startH, endH);
+        daemonHoursStatusTag.textContent = isWithin ? "🟢 En jornada de atención" : "⏸️ Fuera de horario laboral";
+        daemonHoursStatusTag.className = `countdown-tag ${isWithin ? "tag-success" : "tag-warning"}`;
+      }
+
+      // Sincronizar simulador de costos
+      if (typeof updateSimulator === "function") {
+        updateSimulator(currentInterval);
+      }
+
+      // Sincronizar reloj de cuenta regresiva
+      syncCountdownWithConfig(currentInterval, startH, endH);
 
       if (data?.workStartTime && data?.workEndTime) {
         const [sH, sM] = data.workStartTime.split(":").map(Number);
@@ -254,6 +325,20 @@ function initPromptListener() {
         timezone: "America/Lima",
         updatedAt: new Date().toISOString()
       }, { merge: true });
+
+      // Actualizar también camera_catcher/daemon_state para reflejo inmediato
+      const nextTime = new Date(Date.now() + validInterval * 60 * 1000);
+      await setDoc(doc(db, "camera_catcher", "daemon_state"), {
+        countdown: {
+          nextCaptureAt: nextTime.toISOString(),
+          intervalMinutes: validInterval,
+          remainingSeconds: validInterval * 60,
+          workHours: `${startTimeVal} - ${endTimeVal} (America/Lima)`,
+          isWithinWorkingHours: checkIsWithinWorkingHours(startTimeVal, endTimeVal)
+        },
+        updatedAt: new Date().toISOString()
+      }, { merge: true });
+
       showStatus(`¡Configuración guardada! (Horario: ${startTimeVal} - ${endTimeVal}, Intervalo: ${validInterval} min)`, "success");
       updateWorkingHoursStatus(startTimeVal, endTimeVal);
       updateCostMetrics(allDocs.length);
@@ -2580,8 +2665,10 @@ async function updateDaemonUI(data) {
   const hoursTag = document.getElementById("daemonWorkingHoursTag");
   const hoursStatusTag = document.getElementById("daemonHoursStatusTag");
 
-  if (intervalTag && data.countdown?.intervalMinutes) {
-    intervalTag.textContent = `⏱️ Intervalo: ${data.countdown.intervalMinutes} min`;
+  const effectiveInterval = data.countdown?.intervalMinutes || parseFloat(intervalInput?.value) || 3;
+
+  if (intervalTag) {
+    intervalTag.textContent = `⏱️ Intervalo: ${effectiveInterval} min`;
   }
   if (hoursTag && data.countdown?.workHours) {
     hoursTag.textContent = `🕒 Horario: ${data.countdown.workHours}`;
@@ -2593,7 +2680,7 @@ async function updateDaemonUI(data) {
   }
 
   // Update dynamic countdown ticker
-  setupDynamicCountdownTicker(data.countdown?.nextCaptureAt, data.countdown?.intervalMinutes || 15);
+  setupDynamicCountdownTicker(data.countdown?.nextCaptureAt, effectiveInterval);
 
   // 3. Process Stepper Pipeline (6 Steps)
   updateStepperPipeline(data.stepIndex !== undefined ? data.stepIndex : 0, data.step);
