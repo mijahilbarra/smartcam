@@ -7,9 +7,9 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=3">
+  <link rel="stylesheet" href="style.css?v=4">
   <!-- Firebase SDKs via CDN -->
-  <script type="module" src="app.js?v=3"></script>
+  <script type="module" src="app.js?v=4"></script>
 </head>
 <body>
   <div class="app-container">
@@ -85,7 +85,7 @@
           <thead>
             <tr>
               <th style="width: 140px;">Miniatura (Cliente)</th>
-              <th style="width: 180px;">Fecha y Hora</th>
+              <th style="width: 200px;">Fecha, Hora y Doc ID</th>
               <th>Cuadrantes y Análisis</th>
               <th style="width: 130px;">Acciones</th>
             </tr>
@@ -100,6 +100,28 @@
           </tbody>
         </table>
       </div>
+
+      <!-- Pagination Controls -->
+      <div id="paginationContainer" class="pagination-container hidden">
+        <div class="pagination-info">
+          <span id="paginationRangeText">Mostrando 0 - 0 de 0</span>
+          <div class="page-size-selector">
+            <label for="pageSizeSelect">Filas por página:</label>
+            <select id="pageSizeSelect">
+              <option value="10" selected>10</option>
+              <option value="25">25</option>
+              <option value="50">50</option>
+            </select>
+          </div>
+        </div>
+        <div class="pagination-actions">
+          <button id="firstPageBtn" class="btn btn-pagination" title="Primera página" disabled>«</button>
+          <button id="prevPageBtn" class="btn btn-pagination" title="Página anterior" disabled>‹ Anterior</button>
+          <span id="paginationPages" class="pagination-pages-indicator">Página 1 de 1</span>
+          <button id="nextPageBtn" class="btn btn-pagination" title="Página siguiente" disabled>Siguiente ›</button>
+          <button id="lastPageBtn" class="btn btn-pagination" title="Última página" disabled>»</button>
+        </div>
+      </div>
     </section>
   </div>
 
@@ -110,7 +132,17 @@
       <button id="closeModalBtn" class="modal-close" title="Cerrar modal">&times;</button>
       
       <div class="modal-header-bar">
-        <h3 id="modalTitle" class="modal-title">Detalle de Captura y Detección</h3>
+        <div class="modal-header-left">
+          <h3 id="modalTitle" class="modal-title">Detalle de Captura y Detección</h3>
+          <div class="modal-doc-id-pill" title="ID de documento en Firestore para ML">
+            <span class="doc-id-label">Doc ID:</span>
+            <code id="modalDocId" class="doc-id-value">photo_...</code>
+            <button id="copyDocIdBtn" class="btn-copy-id" title="Copiar Doc ID al portapapeles">
+              <span id="copyIcon">📋</span> Copiar
+            </button>
+            <span id="copyFeedback" class="copy-feedback hidden">¡Copiado!</span>
+          </div>
+        </div>
         <div id="modalTimestamp" class="modal-time"></div>
       </div>
 
@@ -147,7 +179,20 @@
         </div>
 
         <div class="modal-info">
+          <!-- ML Reference Box -->
+          <div class="modal-meta-box">
+            <div class="meta-row">
+              <span class="meta-label">🔑 Document ID (ML Ref):</span>
+              <code id="modalMetaDocId" class="meta-code"></code>
+            </div>
+            <div class="meta-row">
+              <span class="meta-label">📂 Ruta Firestore:</span>
+              <span id="modalMetaFirestorePath" class="meta-value"></span>
+            </div>
+          </div>
+
           <div id="modalAnalysis" class="modal-text"></div>
+          
           <div id="modalClientsContainer" class="modal-clients hidden" style="margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border);">
             <div style="font-size: 0.80rem; font-weight: 600; color: #32DC32; text-transform: uppercase; margin-bottom: 8px;">
               ✂️ Clientes Sentados Extraídos:

@@ -49,9 +49,28 @@ const captureBtn = document.getElementById("captureBtn");
 const photosTableBody = document.getElementById("photosTableBody");
 const photoCountBadge = document.getElementById("photoCount");
 
+// Pagination State & Elements
+let allDocs = [];
+let currentPage = 1;
+let pageSize = 10;
+
+const paginationContainer = document.getElementById("paginationContainer");
+const paginationRangeText = document.getElementById("paginationRangeText");
+const pageSizeSelect = document.getElementById("pageSizeSelect");
+const firstPageBtn = document.getElementById("firstPageBtn");
+const prevPageBtn = document.getElementById("prevPageBtn");
+const nextPageBtn = document.getElementById("nextPageBtn");
+const lastPageBtn = document.getElementById("lastPageBtn");
+const paginationPages = document.getElementById("paginationPages");
+
 // Modal Elements
 const imageModal = document.getElementById("imageModal");
 const closeModalBtn = document.getElementById("closeModalBtn");
+const modalDocId = document.getElementById("modalDocId");
+const copyDocIdBtn = document.getElementById("copyDocIdBtn");
+const copyFeedback = document.getElementById("copyFeedback");
+const modalMetaDocId = document.getElementById("modalMetaDocId");
+const modalMetaFirestorePath = document.getElementById("modalMetaFirestorePath");
 const modalTimestamp = document.getElementById("modalTimestamp");
 const modalAnalysis = document.getElementById("modalAnalysis");
 const modalClientsContainer = document.getElementById("modalClientsContainer");
@@ -62,6 +81,8 @@ const modalOriginalLink = document.getElementById("modalOriginalLink");
 const modalAnnotatedImage = document.getElementById("modalAnnotatedImage");
 const modalAnnotatedLoading = document.getElementById("modalAnnotatedLoading");
 const modalAnnotatedLink = document.getElementById("modalAnnotatedLink");
+
+let currentModalDocId = "";
 
 /**
  * Format timestamp into local Spanish readable format
@@ -186,9 +207,11 @@ function initPhotosListener() {
       return timeB - timeA;
     });
 
+    allDocs = docs;
     photoCountBadge.textContent = `${docs.length} ${docs.length === 1 ? 'captura' : 'capturas'}`;
 
     if (docs.length === 0) {
+      if (paginationContainer) paginationContainer.classList.add("hidden");
       photosTableBody.innerHTML = `
         <tr>
           <td colspan="4" class="text-center py-8 text-muted">
@@ -199,9 +222,10 @@ function initPhotosListener() {
       return;
     }
 
-    renderTableRows(docs);
+    updatePaginationUI();
   }, (err) => {
     console.error("[Firestore] Error listening to photos:", err);
+    if (paginationContainer) paginationContainer.classList.add("hidden");
     photosTableBody.innerHTML = `
       <tr>
         <td colspan="4" class="text-center py-8 text-muted" style="color: var(--danger)">
@@ -209,6 +233,91 @@ function initPhotosListener() {
         </td>
       </tr>
     `;
+  });
+}
+
+/**
+ * Update pagination UI state and render the current page of rows
+ */
+function updatePaginationUI() {
+  const total = allDocs.length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+
+  if (currentPage > totalPages) {
+    currentPage = totalPages;
+  }
+  if (currentPage < 1) {
+    currentPage = 1;
+  }
+
+  const startIndex = (currentPage - 1) * pageSize;
+  const endIndex = Math.min(startIndex + pageSize, total);
+  const pagedDocs = allDocs.slice(startIndex, endIndex);
+
+  if (paginationContainer) {
+    if (total === 0) {
+      paginationContainer.classList.add("hidden");
+    } else {
+      paginationContainer.classList.remove("hidden");
+    }
+  }
+
+  if (paginationRangeText) {
+    paginationRangeText.textContent = total > 0 
+      ? `Mostrando ${startIndex + 1} - ${endIndex} de ${total} capturas`
+      : "Sin capturas";
+  }
+
+  if (paginationPages) {
+    paginationPages.textContent = `Página ${currentPage} de ${totalPages}`;
+  }
+
+  if (firstPageBtn) firstPageBtn.disabled = currentPage <= 1;
+  if (prevPageBtn) prevPageBtn.disabled = currentPage <= 1;
+  if (nextPageBtn) nextPageBtn.disabled = currentPage >= totalPages;
+  if (lastPageBtn) lastPageBtn.disabled = currentPage >= totalPages;
+
+  renderTableRows(pagedDocs);
+}
+
+function initPaginationListeners() {
+  firstPageBtn?.addEventListener("click", () => {
+    if (currentPage > 1) {
+      currentPage = 1;
+      updatePaginationUI();
+    }
+  });
+
+  prevPageBtn?.addEventListener("click", () => {
+    if (currentPage > 1) {
+      currentPage--;
+      updatePaginationUI();
+    }
+  });
+
+  nextPageBtn?.addEventListener("click", () => {
+    const totalPages = Math.max(1, Math.ceil(allDocs.length / pageSize));
+    if (currentPage < totalPages) {
+      currentPage++;
+      updatePaginationUI();
+    }
+  });
+
+  lastPageBtn?.addEventListener("click", () => {
+    const totalPages = Math.max(1, Math.ceil(allDocs.length / pageSize));
+    if (currentPage < totalPages) {
+      currentPage = totalPages;
+      updatePaginationUI();
+    }
+  });
+
+  pageSizeSelect?.addEventListener("change", (e) => {
+    const val = parseInt(e.target.value, 10);
+    if (!isNaN(val) && val > 0) {
+      pageSize = val;
+      currentPage = 1;
+      updatePaginationUI();
+    }
   });
 }
 
@@ -294,7 +403,12 @@ async function renderTableRows(docs) {
           ${thumbCellHtml}
         </td>
         <td>
-          <div class="timestamp-cell">${dateStr}</div>
+          <div class="timestamp-cell">
+            <div style="font-weight: 500;">${dateStr}</div>
+            <div class="doc-id-row-tag" title="ID de documento en Firestore para ML">
+              Doc ID: <code>${escapeHtml(docData.id)}</code>
+            </div>
+          </div>
         </td>
         <td>
           <div class="analysis-cell">${analysisText}${mlTagsHtml}${clientChipsHtml}${promptUsed}</div>
@@ -351,6 +465,11 @@ async function renderTableRows(docs) {
  * Open detail modal showing original photo and annotated photo side-by-side
  */
 async function openModal(docData) {
+  currentModalDocId = docData.id || "";
+  if (modalDocId) modalDocId.textContent = currentModalDocId;
+  if (modalMetaDocId) modalMetaDocId.textContent = currentModalDocId;
+  if (modalMetaFirestorePath) modalMetaFirestorePath.textContent = `camera_catcher/photos/photos/${currentModalDocId}`;
+
   const dateStr = formatDateTime(docData.timestamp || docData.createdAt, docData.epoch);
   modalTimestamp.textContent = `📅 ${dateStr}`;
   modalAnalysis.innerHTML = `<strong>Resumen y Cuadrantes ML:</strong><br>${escapeHtml(docData.analysis || "Sin análisis")}` +
@@ -460,6 +579,23 @@ window.addEventListener("keydown", (e) => {
   }
 });
 
+// Copy Doc ID handler
+copyDocIdBtn?.addEventListener("click", async () => {
+  if (!currentModalDocId) return;
+  try {
+    await navigator.clipboard.writeText(currentModalDocId);
+    if (copyFeedback) {
+      copyFeedback.classList.remove("hidden");
+      setTimeout(() => {
+        copyFeedback.classList.add("hidden");
+      }, 2000);
+    }
+  } catch (err) {
+    console.warn("Clipboard write failed, fallback prompt:", err);
+    prompt("ID del documento (copiar con Ctrl+C / Cmd+C):", currentModalDocId);
+  }
+});
+
 /**
  * 3. Handle "Capturar Ahora" button via Firestore Realtime Command
  */
@@ -509,4 +645,5 @@ window.setBackendUrl = (url) => {
 
 // Initialize
 initPromptListener();
+initPaginationListeners();
 initPhotosListener();
