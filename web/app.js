@@ -140,6 +140,7 @@ function initPromptListener() {
       if (intervalInput) {
         intervalInput.value = data?.intervalMinutes !== undefined ? data.intervalMinutes : 15;
       }
+      updateCostMetrics(allDocs.length);
     } else {
       promptInput.value = "Describe what do you see in the image";
       if (intervalInput) intervalInput.value = 15;
@@ -148,6 +149,7 @@ function initPromptListener() {
         default: "Describe what do you see in the image",
         intervalMinutes: 15
       }, { merge: true });
+      updateCostMetrics(allDocs.length);
     }
   }, (err) => {
     console.error("[Firestore] Error reading config/prompt:", err);
@@ -169,6 +171,7 @@ function initPromptListener() {
         updatedAt: new Date().toISOString()
       }, { merge: true });
       showStatus(`¡Configuración guardada! (Intervalo: ${validInterval} min)`, "success");
+      updateCostMetrics(allDocs.length);
     } catch (err) {
       console.error("[Firestore] Error saving config:", err);
       showStatus("Error al guardar: " + err.message, "error");
@@ -207,6 +210,7 @@ function initPhotosListener() {
     });
 
     allDocs = docs;
+    updateCostMetrics(allDocs.length);
 
     if (docs.length === 0) {
       if (paginationContainer) paginationContainer.classList.add("hidden");
@@ -641,7 +645,299 @@ window.setBackendUrl = (url) => {
   console.log("Backend URL updated to:", BACKEND_URL);
 };
 
+/* ==========================================================================
+   Google Cloud Cost & Quotas Monitor Controller
+   ========================================================================== */
+
+// Cost Monitor Elements
+const costMonitorHeader = document.getElementById("costMonitorHeader");
+const toggleCostBtn = document.getElementById("toggleCostBtn");
+const costMonitorBody = document.getElementById("costMonitorBody");
+const costTrafficBadge = document.getElementById("costTrafficBadge");
+const costTrafficText = document.getElementById("costTrafficText");
+const storageUsedText = document.getElementById("storageUsedText");
+const storageProgressFill = document.getElementById("storageProgressFill");
+const storageQuotaTag = document.getElementById("storageQuotaTag");
+const kpiPhotosCount = document.getElementById("kpiPhotosCount");
+const kpiDailyStorage = document.getElementById("kpiDailyStorage");
+const kpiDaysToLimit = document.getElementById("kpiDaysToLimit");
+const storageCostBadge = document.getElementById("storageCostBadge");
+const firestoreWritesText = document.getElementById("firestoreWritesText");
+const firestoreProgressFill = document.getElementById("firestoreProgressFill");
+const firestoreQuotaPercent = document.getElementById("firestoreQuotaPercent");
+
+// Simulator Elements
+const simIntervalRange = document.getElementById("simIntervalRange");
+const simIntervalDisplay = document.getElementById("simIntervalDisplay");
+const simCapturesVal = document.getElementById("simCapturesVal");
+const simStorageMonthVal = document.getElementById("simStorageMonthVal");
+const simOpsVal = document.getElementById("simOpsVal");
+const simFirestoreVal = document.getElementById("simFirestoreVal");
+const simAlertBox = document.getElementById("simAlertBox");
+const simAlertIcon = document.getElementById("simAlertIcon");
+const simAlertText = document.getElementById("simAlertText");
+const syncSimWithIntervalBtn = document.getElementById("syncSimWithIntervalBtn");
+const simPresetBtns = document.querySelectorAll(".sim-preset-btn");
+
+// Free Tier Constants for Google Cloud
+const FREE_TIER = {
+  storageMB: 5120, // 5.0 GB in MB
+  storageOpsA: 5000, // Class A ops/month
+  storageOpsB: 50000, // Class B ops/month
+  firestoreWritesPerDay: 20000, // Document writes/day
+  firestoreReadsPerDay: 50000, // Document reads/day
+  computeHoursPerMonth: 744, // 1 e2-micro covered
+  diskGB: 30, // pd-standard 30GB/month
+  priceStoragePerGB: 0.026, // $0.026 per GB/month after 5GB
+  priceOpsAPer10k: 0.05, // $0.05 per 10,000 Class A ops
+  priceIPv4PerHour: 0.005, // ~$0.005/hr in-use public IPv4 ($3.65/mo)
+  approxMBPerCapture: 2.1 // 1MB raw + 1MB annotated + 0.1MB crops
+};
+
+// Base storage in MB measured from bucket skip-bigotes.firebasestorage.app
+const BASE_STORAGE_MB = 144.3;
+
+function initCostMonitor() {
+  if (!costMonitorHeader || !costMonitorBody) return;
+
+  // 1. Toggle collapse/expand
+  const savedCollapsed = localStorage.getItem("cost_monitor_collapsed") === "true";
+  if (savedCollapsed) {
+    costMonitorBody.classList.add("hidden");
+    if (toggleCostBtn) toggleCostBtn.textContent = "Expandir ▸";
+  }
+
+  costMonitorHeader.addEventListener("click", (e) => {
+    // If clicked inside interactive buttons or inputs, ignore
+    if (e.target.closest("button") || e.target.closest("input")) return;
+    toggleCostSection();
+  });
+
+  toggleCostBtn?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    toggleCostSection();
+  });
+
+  function toggleCostSection() {
+    const isHidden = costMonitorBody.classList.toggle("hidden");
+    if (toggleCostBtn) {
+      toggleCostBtn.textContent = isHidden ? "Expandir ▸" : "Contraer ▾";
+    }
+    localStorage.setItem("cost_monitor_collapsed", isHidden);
+  }
+
+  // 2. Simulator Range & Presets Listener
+  simIntervalRange?.addEventListener("input", () => {
+    const val = parseFloat(simIntervalRange.value);
+    updateSimulator(val);
+    highlightPreset(val);
+  });
+
+  simPresetBtns.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const val = parseFloat(btn.dataset.val);
+      if (simIntervalRange) simIntervalRange.value = val;
+      updateSimulator(val);
+      highlightPreset(val);
+    });
+  });
+
+  syncSimWithIntervalBtn?.addEventListener("click", () => {
+    const currentInterval = parseFloat(intervalInput?.value) || 15;
+    if (simIntervalRange) simIntervalRange.value = currentInterval;
+    updateSimulator(currentInterval);
+    highlightPreset(currentInterval);
+  });
+
+  // Listen for manual changes in the intervalInput field
+  intervalInput?.addEventListener("input", () => {
+    updateCostMetrics(allDocs.length);
+  });
+
+  // Initial simulation calculation
+  const initInterval = parseFloat(intervalInput?.value) || 15;
+  if (simIntervalRange) simIntervalRange.value = initInterval;
+  updateSimulator(initInterval);
+  highlightPreset(initInterval);
+  updateCostMetrics(allDocs.length);
+}
+
+function highlightPreset(currentVal) {
+  simPresetBtns.forEach((btn) => {
+    const val = parseFloat(btn.dataset.val);
+    if (Math.abs(val - currentVal) < 0.05) {
+      btn.classList.add("active");
+    } else {
+      btn.classList.remove("active");
+    }
+  });
+}
+
+/**
+ * Recalculate and update the live KPI cards and traffic lights
+ */
+function updateCostMetrics(photoCount = 0) {
+  const currentInterval = parseFloat(intervalInput?.value) || 15;
+  
+  // Storage usage calculation
+  // Each doc in Firestore represents ~2.1MB stored in bucket
+  const estimatedBucketMB = Math.max(BASE_STORAGE_MB, photoCount * FREE_TIER.approxMBPerCapture);
+  const percentStorage = Math.min(100, (estimatedBucketMB / FREE_TIER.storageMB) * 100);
+
+  if (storageUsedText) {
+    storageUsedText.innerHTML = `${estimatedBucketMB.toFixed(1)} MB <small>/ 5.0 GB</small>`;
+  }
+  if (storageProgressFill) {
+    storageProgressFill.style.width = `${Math.max(2, percentStorage.toFixed(1))}%`;
+    if (percentStorage > 80) {
+      storageProgressFill.classList.add("warn");
+    } else {
+      storageProgressFill.classList.remove("warn");
+    }
+  }
+  if (storageQuotaTag) {
+    if (percentStorage > 80) {
+      storageQuotaTag.className = "kpi-tag warn";
+      storageQuotaTag.textContent = `${percentStorage.toFixed(0)}% Cuota`;
+    } else {
+      storageQuotaTag.className = "kpi-tag free";
+      storageQuotaTag.textContent = "En Cuota ($0)";
+    }
+  }
+  if (kpiPhotosCount) {
+    kpiPhotosCount.textContent = `${photoCount} fotos`;
+  }
+
+  // Rate of growth based on current active interval
+  const capturesPerDay = currentInterval > 0 ? (24 * 60) / currentInterval : 0;
+  const mbPerDay = capturesPerDay * FREE_TIER.approxMBPerCapture;
+
+  if (kpiDailyStorage) {
+    kpiDailyStorage.textContent = `+${mbPerDay.toFixed(0)} MB / día`;
+  }
+
+  if (kpiDaysToLimit) {
+    const remainingMB = Math.max(0, FREE_TIER.storageMB - estimatedBucketMB);
+    const daysRemaining = mbPerDay > 0 ? Math.floor(remainingMB / mbPerDay) : 999;
+    if (daysRemaining > 365) {
+      kpiDaysToLimit.textContent = "> 1 año";
+      kpiDaysToLimit.className = "text-success";
+    } else if (daysRemaining > 30) {
+      kpiDaysToLimit.textContent = `~${daysRemaining} días`;
+      kpiDaysToLimit.className = "text-success";
+    } else {
+      kpiDaysToLimit.textContent = `¡${daysRemaining} días!`;
+      kpiDaysToLimit.className = "text-danger";
+    }
+  }
+
+  // Firestore daily writes
+  const dailyWrites = Math.round(capturesPerDay);
+  const writePercent = ((dailyWrites / FREE_TIER.firestoreWritesPerDay) * 100).toFixed(1);
+  if (firestoreWritesText) {
+    firestoreWritesText.innerHTML = `${dailyWrites.toLocaleString()} <small>/ 20,000 día</small>`;
+  }
+  if (firestoreProgressFill) {
+    firestoreProgressFill.style.width = `${Math.max(1, Math.min(100, writePercent))}%`;
+  }
+  if (firestoreQuotaPercent) {
+    firestoreQuotaPercent.textContent = `${writePercent}%`;
+  }
+
+  // General Traffic Light Badge
+  if (costTrafficBadge && costTrafficText) {
+    if (currentInterval >= 10) {
+      costTrafficBadge.className = "cost-badge cost-badge-safe";
+      costTrafficText.textContent = "🟢 Seguro: $0.00 / mes (Always Free)";
+    } else if (currentInterval >= 2) {
+      costTrafficBadge.className = "cost-badge cost-badge-warn";
+      costTrafficText.textContent = "🟡 Moderado: ~$0.10 - $0.50 / mes (Storage ops)";
+    } else {
+      costTrafficBadge.className = "cost-badge cost-badge-danger";
+      costTrafficText.textContent = "🔴 Intensivo: Puede exceder 5 GB Storage";
+    }
+  }
+}
+
+/**
+ * Dynamic Simulator calculations
+ */
+function updateSimulator(intervalMinutes) {
+  if (intervalMinutes <= 0) return;
+
+  if (simIntervalDisplay) {
+    if (intervalMinutes < 1) {
+      simIntervalDisplay.textContent = `${Math.round(intervalMinutes * 60)} segundos`;
+    } else {
+      simIntervalDisplay.textContent = `${intervalMinutes} minuto${intervalMinutes === 1 ? '' : 's'}`;
+    }
+  }
+
+  const capturesPerDay = (24 * 60) / intervalMinutes;
+  const capturesPerMonth = capturesPerDay * 30;
+
+  // 2 files per capture in storage (raw + annotated) + optional crop
+  const opsStorageMonth = capturesPerMonth * 2;
+  const storageMonthMB = capturesPerMonth * FREE_TIER.approxMBPerCapture;
+  const storageMonthGB = storageMonthMB / 1024;
+
+  if (simCapturesVal) {
+    simCapturesVal.textContent = `${Math.round(capturesPerDay).toLocaleString()} / día • ${Math.round(capturesPerMonth).toLocaleString()} / mes`;
+  }
+
+  if (simStorageMonthVal) {
+    simStorageMonthVal.textContent = `~${storageMonthGB.toFixed(1)} GB / mes`;
+  }
+
+  if (simOpsVal) {
+    const opsQuotaPercent = ((opsStorageMonth / FREE_TIER.storageOpsA) * 100).toFixed(0);
+    simOpsVal.textContent = `~${Math.round(opsStorageMonth).toLocaleString()} (${opsQuotaPercent}% de 5k/mes)`;
+  }
+
+  if (simFirestoreVal) {
+    const fsPercent = ((capturesPerDay / FREE_TIER.firestoreWritesPerDay) * 100).toFixed(1);
+    simFirestoreVal.textContent = `${Math.round(capturesPerDay).toLocaleString()} / 20k día (${fsPercent}%)`;
+  }
+
+  // Cost and alert evaluation
+  if (simAlertBox && simAlertText && simAlertIcon) {
+    if (intervalMinutes >= 10) {
+      simAlertBox.className = "sim-alert sim-alert-info";
+      simAlertIcon.textContent = "💡";
+      simAlertText.innerHTML = `
+        <strong>Excelente para producción (Costo: $0.00/mes):</strong> Con ${intervalMinutes} min, generas ~${storageMonthGB.toFixed(1)} GB/mes. 
+        Mantienes todas las escrituras y lecturas 100% dentro de la capa gratuita perpetua de Google Cloud.
+      `;
+    } else if (intervalMinutes >= 2) {
+      const excessOps = Math.max(0, opsStorageMonth - FREE_TIER.storageOpsA);
+      const costOps = (excessOps / 10000) * FREE_TIER.priceOpsAPer10k;
+      simAlertBox.className = "sim-alert sim-alert-warn";
+      simAlertIcon.textContent = "⚠️";
+      simAlertText.innerHTML = `
+        <strong>Consumo moderado:</strong> Las operaciones de subida a Storage (~${Math.round(opsStorageMonth).toLocaleString()}) superarán la cuota gratuita de 5,000/mes.
+        El costo adicional por operaciones será mínimo (<strong>~$${costOps.toFixed(2)}/mes</strong>), pero vigila el espacio acumulado (~${storageMonthGB.toFixed(1)} GB/mes).
+      `;
+    } else {
+      const excessOps = Math.max(0, opsStorageMonth - FREE_TIER.storageOpsA);
+      const costOps = (excessOps / 10000) * FREE_TIER.priceOpsAPer10k;
+      const excessGB = Math.max(0, storageMonthGB - 5.0);
+      const costGB = excessGB * FREE_TIER.priceStoragePerGB;
+      const totalEstimated = costOps + costGB;
+
+      simAlertBox.className = "sim-alert sim-alert-danger";
+      simAlertIcon.textContent = "🚨";
+      simAlertText.innerHTML = `
+        <strong>Intervalo de alta frecuencia:</strong> Generarás <strong>~${storageMonthGB.toFixed(0)} GB de fotos al mes</strong>.
+        Excederá los 5.0 GB gratuitos de Cloud Storage rápidamente. Costo extra estimado si corre 24/7 sin rotación: <strong>~$${totalEstimated.toFixed(2)} / mes</strong>.
+        Se recomienda solo para pruebas o con política de depuración automática.
+      `;
+    }
+  }
+}
+
 // Initialize
 initPromptListener();
 initPaginationListeners();
 initPhotosListener();
+initCostMonitor();
+

@@ -7,9 +7,9 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=5">
+  <link rel="stylesheet" href="style.css?v=6">
   <!-- Firebase SDKs via CDN -->
-  <script type="module" src="app.js?v=5"></script>
+  <script type="module" src="app.js?v=6"></script>
 </head>
 <body>
   <div class="app-container">
@@ -64,6 +64,225 @@
           </div>
         </div>
         <div id="promptStatus" class="status-badge hidden"></div>
+      </div>
+    </section>
+
+    <!-- Google Cloud Cost & Quotas Monitor Card -->
+    <section class="card cost-card" id="costMonitorCard">
+      <div class="card-header" style="cursor: pointer;" id="costMonitorHeader" title="Clic para expandir o contraer">
+        <div class="card-title">
+          <span class="card-icon">💰</span>
+          <div>
+            <h2>Monitor de Costos y Cuotas de Google Cloud</h2>
+            <p class="card-subtitle" style="font-size: 0.78rem; color: var(--text-muted); margin-top: 2px;">
+              Seguimiento de consumos en Compute Engine, Storage, Firestore y ML Local
+            </p>
+          </div>
+        </div>
+        <div class="cost-header-actions" style="display: flex; align-items: center; gap: 10px;">
+          <span id="costTrafficBadge" class="cost-badge cost-badge-safe">
+            <span class="cost-indicator-dot"></span>
+            <span id="costTrafficText">🟢 Seguro: $0.00 / mes (Always Free)</span>
+          </span>
+          <button id="toggleCostBtn" class="btn btn-secondary btn-sm" style="padding: 4px 10px; font-size: 0.75rem;">
+            Contraer ▾
+          </button>
+        </div>
+      </div>
+
+      <div class="cost-body" id="costMonitorBody">
+        <!-- Banner informativo -->
+        <div class="cost-summary-banner">
+          <div class="summary-icon">🛡️</div>
+          <div class="summary-details">
+            <strong>Protección de Facturación Activa:</strong> Tu stack opera principalmente dentro del <em>Always Free Tier</em> de Google Cloud.
+            El único rubro a tener presente es la dirección IPv4 pública (~$3.65/mes según políticas de GCP), mientras que el cómputo, almacenamiento y base de datos se mantienen en $0.00 bajo uso habitual.
+          </div>
+        </div>
+
+        <!-- 4 Grid KPI Cards -->
+        <div class="cost-kpi-grid">
+          <!-- Compute Engine -->
+          <div class="cost-kpi-card">
+            <div class="kpi-top">
+              <span class="kpi-icon">🖥️</span>
+              <span class="kpi-service">Compute Engine</span>
+              <span class="kpi-tag free">100% Free Tier</span>
+            </div>
+            <div class="kpi-main-val">e2-micro</div>
+            <div class="kpi-sub">Zona: <code>us-central1-a</code></div>
+            <div class="kpi-list">
+              <div class="kpi-row">
+                <span>Cómputo (CPU/RAM):</span>
+                <strong class="text-success">744 hrs / $0.00</strong>
+              </div>
+              <div class="kpi-row">
+                <span>Disco (pd-standard):</span>
+                <strong class="text-success">20 GB / 30 GB libre</strong>
+              </div>
+              <div class="kpi-row">
+                <span>IP Pública (IPv4):</span>
+                <span class="text-warning" title="Cargo estándar de GCP por IPv4 activa (~$0.005/h)">~$3.65/mes máx*</span>
+              </div>
+            </div>
+            <div class="kpi-cost-badge">Costo cómputo: $0.00/m</div>
+          </div>
+
+          <!-- Firebase Storage -->
+          <div class="cost-kpi-card">
+            <div class="kpi-top">
+              <span class="kpi-icon">📦</span>
+              <span class="kpi-service">Cloud Storage</span>
+              <span class="kpi-tag" id="storageQuotaTag">En Cuota</span>
+            </div>
+            <div class="kpi-main-val" id="storageUsedText">~144 MB <small>/ 5.0 GB</small></div>
+            <div class="progress-bar-container" style="margin: 8px 0 10px;">
+              <div class="progress-bar-fill" id="storageProgressFill" style="width: 3%;"></div>
+            </div>
+            <div class="kpi-list">
+              <div class="kpi-row">
+                <span>Fotos registradas:</span>
+                <strong id="kpiPhotosCount">0</strong>
+              </div>
+              <div class="kpi-row">
+                <span>Crecimiento diario:</span>
+                <strong id="kpiDailyStorage">+0 MB / día</strong>
+              </div>
+              <div class="kpi-row">
+                <span>Días hasta 5 GB:</span>
+                <strong id="kpiDaysToLimit">> 365 días</strong>
+              </div>
+            </div>
+            <div class="kpi-cost-badge" id="storageCostBadge">Costo Storage: $0.00/m</div>
+          </div>
+
+          <!-- Cloud Firestore -->
+          <div class="cost-kpi-card">
+            <div class="kpi-top">
+              <span class="kpi-icon">🗄️</span>
+              <span class="kpi-service">Cloud Firestore</span>
+              <span class="kpi-tag free">Free Tier</span>
+            </div>
+            <div class="kpi-main-val" id="firestoreWritesText">0 <small>/ 20,000 día</small></div>
+            <div class="progress-bar-container" style="margin: 8px 0 10px;">
+              <div class="progress-bar-fill" id="firestoreProgressFill" style="width: 1%;"></div>
+            </div>
+            <div class="kpi-list">
+              <div class="kpi-row">
+                <span>Límite diario escrituras:</span>
+                <strong class="text-success">20,000 / día ($0)</strong>
+              </div>
+              <div class="kpi-row">
+                <span>Límite diario lecturas:</span>
+                <strong class="text-success">50,000 / día ($0)</strong>
+              </div>
+              <div class="kpi-row">
+                <span>Uso actual de cuota:</span>
+                <strong id="firestoreQuotaPercent" class="text-success">< 1%</strong>
+              </div>
+            </div>
+            <div class="kpi-cost-badge">Costo Firestore: $0.00/m</div>
+          </div>
+
+          <!-- Local ML (ONNX) -->
+          <div class="cost-kpi-card">
+            <div class="kpi-top">
+              <span class="kpi-icon">🧠</span>
+              <span class="kpi-service">ML Local (ONNX)</span>
+              <span class="kpi-tag free">100% Offline</span>
+            </div>
+            <div class="kpi-main-val">YOLOv8 Nano</div>
+            <div class="kpi-sub">Motor: <code>onnxruntime-node</code></div>
+            <div class="kpi-list">
+              <div class="kpi-row">
+                <span>Inferencia por imagen:</span>
+                <strong class="text-success">~100 ms (CPU)</strong>
+              </div>
+              <div class="kpi-row">
+                <span>Costo por llamada:</span>
+                <strong class="text-success">$0.00 (Local)</strong>
+              </div>
+              <div class="kpi-row">
+                <span>Ahorro vs API LLM:</span>
+                <strong class="text-success">100% de ahorro</strong>
+              </div>
+            </div>
+            <div class="kpi-cost-badge">Costo IA: $0.00/m</div>
+          </div>
+        </div>
+
+        <!-- Simulator & Recommendations Section -->
+        <div class="simulator-box">
+          <div class="simulator-header">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-size: 1.2rem;">🎛️</span>
+              <h3 style="font-size: 0.95rem; font-weight: 600;">Simulador Interactivo de Consumos según Intervalo</h3>
+            </div>
+            <button id="syncSimWithIntervalBtn" class="btn btn-secondary btn-sm" style="font-size: 0.75rem; padding: 4px 10px;">
+              🔄 Sincronizar con intervalo actual
+            </button>
+          </div>
+          
+          <div class="simulator-controls" style="margin-top: 12px;">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+              <label for="simIntervalRange" class="help-text" style="font-weight: 500;">
+                Probar intervalo de captura: <strong id="simIntervalDisplay" style="color: var(--primary);">15 minutos</strong>
+              </label>
+              <div class="sim-presets">
+                <button type="button" class="sim-preset-btn" data-val="0.5">30s</button>
+                <button type="button" class="sim-preset-btn" data-val="1">1m</button>
+                <button type="button" class="sim-preset-btn" data-val="5">5m</button>
+                <button type="button" class="sim-preset-btn active" data-val="15">15m</button>
+                <button type="button" class="sim-preset-btn" data-val="60">1h</button>
+              </div>
+            </div>
+            <input type="range" id="simIntervalRange" min="0.2" max="60" step="0.2" value="15" style="width: 100%; accent-color: var(--primary); cursor: pointer;">
+          </div>
+
+          <!-- Simulator Dynamic Results -->
+          <div class="sim-results-grid">
+            <div class="sim-result-item">
+              <span class="sim-res-label">Capturas al Día / Mes:</span>
+              <strong id="simCapturesVal" class="sim-res-value">96 / día • 2,880 / mes</strong>
+            </div>
+            <div class="sim-result-item">
+              <span class="sim-res-label">Almacenamiento / Mes:</span>
+              <strong id="simStorageMonthVal" class="sim-res-value">~5.7 GB / mes</strong>
+            </div>
+            <div class="sim-result-item">
+              <span class="sim-res-label">Operaciones Storage (Clase A):</span>
+              <strong id="simOpsVal" class="sim-res-value">~5,760 / 5,000 cuota</strong>
+            </div>
+            <div class="sim-result-item">
+              <span class="sim-res-label">Escrituras Firestore:</span>
+              <strong id="simFirestoreVal" class="sim-res-value">96 / 20,000 día (0.5%)</strong>
+            </div>
+          </div>
+
+          <!-- Dynamic Warning / Alert inside Simulator -->
+          <div id="simAlertBox" class="sim-alert sim-alert-info">
+            <span id="simAlertIcon">💡</span>
+            <span id="simAlertText">
+              Con un intervalo de 15 minutos te mantienes prácticamente en $0.00. Para evitar exceder los 5 GB de Storage con los meses, se recomienda una regla de ciclo de vida de 30 días.
+            </span>
+          </div>
+        </div>
+
+        <!-- Best Practices / Recomendaciones -->
+        <div class="cost-tips-grid">
+          <div class="tip-card">
+            <div class="tip-title">🧹 Política de Ciclo de Vida (Auto-limpieza)</div>
+            <p class="tip-desc">
+              Para no pagar nunca por Cloud Storage, puedes activar una regla de ciclo de vida en el bucket <code>skip-bigotes.firebasestorage.app</code> para que elimine automáticamente fotos de más de 30 días. Con 30 días a 15 min, el almacenamiento nunca superará los 5 GB gratuitos.
+            </p>
+          </div>
+          <div class="tip-card">
+            <div class="tip-title">⚡ Cuidado con intervalos < 2 minutos 24/7</div>
+            <p class="tip-desc">
+              Si dejas un intervalo de 30 segundos corriendo las 24 horas del día, generarás ~170 GB de imágenes al mes (~$4.30 en Storage) y ~172,800 operaciones de subida (~$0.86). Úsalo solo para pruebas temporales.
+            </p>
+          </div>
+        </div>
       </div>
     </section>
 
