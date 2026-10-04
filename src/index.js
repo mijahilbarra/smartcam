@@ -6,7 +6,7 @@ import fsSync from "fs";
 import path from "path";
 import util from "util";
 import { fileURLToPath } from "url";
-import { detectObjectsAndQuadrants, setCustomQuadrants, getDefaultQuadrantsArray } from "./detector.js";
+import { detectObjectsAndQuadrants, setCustomQuadrants, getDefaultQuadrantsArray, sanitizeForFirestore } from "./detector.js";
 import { extractFaceEmbedding, identifyFace } from "./face_recognizer.js";
 import { daemonReporter } from "./daemon_reporter.js";
 
@@ -452,7 +452,8 @@ export async function executeCaptureProcess(triggerSource = "scheduled") {
       source: "gcp-e2-micro"
     };
 
-    await docRef.set(record);
+    const sanitizedRecord = sanitizeForFirestore(record);
+    await docRef.set(sanitizedRecord);
     console.log(`[6/6] [Firestore] Documento guardado exitosamente en camera_catcher/photos/photos/${docId}`);
     console.log(`========================================\n`);
 

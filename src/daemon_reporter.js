@@ -3,6 +3,8 @@
  * Gestiona y transmite la telemetría en tiempo real de cada paso del Daemon a Firestore: camera_catcher/daemon_state
  */
 
+import { toPointObject, sanitizeForFirestore } from "./detector.js";
+
 const MAX_EVENT_LOG_SIZE = 30;
 
 class DaemonReporter {
@@ -73,7 +75,8 @@ class DaemonReporter {
     if (!this.db) return;
     try {
       this.currentState.updatedAt = new Date().toISOString();
-      await this.db.doc("camera_catcher/daemon_state").set(this.currentState, { merge: true });
+      const sanitizedPayload = sanitizeForFirestore(this.currentState);
+      await this.db.doc("camera_catcher/daemon_state").set(sanitizedPayload, { merge: true });
     } catch (err) {
       console.warn("[DaemonReporter] Error sincronizando estado a Firestore:", err.message);
     }
@@ -171,7 +174,9 @@ class DaemonReporter {
       status: q.status || "disponible",
       color: q.color || "#007BFF",
       box: q.box,
-      polygonNorm: q.polygonNorm
+      polygonNorm: Array.isArray(q.polygonNorm)
+        ? q.polygonNorm.map(toPointObject)
+        : undefined
     }));
 
     const statusCounts = list.map(q => `${q.label} [${q.status || "activo"}]`).join(", ");

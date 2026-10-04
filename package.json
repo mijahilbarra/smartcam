@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "start": "node src/index.js",
-    "test": "node test/test-detector.js && node test/test-working-hours.js"
+    "test": "node test/test-firestore-sanitizer.js && node test/test-daemon-reporter.js && node test/test-detector.js && node test/test-working-hours.js"
   },
   "dependencies": {
     "express": "^4.19.2",

@@ -32,13 +32,20 @@ export function toPointTuple(p) {
   return [0, 0];
 }
 
-// Helper to convert [ymin, xmin, ymax, xmax] to polygon vertices [[x,y], ...]
+// Helper to convert vertex representations (array [x,y] or object {x,y}) to {x, y} object for Firestore compatibility
+export function toPointObject(p) {
+  if (Array.isArray(p)) return { x: Number(p[0] ?? 0), y: Number(p[1] ?? 0) };
+  if (p && typeof p === "object") return { x: Number(p.x ?? 0), y: Number(p.y ?? 0) };
+  return { x: 0, y: 0 };
+}
+
+// Helper to convert [ymin, xmin, ymax, xmax] to polygon vertices [{x,y}, ...]
 export function boxNormToPolygonNorm([ymin, xmin, ymax, xmax]) {
   return [
-    [xmin, ymin], // P0: Top-Left
-    [xmax, ymin], // P1: Top-Right
-    [xmax, ymax], // P2: Bottom-Right
-    [xmin, ymax]  // P3: Bottom-Left
+    { x: Number(xmin), y: Number(ymin) }, // P0: Top-Left
+    { x: Number(xmax), y: Number(ymin) }, // P1: Top-Right
+    { x: Number(xmax), y: Number(ymax) }, // P2: Bottom-Right
+    { x: Number(xmin), y: Number(ymax) }  // P3: Bottom-Left
   ];
 }
 
@@ -51,6 +58,39 @@ export function polygonNormToBoundingBoxNorm(polygon) {
     Math.max(...ys),
     Math.max(...xs)
   ];
+}
+
+/**
+ * Recursively sanitizes any JavaScript object or array for Firestore compatibility:
+ * 1. Converts nested arrays [ [x, y], ... ] into array of point maps [ {x, y}, ... ].
+ * 2. If an array contains inner arrays that are not 2-element tuples, flattens or wraps them so no array contains an array.
+ * 3. Removes undefined fields (Firestore throws on undefined).
+ * 4. Preserves Firestore FieldValues, Dates, primitives.
+ */
+export function sanitizeForFirestore(val) {
+  if (val === null || val === undefined) return null;
+  if (typeof val !== "object") return val;
+  if (val instanceof Date) return val;
+  if (val._methodName || (val.constructor && val.constructor.name === "FieldValue")) return val;
+
+  if (Array.isArray(val)) {
+    return val.map(item => {
+      if (Array.isArray(item)) {
+        if (item.length === 2 && typeof item[0] === "number" && typeof item[1] === "number") {
+          return { x: item[0], y: item[1] };
+        }
+        return sanitizeForFirestore({ items: item });
+      }
+      return sanitizeForFirestore(item);
+    });
+  }
+
+  const cleanObj = {};
+  for (const [k, v] of Object.entries(val)) {
+    if (v === undefined) continue;
+    cleanObj[k] = sanitizeForFirestore(v);
+  }
+  return cleanObj;
 }
 
 /**
@@ -137,7 +177,7 @@ export function setCustomQuadrants(newQuadrants) {
     if (rawQ && rawQ.id) {
       const q = { ...rawQ };
       if (q.polygonNorm && Array.isArray(q.polygonNorm)) {
-        q.polygonNorm = q.polygonNorm.map(toPointTuple);
+        q.polygonNorm = q.polygonNorm.map(toPointObject);
       } else if (q.boxNorm && Array.isArray(q.boxNorm) && q.boxNorm.length === 4) {
         q.polygonNorm = boxNormToPolygonNorm(q.boxNorm);
       }
@@ -349,7 +389,7 @@ export function mapDetectionsToBarbershopQuadrants(detections, width, height, cu
   const normalizedZones = configuredZones.filter(z => z && z.id).map(rawZ => {
     const z = { ...rawZ };
     if (z.polygonNorm && Array.isArray(z.polygonNorm) && z.polygonNorm.length >= 3) {
-      z.polygonNorm = z.polygonNorm.map(toPointTuple);
+      z.polygonNorm = z.polygonNorm.map(toPointObject);
     } else if (z.boxNorm && Array.isArray(z.boxNorm) && z.boxNorm.length === 4) {
       z.polygonNorm = boxNormToPolygonNorm(z.boxNorm);
     }
