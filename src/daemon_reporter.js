@@ -16,6 +16,15 @@ class DaemonReporter {
       stepTitle: "Daemon Inicializado",
       stepDescription: "Esperando inicio del primer ciclo...",
       timestamp: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      nextCaptureAtIso: null,
+      intervalMinutes: 3,
+      workingHours: {
+        start: "11:00",
+        end: "23:00",
+        timezone: "America/Lima",
+        isWithinWorkingHours: true
+      },
       countdown: {
         nextCaptureAt: null,
         intervalMinutes: 3,
@@ -75,6 +84,14 @@ class DaemonReporter {
     if (!this.db) return;
     try {
       this.currentState.updatedAt = new Date().toISOString();
+      if (this.currentState.countdown) {
+        if (!this.currentState.nextCaptureAtIso && this.currentState.countdown.nextCaptureAt) {
+          this.currentState.nextCaptureAtIso = this.currentState.countdown.nextCaptureAt;
+        }
+        if (!this.currentState.intervalMinutes && this.currentState.countdown.intervalMinutes) {
+          this.currentState.intervalMinutes = this.currentState.countdown.intervalMinutes;
+        }
+      }
       const sanitizedPayload = sanitizeForFirestore(this.currentState);
       await this.db.doc("camera_catcher/daemon_state").set(sanitizedPayload, { merge: true });
     } catch (err) {
@@ -89,24 +106,38 @@ class DaemonReporter {
     const nextIso = nextCaptureDate ? nextCaptureDate.toISOString() : null;
     const remainingSec = nextCaptureDate ? Math.max(0, Math.round((nextCaptureDate.getTime() - Date.now()) / 1000)) : 0;
     const remainingMin = (remainingSec / 60).toFixed(1);
+    const intMin = Number(intervalMinutes) || 3;
 
     this.currentState.step = "countdown";
     this.currentState.stepIndex = 0;
     this.currentState.stepTitle = "Contador de Ciclo Activo";
     this.currentState.stepDescription = workInfo.isWithinWorkingHours === false
       ? `Fuera de horario laboral (${workInfo.workStart || "11:00"} a ${workInfo.workEnd || "23:00"}). Capturas programadas en pausa.`
-      : `Contador activo: Próxima consulta a la cámara de seguridad en ~${remainingMin} minutos (${intervalMinutes} min intervalo).`;
+      : `Contador activo: Próxima consulta a la cámara de seguridad en ~${remainingMin} minutos (${intMin} min intervalo).`;
+
+    // Campos aplanados para máxima compatibilidad con el frontend
+    this.currentState.nextCaptureAtIso = nextIso;
+    this.currentState.intervalMinutes = intMin;
 
     this.currentState.countdown = {
       nextCaptureAt: nextIso,
-      intervalMinutes: Number(intervalMinutes) || 3,
+      intervalMinutes: intMin,
       remainingSeconds: remainingSec,
       isWithinWorkingHours: workInfo.isWithinWorkingHours !== false,
       workHours: `${workInfo.workStart || "11:00"} - ${workInfo.workEnd || "23:00"} (${workInfo.timezone || "America/Lima"})`
     };
 
+    if (workInfo.workStart && workInfo.workEnd) {
+      this.currentState.workingHours = {
+        start: workInfo.workStart,
+        end: workInfo.workEnd,
+        timezone: workInfo.timezone || "America/Lima",
+        isWithinWorkingHours: workInfo.isWithinWorkingHours !== false
+      };
+    }
+
     this._addHistoryEntry(
-      `⏱️ Contador programado: Próxima captura en ~${remainingMin} min (${intervalMinutes} min). Horario: ${this.currentState.countdown.workHours}.`,
+      `⏱️ Contador programado: Próxima captura en ~${remainingMin} min (${intMin} min). Horario: ${this.currentState.countdown.workHours}.`,
       "countdown"
     );
 
@@ -301,11 +332,14 @@ class DaemonReporter {
     this.currentState.summary = summary;
 
     if (nextCaptureDate) {
+      const intMin = Number(intervalMinutes) || this.currentState.intervalMinutes || 3;
+      this.currentState.nextCaptureAtIso = nextIso;
+      this.currentState.intervalMinutes = intMin;
       this.currentState.countdown = {
         ...this.currentState.countdown,
         nextCaptureAt: nextIso,
         remainingSeconds: remainingSec,
-        intervalMinutes: Number(intervalMinutes) || 3
+        intervalMinutes: intMin
       };
     }
 

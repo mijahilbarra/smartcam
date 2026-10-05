@@ -42,6 +42,7 @@ export function useDaemonState() {
   });
 
   const countdownProgressPercent = computed(() => {
+    if (countdownTimeFormatted.value === '--:--') return 0;
     if (totalIntervalSeconds.value <= 0) return 0;
     const elapsed = totalIntervalSeconds.value - countdownSeconds.value;
     return Math.min(100, Math.max(0, (elapsed / totalIntervalSeconds.value) * 100));
@@ -68,9 +69,16 @@ export function useDaemonState() {
     const tick = () => {
       if (!nextIso) {
         countdownTimeFormatted.value = '--:--';
+        countdownSeconds.value = 0;
         return;
       }
       const targetTime = new Date(nextIso).getTime();
+      if (isNaN(targetTime)) {
+        countdownTimeFormatted.value = '--:--';
+        countdownSeconds.value = 0;
+        return;
+      }
+
       const diffMs = targetTime - Date.now();
       const secLeft = Math.max(0, Math.floor(diffMs / 1000));
       countdownSeconds.value = secLeft;
@@ -100,20 +108,30 @@ export function useDaemonState() {
       if (!snap.exists()) {
         daemonState.value = null;
         isConnected.value = false;
+        startCountdownTicker(null, 3);
         return;
       }
       const data = snap.data();
-      daemonState.value = data;
+
+      // Extraer intervalo y fecha objetivo de forma resiliente
+      const rawInterval = data.countdown?.intervalMinutes || data.intervalMinutes;
+      const intervalMinutes = (!isNaN(Number(rawInterval)) && Number(rawInterval) > 0) ? Number(rawInterval) : 3;
+      const nextCaptureAtIso = data.countdown?.nextCaptureAt || data.nextCaptureAtIso || data.nextCaptureAt || null;
 
       // Evaluar si el reporte del daemon es reciente
       const lastIso = data.updatedAt || data.timestamp || data.countdown?.timestamp;
       if (lastIso) {
         const ageMs = Date.now() - new Date(lastIso).getTime();
-        const maxStaleMs = (data.intervalMinutes ? data.intervalMinutes * 2 : 5) * 60 * 1000;
+        const maxStaleMs = (intervalMinutes * 2) * 60 * 1000;
         isConnected.value = ageMs < maxStaleMs;
       } else {
         isConnected.value = false;
       }
+
+      // Normalizar campos aplanados para uso directo en la UI
+      data.intervalMinutes = intervalMinutes;
+      data.nextCaptureAtIso = nextCaptureAtIso;
+      daemonState.value = data;
 
       // Update Working hours from state if present
       if (data.workingHours) {
@@ -121,6 +139,14 @@ export function useDaemonState() {
           start: data.workingHours.start || '11:00',
           end: data.workingHours.end || '23:00'
         };
+      } else if (data.countdown?.workHours) {
+        const match = String(data.countdown.workHours).match(/^(\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})/);
+        if (match) {
+          workingHoursConfig.value = {
+            start: match[1],
+            end: match[2]
+          };
+        }
       }
 
       // Update Stepper
@@ -128,13 +154,26 @@ export function useDaemonState() {
       activeStepIndex.value = Math.min(Math.max(0, stepIdx), 5);
       currentStepKey.value = data.stepKey || STEP_DEFINITIONS[activeStepIndex.value].key;
 
-      // Update Countdown ticker
-      if (data.nextCaptureAtIso) {
-        startCountdownTicker(data.nextCaptureAtIso, data.intervalMinutes || 3);
+      // Update Countdown ticker: si no hay fecha pero el daemon está activo, calcular la estimada
+      let targetNextIso = nextCaptureAtIso;
+      if (!targetNextIso && isConnected.value) {
+        const baseTime = lastIso ? new Date(lastIso).getTime() : Date.now();
+        const estTime = baseTime + intervalMinutes * 60 * 1000;
+        targetNextIso = new Date(estTime > Date.now() ? estTime : Date.now() + intervalMinutes * 60 * 1000).toISOString();
       }
 
-      // Update Event log if new event is recorded
-      if (data.lastEvent) {
+      startCountdownTicker(targetNextIso, intervalMinutes);
+
+      // Update Event log if history exists or single event is recorded
+      if (Array.isArray(data.history) && data.history.length > 0) {
+        logs.value = data.history.map(item => ({
+          id: item.id || `${item.timestamp}_${Math.random()}`,
+          time: item.timeFormatted || (item.timestamp ? new Date(item.timestamp).toLocaleTimeString('es-PE', { hour12: false }) : '--:--'),
+          title: item.type ? item.type.toUpperCase() : 'TELEMETRÍA',
+          desc: item.text,
+          type: item.type
+        }));
+      } else if (data.lastEvent) {
         addLog(data.lastEvent);
       }
 

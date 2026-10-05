@@ -21,6 +21,12 @@ async function runTest() {
   await daemonReporter.setCountdown(targetDate, 15, { isWithinWorkingHours: true, workStart: "11:00", workEnd: "23:00", timezone: "America/Lima" });
   console.log("-> Step:", daemonReporter.currentState.step, "| Title:", daemonReporter.currentState.stepTitle);
   console.log("-> Countdown remaining seconds:", daemonReporter.currentState.countdown.remainingSeconds);
+  if (!daemonReporter.currentState.nextCaptureAtIso) {
+    throw new Error("FAIL: nextCaptureAtIso debe existir en el nivel superior de currentState");
+  }
+  if (daemonReporter.currentState.intervalMinutes !== 15) {
+    throw new Error("FAIL: intervalMinutes debe ser 15 en el nivel superior de currentState");
+  }
 
   // 2. Consulta a la cámara
   console.log("\n[2] Probando reportCameraQuery...");
@@ -79,6 +85,12 @@ async function runTest() {
     intervalMinutes: 15
   });
   console.log("-> Step:", daemonReporter.currentState.step, "| Summary:", daemonReporter.currentState.summary);
+  if (!daemonReporter.currentState.nextCaptureAtIso) {
+    throw new Error("FAIL: nextCaptureAtIso debe actualizarse en reportCycleCompleted");
+  }
+  if (daemonReporter.currentState.intervalMinutes !== 15) {
+    throw new Error("FAIL: intervalMinutes debe ser 15 en reportCycleCompleted");
+  }
 
   console.log("\nTotal de sincronizaciones a Firestore:", emittedStates.length);
   console.log("Historial de bitácora acumulado:", daemonReporter.currentState.history.length, "eventos");

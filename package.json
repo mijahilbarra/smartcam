@@ -8,7 +8,7 @@
     "dev": "node scripts/dev.js",
     "build:web": "vite build",
     "preview:web": "vite preview",
-    "test": "node test/test-firestore-sanitizer.js && node test/test-daemon-reporter.js && node test/test-detector.js && node test/test-working-hours.js && node test/test-core-modular.js",
+    "test": "node test/test-firestore-sanitizer.js && node test/test-daemon-reporter.js && node test/test-countdown-ticker.js && node test/test-detector.js && node test/test-working-hours.js && node test/test-core-modular.js",
     "test:e2": "docker compose -f docker-compose.e2-sim.yml run --rm e2-simulator npm test",
     "start": "node src/index.js"
   },

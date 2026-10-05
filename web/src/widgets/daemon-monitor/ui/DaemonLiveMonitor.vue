@@ -316,7 +316,7 @@ onMounted(() => {
       <div class="flex flex-col gap-2 flex-1 w-full text-center sm:text-left">
         <div class="flex flex-wrap items-center justify-center sm:justify-start gap-2">
           <AppBadge variant="default" icon="timer">
-            Intervalo: {{ daemonState?.intervalMinutes || 3 }} min
+            Intervalo: {{ daemonState?.intervalMinutes || daemonState?.countdown?.intervalMinutes || 3 }} min
           </AppBadge>
           <AppBadge variant="default" icon="schedule">
             Horario: {{ workingHoursConfig.start }} - {{ workingHoursConfig.end }}
@@ -325,9 +325,9 @@ onMounted(() => {
             {{ workingHoursStatus.isWithin ? '● Dentro de Horario' : '○ Fuera de Horario (En Pausa)' }}
           </AppBadge>
         </div>
-        <h3 class="text-base font-semibold text-white">{{ currentStep.title }}</h3>
+        <h3 class="text-base font-semibold text-white">{{ daemonState?.stepTitle || currentStep.title }}</h3>
         <p class="text-xs text-slate-400">
-          {{ daemonState?.lastStatus || currentStep.sub || 'Sincronizando estado con Firestore...' }}
+          {{ daemonState?.stepDescription || daemonState?.lastStatus || currentStep.sub || 'Sincronizando estado con Firestore...' }}
         </p>
       </div>
     </div>
