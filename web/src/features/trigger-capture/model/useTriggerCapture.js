@@ -60,7 +60,7 @@ export function useTriggerCapture() {
         }, { merge: true });
 
         if (IS_LOCAL_ENV) {
-          statusMessage.value = 'Comando enviado a Firestore [test]. Si el simulador local no está activo, ejecuta "npm run sim:e2" en tu terminal.';
+          statusMessage.value = 'Comando enviado a Firestore [test]. Si el simulador local no está activo, ejecuta "npm run dev" en tu terminal.';
           statusType.value = 'warning';
         } else {
           statusMessage.value = 'Comando enviado a GCP Compute Engine (Firestore Event Bus)';
