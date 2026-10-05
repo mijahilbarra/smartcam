@@ -18,7 +18,7 @@ export function useTriggerCapture() {
     if (addLogCallback) {
       addLogCallback({
         title: '⚡ Disparo de Captura Solicitado',
-        desc: `Pulsado en ${envInfo.environmentLabel}. Destino: ${envInfo.dispatchTarget}`,
+        desc: `Entorno: ${envInfo.environmentLabel}. Destino: ${envInfo.dispatchTarget}`,
         type: 'action'
       });
     }
@@ -29,18 +29,24 @@ export function useTriggerCapture() {
       // 1. Si estamos en ENTORNO LOCAL y existe BACKEND_URL, intentar HTTP directo al simulador E2 / daemon
       if (IS_LOCAL_ENV && BACKEND_URL) {
         try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 2500);
+
           const res = await fetch(`${BACKEND_URL}/capture`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ source: 'dashboard_local_button', timestamp: new Date().toISOString() })
+            body: JSON.stringify({ source: 'dashboard_local_button', timestamp: new Date().toISOString() }),
+            signal: controller.signal
           });
+          clearTimeout(timeoutId);
+
           if (res.ok) {
             dispatchedViaHttp = true;
-            statusMessage.value = '¡Captura procesada por el simulador local E2 (HTTP)!';
+            statusMessage.value = '¡Captura procesada por el daemon/simulador local (HTTP)!';
             statusType.value = 'success';
           }
         } catch (httpErr) {
-          console.warn('[TriggerCapture] Simulador local HTTP no respondió, enviando por Firestore:', httpErr.message);
+          console.warn('[TriggerCapture] Daemon local (8085) no conectado. Enviando a Firestore:', httpErr.message);
         }
       }
 
@@ -53,19 +59,22 @@ export function useTriggerCapture() {
           requestedAt: timestampNow
         }, { merge: true });
 
-        statusMessage.value = IS_LOCAL_ENV
-          ? 'Comando enviado a Firestore (Simulador Local)'
-          : 'Comando enviado a GCP Compute Engine (Firestore Event Bus)';
-        statusType.value = 'success';
+        if (IS_LOCAL_ENV) {
+          statusMessage.value = 'Comando enviado a Firestore [test]. Si el daemon local no está activo, ejecuta "npm start" o "npm run sim:e2" en tu terminal.';
+          statusType.value = 'warning';
+        } else {
+          statusMessage.value = 'Comando enviado a GCP Compute Engine (Firestore Event Bus)';
+          statusType.value = 'success';
+        }
       }
 
       if (addLogCallback) {
         addLogCallback({
-          title: '✓ Ciclo activado',
+          title: dispatchedViaHttp ? '✓ Ciclo activado (HTTP)' : '✓ Ciclo enviado a Firestore',
           desc: dispatchedViaHttp
             ? 'Orden ejecutada vía HTTP directo (Simulador E2 localhost:8085).'
-            : 'Orden enviada vía WebSocket a Firestore (GCP Compute Engine daemon).',
-          type: 'success'
+            : `Orden enviada vía Firestore [${envInfo.databaseId}].`,
+          type: dispatchedViaHttp ? 'success' : (IS_LOCAL_ENV ? 'warning' : 'success')
         });
       }
     } catch (err) {
