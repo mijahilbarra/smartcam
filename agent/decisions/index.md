@@ -125,6 +125,7 @@ sequenceDiagram
 | **Telemetría & Vista en Vivo** | Firestore State Machine + HTML5 Canvas | Transmisión de fases de ejecución y renderizado visual interactivo del Daemon | [10-daemon-live-workflow-viewer.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/10-daemon-live-workflow-viewer.md) |
 | **Iconografía & Tipografía** | Google Fonts (Inter + Material Symbols) | Estandarización visual vectorial y tipográfica profesional libre de emojis nativos | [11-google-fonts-iconography.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/11-google-fonts-iconography.md) |
 | **Arquitectura Frontend FSD + Atomic** | Vue 3 + Tailwind CSS + Vite | Arquitectura Feature-Sliced Design integrada con Atomic Design (Átomos, Moléculas, Organismos, Templates, Vistas) | [12-fsd-atomic-design-vue-tailwind.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/12-fsd-atomic-design-vue-tailwind.md) |
+| **Arquitectura Daemon Modular (Hexagonal)** | Node.js Core + Services + Infra | Desacoplamiento modular del daemon en capas de Dominio, Infraestructura y Orquestación | [13-modular-daemon-architecture.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/13-modular-daemon-architecture.md) |
 
 ---
 

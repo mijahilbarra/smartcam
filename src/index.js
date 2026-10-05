@@ -1,520 +1,89 @@
-import express from "express";
-import admin from "firebase-admin";
-import { exec } from "child_process";
-import fs from "fs/promises";
-import fsSync from "fs";
-import path from "path";
-import util from "util";
-import { fileURLToPath } from "url";
-import { detectObjectsAndQuadrants, setCustomQuadrants, getDefaultQuadrantsArray, sanitizeForFirestore } from "./detector.js";
-import { extractFaceEmbedding, identifyFace } from "./face_recognizer.js";
-import { daemonReporter } from "./daemon_reporter.js";
+/**
+ * Punto de Entrada Principal (Entrypoint) del Daemon IOT Camera Catcher
+ * Inicializa logging, Firebase Admin, servidor Express, listeners de Firestore y programador cron.
+ */
 
-const execPromise = util.promisify(exec);
+import express from "express";
+import path from "path";
+import { fileURLToPath } from "url";
+
+// Re-exports de compatibilidad para suites de prueba y clientes externos
+export { parseTimeToMinutes, isWithinWorkingHours } from "./core/working_hours.js";
+
+import { initLogger } from "./infrastructure/logging/logger.js";
+import { initFirebaseAdmin } from "./infrastructure/firebase/firebase_admin.js";
+import { daemonReporter } from "./daemon_reporter.js";
+import { cleanupZombies } from "./infrastructure/camera/neolink_client.js";
+import {
+  getDynamicConfig,
+  registerFirestoreListeners,
+  prefetchQuadrants
+} from "./infrastructure/firebase/firestore_listeners.js";
+import { SchedulerService } from "./services/scheduler_service.js";
+import { CaptureOrchestrator } from "./services/capture_orchestrator.js";
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PROJECT_ROOT = path.resolve(__dirname, "..");
 const TOML_PATH = path.join(PROJECT_ROOT, "neolink.toml");
 const DAEMON_LOG_FILE = path.join(PROJECT_ROOT, "daemon.log");
 const TMP_LOG_FILE = "/tmp/camera-catcher.log";
-const DOCKER_CONTAINER_NAME = "neolink-capture";
 
-// Tee all console logs to local daemon.log and /tmp for easy SSH/remote diagnosis
-const origLog = console.log;
-const origErr = console.error;
+// 1. Inicializar sistema de logs en archivo para diagnóstico SSH
+initLogger(DAEMON_LOG_FILE, TMP_LOG_FILE);
 
-function appendToLog(prefix, args) {
-  try {
-    const text = args.map(a => typeof a === 'object' ? JSON.stringify(a) : a).join(' ');
-    const logLine = `[${new Date().toISOString()}] ${prefix} ${text}\n`;
-    try { fsSync.appendFileSync(DAEMON_LOG_FILE, logLine); } catch (_) {}
-    try { fsSync.appendFileSync(TMP_LOG_FILE, logLine); } catch (_) {}
-  } catch (_) {}
-}
-
-console.log = (...args) => {
-  origLog(...args);
-  appendToLog("[INFO]", args);
-};
-
-console.error = (...args) => {
-  origErr(...args);
-  appendToLog("[ERROR]", args);
-};
-
-// Initialize Firebase Admin (uses Application Default Credentials on GCP Compute Engine)
-admin.initializeApp({
-  projectId: process.env.FIREBASE_PROJECT_ID || "skip-bigotes",
-  storageBucket: process.env.STORAGE_BUCKET || "skip-bigotes.firebasestorage.app"
-});
-
-const db = admin.firestore();
-const bucket = admin.storage().bucket();
+// 2. Inicializar Firebase Admin SDK (con Application Default Credentials en GCP)
+const { db, bucket } = initFirebaseAdmin();
 daemonReporter.init(db);
 
+// 3. Inicializar Servicios de Dominio y Orquestación
+const scheduler = new SchedulerService({
+  defaultIntervalMinutes: 15,
+  defaultStart: "11:00",
+  defaultEnd: "23:00",
+  defaultTz: "America/Lima"
+});
+
+const orchestrator = new CaptureOrchestrator({
+  db,
+  bucket,
+  tomlPath: TOML_PATH,
+  scheduler
+});
+
+scheduler.onTick = (triggerSource) => orchestrator.execute(triggerSource);
+
+/**
+ * Función expuesta para disparar la captura manualmente o desde tests
+ */
+export async function executeCaptureProcess(triggerSource = "scheduled") {
+  return orchestrator.execute(triggerSource);
+}
+
+// 4. Servidor Express para Health Checks y Endpoints de Disparo
 const app = express();
 app.use(express.json());
-
-// Enable CORS
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  if (req.method === "OPTIONS") {
-    return res.sendStatus(204);
-  }
+  if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
 });
 
-const DEFAULT_PROMPT = "Describe what do you see in the image";
-
-let isCapturing = false;
-
-// Dynamic Configuration State (loaded and updated in real-time from Firestore: camera_catcher/prompt)
-let currentIntervalMinutes = 15;
-let workStart = "11:00"; // 11 AM por defecto
-let workEnd = "23:00";   // 11 PM por defecto
-let configuredTimeZone = "America/Lima"; // Zona horaria de la barbería
-
-/**
- * Convierte un formato de hora (ej: "11:00", "11:00 AM", "11pm", "23:00", 11) a minutos desde las 00:00
- */
-export function parseTimeToMinutes(timeVal) {
-  if (typeof timeVal === "number") {
-    return Math.floor(timeVal * 60);
-  }
-  if (!timeVal || typeof timeVal !== "string") return null;
-  const match = timeVal.trim().match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/i);
-  if (!match) return null;
-  let hours = parseInt(match[1], 10);
-  const minutes = match[2] ? parseInt(match[2], 10) : 0;
-  const period = match[3]?.toLowerCase();
-
-  if (period === "pm" && hours < 12) hours += 12;
-  if (period === "am" && hours === 12) hours = 0;
-
-  return hours * 60 + minutes;
-}
-
-/**
- * Evalúa si la fecha/hora actual se encuentra dentro del rango de trabajo configurado
- */
-export function isWithinWorkingHours(date = new Date(), start = workStart, end = workEnd, tz = configuredTimeZone) {
-  try {
-    const formatter = new Intl.DateTimeFormat("en-US", {
-      timeZone: tz,
-      hour: "numeric",
-      minute: "numeric",
-      hour12: false
-    });
-    const parts = formatter.formatToParts(date);
-    const hour = parseInt(parts.find(p => p.type === "hour")?.value || "0", 10);
-    const minute = parseInt(parts.find(p => p.type === "minute")?.value || "0", 10);
-    const currentMins = hour * 60 + minute;
-
-    const startMins = parseTimeToMinutes(start) ?? (11 * 60);
-    const endMins = parseTimeToMinutes(end) ?? (23 * 60);
-
-    if (startMins <= endMins) {
-      return currentMins >= startMins && currentMins < endMins;
-    } else {
-      // Para rangos nocturnos (ej: 22:00 a 04:00)
-      return currentMins >= startMins || currentMins < endMins;
-    }
-  } catch (err) {
-    console.warn("[WorkingHours] Error evaluando horario:", err.message);
-    return true; // En caso de fallo con la zona horaria, permitir para no bloquear
-  }
-}
-
-/**
- * Fetch or initialize dynamic prompt, interval and working hours from Firestore: camera_catcher/prompt
- */
-async function getDynamicConfig() {
-  try {
-    const promptRef = db.doc("camera_catcher/prompt");
-    const doc = await promptRef.get();
-    if (!doc.exists) {
-      console.log("[Config] camera_catcher/prompt no existe. Creando con configuración por defecto (11am a 11pm)...");
-      const initialConfig = {
-        default: DEFAULT_PROMPT,
-        intervalMinutes: 15,
-        workStartTime: "11:00",
-        workEndTime: "23:00",
-        timezone: "America/Lima",
-        updatedAt: new Date().toISOString()
-      };
-      await promptRef.set(initialConfig);
-      return initialConfig;
-    }
-    const data = doc.data();
-
-    // Ensure working hours defaults exist in Firestore if not already set
-    const missingDefaults = {};
-    if (!data?.workStartTime && !data?.workStart) missingDefaults.workStartTime = "11:00";
-    if (!data?.workEndTime && !data?.workEnd) missingDefaults.workEndTime = "23:00";
-    if (!data?.timezone) missingDefaults.timezone = "America/Lima";
-
-    if (Object.keys(missingDefaults).length > 0) {
-      await promptRef.set(missingDefaults, { merge: true });
-    }
-
-    workStart = String(data?.workStartTime || data?.workStart || "11:00");
-    workEnd = String(data?.workEndTime || data?.workEnd || "23:00");
-    configuredTimeZone = data?.timezone || "America/Lima";
-
-    return {
-      prompt: data?.default || DEFAULT_PROMPT,
-      intervalMinutes: data?.intervalMinutes !== undefined ? Number(data.intervalMinutes) : 3,
-      workStartTime: workStart,
-      workEndTime: workEnd,
-      timezone: configuredTimeZone
-    };
-  } catch (err) {
-    console.warn("[Config] Error leyendo configuración de Firestore, usando defaults:", err.message);
-    return { prompt: DEFAULT_PROMPT, intervalMinutes: 3, workStartTime: "11:00", workEndTime: "23:00", timezone: "America/Lima" };
-  }
-}
-
-async function killCaptureContainer() {
-  try {
-    await execPromise(`docker rm -f ${DOCKER_CONTAINER_NAME} 2>/dev/null || true`);
-  } catch (_) {}
-}
-
-/**
- * Run Face Recognition and Re-identification on detected people across captures
- */
-async function processPeopleRecognition(clientRecords, clientCrops) {
-  if (!clientCrops || clientCrops.length === 0) return [];
-  const identifiedPeople = [];
-
-  try {
-    // 1. Fetch known profiles and staff from Firestore
-    const profilesSnap = await db.collection("camera_catcher_people").get();
-    const knownProfiles = [];
-    profilesSnap.forEach(docSnap => {
-      knownProfiles.push({ id: docSnap.id, ...docSnap.data() });
-    });
-
-    const staffDoc = await db.doc("camera_catcher/staff").get();
-    const staffMembers = staffDoc.exists ? (staffDoc.data().members || []) : [];
-    
-    // Merge staff into query gallery
-    const allKnown = [
-      ...staffMembers.map(s => ({ ...s, isStaff: true })),
-      ...knownProfiles
-    ];
-
-    for (let i = 0; i < clientCrops.length; i++) {
-      const crop = clientCrops[i];
-      const record = clientRecords[i];
-      const t0 = Date.now();
-      
-      const embedding = await extractFaceEmbedding(crop.buffer);
-      console.log(`[FaceRecognition] Embedding extraído en ${Date.now() - t0} ms.`);
-
-      const result = identifyFace(embedding, allKnown, 0.45);
-
-      if (result.matched && result.profile) {
-        const p = result.profile;
-        console.log(`[FaceRecognition] Match biométrico: "${p.name}" (Similitud: ${result.similarity}, Staff: ${p.isStaff ? "SÍ" : "NO"})`);
-
-        if (p.isStaff) {
-          identifiedPeople.push({
-            cropId: crop.id || `crop_${i + 1}`,
-            personId: p.id,
-            name: p.name,
-            isStaff: true,
-            role: "Barbero / Staff",
-            similarity: result.similarity,
-            confidence: crop.confidence
-          });
-        } else {
-          // Existing customer - increment visit count and update lastSeen
-          const newCount = (p.visitCount || 1) + 1;
-          await db.doc(`camera_catcher_people/${p.id}`).update({
-            lastSeen: new Date().toISOString(),
-            lastThumbnailPath: record ? record.storagePath : "",
-            visitCount: newCount
-          });
-
-          identifiedPeople.push({
-            cropId: crop.id || `crop_${i + 1}`,
-            personId: p.id,
-            name: p.name,
-            isStaff: false,
-            isFrequent: newCount > 1,
-            visitCount: newCount,
-            similarity: result.similarity,
-            confidence: crop.confidence
-          });
-        }
-      } else {
-        // New customer profile creation
-        const totalProfiles = knownProfiles.length + 1;
-        const newPersonId = `person_${Date.now()}_${i + 1}`;
-        const newName = `Cliente #${totalProfiles}`;
-
-        const newProfile = {
-          id: newPersonId,
-          name: newName,
-          firstSeen: new Date().toISOString(),
-          lastSeen: new Date().toISOString(),
-          visitCount: 1,
-          isStaff: false,
-          embedding: embedding,
-          thumbnailPath: record ? record.storagePath : ""
-        };
-
-        await db.doc(`camera_catcher_people/${newPersonId}`).set(newProfile);
-        console.log(`[FaceRecognition] Nuevo cliente registrado en Firestore: "${newName}" (${newPersonId})`);
-
-        identifiedPeople.push({
-          cropId: crop.id || `crop_${i + 1}`,
-          personId: newPersonId,
-          name: newName,
-          isStaff: false,
-          isFrequent: false,
-          visitCount: 1,
-          similarity: result.similarity,
-          confidence: crop.confidence
-        });
-
-        knownProfiles.push(newProfile);
-        allKnown.push(newProfile);
-      }
-    }
-  } catch (err) {
-    console.warn(`[FaceRecognition] Error en proceso de reconocimiento facial:`, err.message);
-  }
-
-  return identifiedPeople;
-}
-
-/**
- * Execute single snapshot capture, upload, Gemini analysis and Firestore recording
- */
-export async function executeCaptureProcess(triggerSource = "scheduled") {
-  if (isCapturing) {
-    console.log("[Capture] Ya hay una captura en curso. Omitiendo ejecución concurrente.");
-    return { status: "already_running" };
-  }
-
-  isCapturing = true;
-  const timestamp = Date.now();
-  const docId = `photo_${timestamp}`;
-  const localOutputPath = `/tmp/snap_${timestamp}.jpeg`;
-
-  try {
-    console.log(`\n========================================`);
-    console.log(`[1/5] Ejecutando captura P2P (${docId})...`);
-
-    // Notificar Fase 1: Se activa consulta a la cámara de seguridad
-    await daemonReporter.reportCameraQuery(triggerSource);
-
-    // Ensure any previously stuck capture container is forcibly removed before starting
-    await killCaptureContainer();
-
-    // Use Neolink docker container with explicit name and init to prevent zombie processes
-    const cmd = `docker run --rm --name ${DOCKER_CONTAINER_NAME} --init --stop-timeout 5 -v "${TOML_PATH}":/etc/neolink.toml -v /tmp:/out quantumentangledandy/neolink:latest neolink image -c /etc/neolink.toml --use-stream -f /out/snap_${timestamp}.jpeg barberia`;
-
-    try {
-      await execPromise(cmd, { timeout: 45000 });
-    } catch (err) {
-      // Force kill container on error or timeout to release camera RTSP socket immediately
-      await killCaptureContainer();
-      try {
-        await fs.stat(localOutputPath);
-      } catch (_) {
-        throw new Error(`Neolink capture failed: ${err.message}`);
-      }
-    }
-
-    // 2. Read image buffer
-    const buffer = await fs.readFile(localOutputPath);
-    console.log(`[2/5] Fotograma capturado: ${buffer.length} bytes.`);
-
-    // Subir imagen base inmediatamente para que la vista web la cargue en el canvas de inmediato
-    const storagePath = `camera_catcher/photos/${docId}.jpg`;
-    console.log(`[4/6] Subiendo imagen original a Firebase Storage: ${storagePath}...`);
-
-    const fileOriginal = bucket.file(storagePath);
-    await fileOriginal.save(buffer, {
-      metadata: {
-        contentType: "image/jpeg",
-        metadata: {
-          capturedAt: new Date().toISOString(),
-          camera: "barberia",
-          source: "gcp-e2-micro",
-          type: "raw"
-        }
-      }
-    });
-
-    // Notificar Fase 2: Llega la imagen => imprimir en el Canvas
-    await daemonReporter.reportImageReceived({
-      storagePath,
-      width: 1024,
-      height: 576,
-      sizeBytes: buffer.length,
-      docId
-    });
-
-    // 3. Run Local Machine Learning (ONNX Runtime / YOLO)
-    console.log(`[3/6] Analizando fotograma con Machine Learning local (ONNX Runtime)...`);
-    const mlResult = await detectObjectsAndQuadrants(buffer);
-    console.log(`[ML] Inferencia completada en ${mlResult.inferenceMs} ms. Cuadrantes detectados: ${mlResult.quadrants.length}`);
-
-    // Notificar Fase 3: Se activan y dibujan los cuadrantes en el Canvas
-    await daemonReporter.reportQuadrantsActive(mlResult.quadrants);
-
-    // Notificar Fase 4: Se detecta a humanos y se imprime si se detecta a humanos o no
-    await daemonReporter.reportHumanDetection(mlResult);
-
-    // Upload client crops if any seated clients were detected
-    const clientRecords = [];
-    if (mlResult.clientCrops && mlResult.clientCrops.length > 0) {
-      for (let i = 0; i < mlResult.clientCrops.length; i++) {
-        const crop = mlResult.clientCrops[i];
-        const clientStoragePath = `camera_catcher/photos/${docId}_client_${i + 1}.jpg`;
-        console.log(`[Storage] Subiendo recorte de cliente sentado (${i + 1}/${mlResult.clientCrops.length}): ${clientStoragePath}...`);
-
-        const fileClient = bucket.file(clientStoragePath);
-        await fileClient.save(crop.buffer, {
-          metadata: {
-            contentType: "image/jpeg",
-            metadata: {
-              capturedAt: new Date().toISOString(),
-              camera: "barberia",
-              source: "gcp-e2-micro",
-              type: "client_seated_crop"
-            }
-          }
-        });
-
-        clientRecords.push({
-          id: crop.id || `crop_${i + 1}`,
-          storagePath: clientStoragePath,
-          box: crop.box,
-          confidence: crop.confidence,
-          role: crop.role || "client",
-          isStaffHint: crop.isStaffHint === true,
-          status: crop.status || "en_corte",
-          detectedAt: new Date().toISOString()
-        });
-      }
-    }
-
-    // 4.5. Run Face Recognition & Re-identification
-    let identifiedPeople = [];
-    if (mlResult.clientCrops && mlResult.clientCrops.length > 0) {
-      console.log(`[FaceRecognition] Evaluando biometría de personas detectadas...`);
-      identifiedPeople = await processPeopleRecognition(clientRecords, mlResult.clientCrops);
-    }
-
-    // Notificar Fase 5: Reconocimiento de personas (Barbero / Staff vs. Clientes Frecuentes vs. Nuevos)
-    await daemonReporter.reportPeopleIdentified(identifiedPeople, clientRecords);
-
-    // Clean temp local file
-    try {
-      await fs.unlink(localOutputPath);
-    } catch (_) {}
-
-    // 5. Config / Summary
-    console.log(`[5/6] Preparando resumen analítico...`);
-    const clientsCountStr = clientRecords.length > 0 ? ` (${clientRecords.length} cliente(s) sentado(s) extraído(s))` : "";
-    const peopleStr = identifiedPeople.length > 0 ? ` | Personas: ${identifiedPeople.map(p => `${p.name} (${p.isStaff ? 'Staff' : p.isFrequent ? 'Frecuente' : 'Nuevo'})`).join(", ")}` : "";
-    const summaryText = `ML Local: ${mlResult.quadrants.map(q => `${q.label} [${q.status}]`).join(", ")}${clientsCountStr}${peopleStr}`;
-    console.log(`[Resumen] ${summaryText}`);
-
-    // 6. Save in Firestore: camera_catcher/photos/photos/<docId>
-    const docRef = db.doc(`camera_catcher/photos/photos/${docId}`);
-    const record = {
-      id: docId,
-      imageStoragePath: storagePath,
-      clients: clientRecords,
-      identifiedPeople: identifiedPeople,
-      timestamp: admin.firestore.FieldValue.serverTimestamp(),
-      createdAt: new Date().toISOString(),
-      epoch: timestamp,
-      analysis: summaryText,
-      ml: {
-        engine: "onnxruntime-node",
-        inferenceMs: mlResult.inferenceMs,
-        imageDimensions: mlResult.imageDimensions,
-        quadrants: mlResult.quadrants,
-        rawDetections: mlResult.rawDetections,
-        clientCount: clientRecords.length,
-        identifiedPeopleCount: identifiedPeople.length
-      },
-      camera: "barberia",
-      source: "gcp-e2-micro"
-    };
-
-    const sanitizedRecord = sanitizeForFirestore(record);
-    await docRef.set(sanitizedRecord);
-    console.log(`[6/6] [Firestore] Documento guardado exitosamente en camera_catcher/photos/photos/${docId}`);
-    console.log(`========================================\n`);
-
-    // Notificar Fase 6: Ciclo completado y programar siguiente contador
-    const nextCaptureDate = new Date(Date.now() + Math.round(currentIntervalMinutes * 60 * 1000));
-    await daemonReporter.reportCycleCompleted({
-      docId,
-      summary: summaryText,
-      nextCaptureDate,
-      intervalMinutes: currentIntervalMinutes
-    });
-
-    try {
-      await db.doc("camera_catcher/status").set({
-        service: "camera-catcher",
-        status: "ok",
-        lastCaptureAt: new Date().toISOString(),
-        lastDocId: docId
-      }, { merge: true });
-    } catch (_) {}
-
-    return record;
-  } catch (err) {
-    console.error(`[Capture Error] Falló el proceso de captura:`, err.message);
-    await daemonReporter.reportError(err);
-    try {
-      await db.doc("camera_catcher/status").set({
-        service: "camera-catcher",
-        status: "error",
-        lastError: err.message,
-        lastErrorAt: new Date().toISOString()
-      }, { merge: true });
-    } catch (_) {}
-    throw err;
-  } finally {
-    isCapturing = false;
-    await killCaptureContainer();
-  }
-}
-
-// Health check endpoint
 app.get("/", (req, res) => {
   res.json({
     status: "ok",
     service: "iot-camera-catcher",
     vm: "gcp-e2-micro",
-    currentIntervalMinutes,
-    workingHours: {
-      workStart,
-      workEnd,
-      timezone: configuredTimeZone,
-      isWithinWorkingHours: isWithinWorkingHours()
-    },
+    scheduler: scheduler.getState(),
     timestamp: new Date().toISOString()
   });
 });
 
-// Capture trigger endpoint
 app.all("/capture", async (req, res) => {
   try {
-    const result = await executeCaptureProcess("manual");
+    const result = await orchestrator.execute("manual");
     res.status(200).json({
       success: true,
       message: "Capture and analysis completed successfully",
@@ -534,65 +103,14 @@ app.listen(PORT, () => {
   console.log(`[Server] Daemon escuchando en http://localhost:${PORT}`);
 });
 
-// Dynamic Interval Cron Scheduler
-let cronTimerId = null;
+// 5. Registrar Listeners en Tiempo Real de Firestore
+registerFirestoreListeners({
+  db,
+  scheduler,
+  onManualCapture: (src) => orchestrator.execute(src)
+});
 
-function setupCronTimer(minutes) {
-  if (cronTimerId) {
-    clearInterval(cronTimerId);
-    cronTimerId = null;
-  }
-
-  const num = Number(minutes);
-  // Allow decimals like 0.5 (30 sec). Safe minimum 6 seconds (0.1 min)
-  currentIntervalMinutes = (!isNaN(num) && num > 0) ? Math.max(0.1, num) : 15;
-  const intervalMs = Math.round(currentIntervalMinutes * 60 * 1000);
-
-  console.log(`[Cron] Programador de captura configurado cada ${currentIntervalMinutes} min (${intervalMs / 1000} seg). Horario laboral: ${workStart} a ${workEnd} (${configuredTimeZone}).`);
-
-  // Notificar estado del contador en Firestore
-  const nextCaptureDate = new Date(Date.now() + intervalMs);
-  daemonReporter.setCountdown(nextCaptureDate, currentIntervalMinutes, {
-    isWithinWorkingHours: isWithinWorkingHours(),
-    workStart,
-    workEnd,
-    timezone: configuredTimeZone
-  });
-
-  cronTimerId = setInterval(async () => {
-    if (!isWithinWorkingHours()) {
-      console.log(`[Cron] Fuera de horario laboral (${workStart} a ${workEnd} ${configuredTimeZone}). Omitiendo captura programada.`);
-      const nextDate = new Date(Date.now() + intervalMs);
-      daemonReporter.setCountdown(nextDate, currentIntervalMinutes, {
-        isWithinWorkingHours: false,
-        workStart,
-        workEnd,
-        timezone: configuredTimeZone
-      });
-      return;
-    }
-    console.log(`[Cron] Ejecutando captura programada periódica (${currentIntervalMinutes} min)...`);
-    try {
-      await executeCaptureProcess("scheduled");
-    } catch (err) {
-      console.error(`[Cron] Error en captura periódica:`, err.message);
-    }
-  }, intervalMs);
-}
-
-// Clean up any zombie capture containers or processes left behind from previous runs
-async function cleanupZombies() {
-  try {
-    console.log("[Startup] Limpiando procesos y contenedores huérfanos de capturas anteriores...");
-    await execPromise(`docker rm -f ${DOCKER_CONTAINER_NAME} 2>/dev/null || true`);
-    await execPromise(`docker ps -q --filter ancestor=quantumentangledandy/neolink:latest | xargs -r docker rm -f 2>/dev/null || true`);
-    await execPromise(`pkill -9 -f 'neolink image' 2>/dev/null || true`);
-  } catch (err) {
-    console.warn("[Startup] Aviso durante limpieza inicial:", err.message);
-  }
-}
-
-// Initial status report to Firestore
+// 6. Secuencia de Arranque (Boot Lifecycle)
 try {
   db.doc("camera_catcher/status").set({
     service: "camera-catcher",
@@ -603,134 +121,28 @@ try {
   }, { merge: true }).catch(() => {});
 } catch (_) {}
 
-// Load dynamic config from Firestore and start scheduler
-getDynamicConfig().then(cfg => {
+prefetchQuadrants(db);
+
+getDynamicConfig(db).then(cfg => {
   console.log(`[Startup] Configuración cargada: Intervalo ${cfg.intervalMinutes} min, Horario ${cfg.workStartTime} a ${cfg.workEndTime} (${cfg.timezone}).`);
-  setupCronTimer(cfg.intervalMinutes);
+  scheduler.updateWorkingHours(cfg.workStartTime, cfg.workEndTime, cfg.timezone);
+  scheduler.setupTimer(cfg.intervalMinutes);
 }).catch(() => {
-  setupCronTimer(15);
+  scheduler.setupTimer(15);
 });
 
-// Run cleanup immediately on startup, then trigger initial capture if within working hours
 cleanupZombies().then(() => {
   console.log("[Startup] Limpieza de procesos completada. Sistema listo.");
   setTimeout(() => {
-    if (!isWithinWorkingHours()) {
-      console.log(`[Startup] Fuera de horario laboral (${workStart} a ${workEnd} ${configuredTimeZone}). Omitiendo captura inicial automática.`);
+    if (!scheduler.isWorkingNow()) {
+      console.log(`[Startup] Fuera de horario laboral. Omitiendo captura inicial automática.`);
       return;
     }
     console.log("[Startup] Ejecutando captura inicial automática de arranque...");
-    executeCaptureProcess().catch(err => {
+    orchestrator.execute("startup").catch(err => {
       console.error("[Startup] Error en captura inicial:", err.message);
     });
   }, 4000);
 });
 
-// Listen to Firestore prompt, interval & working hours changes in real time
-db.doc("camera_catcher/prompt").onSnapshot(async (snapshot) => {
-  const data = snapshot.data();
-  if (!data) return;
-
-  // 1. Update interval if changed
-  if (data.intervalMinutes !== undefined) {
-    const newInterval = Number(data.intervalMinutes);
-    if (!isNaN(newInterval) && newInterval !== currentIntervalMinutes) {
-      console.log(`[Config] Actualización de intervalo detectada en Firestore: ${newInterval} minutos.`);
-      setupCronTimer(newInterval);
-    }
-  }
-
-  // 2. Update working hours if changed
-  const newStart = data.workStartTime || data.workStart || data.startHour || "11:00";
-  const newEnd = data.workEndTime || data.workEnd || data.endHour || "23:00";
-  const newTz = data.timezone || "America/Lima";
-
-  let hoursChanged = false;
-  if (String(newStart) !== String(workStart)) {
-    workStart = String(newStart);
-    hoursChanged = true;
-  }
-  if (String(newEnd) !== String(workEnd)) {
-    workEnd = String(newEnd);
-    hoursChanged = true;
-  }
-  if (newTz !== configuredTimeZone) {
-    configuredTimeZone = newTz;
-    hoursChanged = true;
-  }
-
-  if (hoursChanged) {
-    console.log(`[Config] Horario de trabajo actualizado en tiempo real: ${workStart} a ${workEnd} (${configuredTimeZone}). ¿Dentro de horario?: ${isWithinWorkingHours() ? "SÍ" : "NO"}`);
-  }
-
-  // Ensure default values exist in Firestore if missing
-  const missingDefaults = {};
-  if (!data.workStartTime && !data.workStart) missingDefaults.workStartTime = "11:00";
-  if (!data.workEndTime && !data.workEnd) missingDefaults.workEndTime = "23:00";
-  if (!data.timezone) missingDefaults.timezone = "America/Lima";
-  if (Object.keys(missingDefaults).length > 0) {
-    try {
-      await db.doc("camera_catcher/prompt").set(missingDefaults, { merge: true });
-      console.log(`[Config] Guardados valores por defecto de horario en camera_catcher/prompt:`, missingDefaults);
-    } catch (_) {}
-  }
-}, (err) => {
-  console.warn(`[Config] Error escuchando camera_catcher/prompt:`, err.message);
-});
-
-// Real-time listener for manual captures from the web ("Capturar Ahora")
-let lastTriggerHandled = Date.now();
-console.log(`[Listener] Escuchando comandos en tiempo real de Firestore: camera_catcher/commands...`);
-db.doc("camera_catcher/commands").onSnapshot((snapshot) => {
-  const data = snapshot.data();
-  if (data && data.action === "capture" && data.requestedAt > lastTriggerHandled) {
-    lastTriggerHandled = data.requestedAt;
-    console.log(`[Listener] Disparo manual recibido desde la web a las ${new Date(data.requestedAt).toLocaleTimeString()}`);
-    executeCaptureProcess("manual").catch(err => {
-      console.error(`[Listener] Error procesando captura manual:`, err.message);
-    });
-  }
-}, (err) => {
-  console.warn(`[Listener] Error en snapshot listener de commands:`, err.message);
-});
-
-// Pre-load dynamic quadrants immediately on boot
-async function prefetchQuadrants() {
-  try {
-    const snap = await db.doc("camera_catcher/quadrants").get();
-    if (snap.exists && snap.data()?.quadrants) {
-      setCustomQuadrants(snap.data().quadrants);
-      console.log(`[Quadrants] Cuadrantes dinámicos precargados exitosamente de Firestore (${snap.data().quadrants.length} zonas).`);
-    }
-  } catch (err) {
-    console.warn(`[Quadrants] No se pudieron precargar cuadrantes al iniciar:`, err.message);
-  }
-}
-prefetchQuadrants();
-
-// Real-time listener for physical quadrants configuration in Firestore
-console.log(`[Quadrants] Escuchando configuración de cuadrantes en tiempo real: camera_catcher/quadrants...`);
-db.doc("camera_catcher/quadrants").onSnapshot(async (snapshot) => {
-  if (!snapshot.exists) {
-    console.log(`[Quadrants] camera_catcher/quadrants no existe. Creando con valores por defecto...`);
-    try {
-      await db.doc("camera_catcher/quadrants").set({
-        updatedAt: new Date().toISOString(),
-        updatedBy: "system_init",
-        quadrants: getDefaultQuadrantsArray()
-      });
-      console.log(`[Quadrants] Valores iniciales de cuadrantes guardados en Firestore.`);
-    } catch (e) {
-      console.warn(`[Quadrants] No se pudo autoinicializar camera_catcher/quadrants:`, e.message);
-    }
-    return;
-  }
-
-  const data = snapshot.data();
-  if (data && data.quadrants) {
-    setCustomQuadrants(data.quadrants);
-  }
-}, (err) => {
-  console.warn(`[Quadrants] Error escuchando camera_catcher/quadrants:`, err.message);
-});
-
+export { app, scheduler, orchestrator, db, bucket };

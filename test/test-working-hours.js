@@ -1,5 +1,6 @@
 import assert from "assert";
-import { parseTimeToMinutes, isWithinWorkingHours } from "../src/index.js";
+import { parseTimeToMinutes, isWithinWorkingHours } from "../src/core/working_hours.js";
+import { parseTimeToMinutes as parseFromIndex, isWithinWorkingHours as isWorkingFromIndex } from "../src/index.js";
 
 console.log("=== Test de Horario Laboral y Conversión de Tiempos ===");
 
