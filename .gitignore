@@ -1,5 +1,7 @@
-# Dependencies
+# Dependencies & Build Outputs
 node_modules/
+dist/
+web/dist/
 
 # Firebase cache
 .firebase/

@@ -24,6 +24,12 @@ jobs:
         with:
           node-version: 20
 
+      - name: Install Dependencies
+        run: npm ci || npm install
+
+      - name: Build Web Application
+        run: npm run build:web
+
       - name: Deploy to Firebase Hosting & Storage
         env:
           FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}

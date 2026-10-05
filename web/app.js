@@ -2315,13 +2315,21 @@ class DaemonCanvasRenderer {
 
     const placeholder = document.getElementById("canvasOverlayPlaceholder");
     try {
-      const img = new Image();
-      img.crossOrigin = "anonymous";
-      await new Promise((resolve, reject) => {
-        img.onload = resolve;
+      const loadImg = (crossOriginVal) => new Promise((resolve, reject) => {
+        const img = new Image();
+        if (crossOriginVal) img.crossOrigin = crossOriginVal;
+        img.onload = () => resolve(img);
         img.onerror = reject;
         img.src = imageUrl;
       });
+
+      let img = null;
+      try {
+        img = await loadImg("anonymous");
+      } catch (corsErr) {
+        console.warn("[DaemonCanvas] Falló carga con crossOrigin=anonymous, reintentando carga estándar directa:", corsErr);
+        img = await loadImg(null);
+      }
 
       this.currentImage = img;
       this.currentDocId = docId;
@@ -2333,7 +2341,10 @@ class DaemonCanvasRenderer {
         this.canvas.height = this.height;
       }
 
-      placeholder?.classList.add("hidden");
+      if (placeholder) {
+        placeholder.classList.add("hidden");
+        placeholder.style.display = "none";
+      }
       this.render();
     } catch (err) {
       console.warn("[DaemonCanvas] Error cargando imagen en canvas:", err);
@@ -2354,7 +2365,15 @@ class DaemonCanvasRenderer {
     } else {
       ctx.fillStyle = "#0b1120";
       ctx.fillRect(0, 0, W, H);
-      return;
+      ctx.strokeStyle = "rgba(148, 163, 184, 0.08)";
+      ctx.lineWidth = 1;
+      const step = 40;
+      for (let x = 0; x < W; x += step) {
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+      }
+      for (let y = 0; y < H; y += step) {
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+      }
     }
 
     // 2. Layer: Physical Quadrants (ROI)
@@ -2830,7 +2849,7 @@ function initDaemonLiveMonitor() {
   // Also listen to latest photo if daemon_state has no image yet
   const photosCol = collection(db, "camera_catcher", "photos", "photos");
   onSnapshot(photosCol, (snapshot) => {
-    if (!currentDaemonState?.image?.storagePath && !snapshot.empty) {
+    if (!snapshot.empty && !daemonCanvasRenderer.currentImage) {
       let latestDoc = null;
       snapshot.forEach(docSnap => {
         const d = docSnap.data();

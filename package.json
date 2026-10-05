@@ -6,13 +6,25 @@
   "type": "module",
   "scripts": {
     "start": "node src/index.js",
-    "test": "node test/test-firestore-sanitizer.js && node test/test-daemon-reporter.js && node test/test-detector.js && node test/test-working-hours.js"
+    "test": "node test/test-firestore-sanitizer.js && node test/test-daemon-reporter.js && node test/test-detector.js && node test/test-working-hours.js",
+    "dev:web": "vite",
+    "build:web": "vite build",
+    "preview:web": "vite preview"
   },
   "dependencies": {
     "express": "^4.19.2",
     "firebase": "^12.19.0",
     "firebase-admin": "^12.0.0",
     "onnxruntime-node": "^1.30.0",
-    "sharp": "^0.35.5"
+    "sharp": "^0.35.5",
+    "vue": "^3.5.43"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@vitejs/plugin-vue": "^6.0.9",
+    "autoprefixer": "^10.6.1",
+    "postcss": "^8.5.29",
+    "tailwindcss": "^4.3.3",
+    "vite": "^8.3.2"
   }
 }
