@@ -153,8 +153,9 @@ const onSave = async () => {
             Auto
           </AppButton>
         </div>
-        <small class="text-[11px] text-slate-400">
-          Por defecto: <strong class="text-amber-400">test</strong> en local y <strong class="text-blue-400">(default)</strong> en producción.
+        <small class="text-[11px] text-slate-400 leading-relaxed">
+          • Local / Dev: DB <strong class="text-amber-400">test</strong> y Bucket <strong class="text-amber-400">skip-bigotes-test</strong>.<br/>
+          • Producción GCP: DB <strong class="text-blue-400">(default)</strong> y Bucket <strong class="text-blue-400">skip-bigotes.firebasestorage.app</strong>.
         </small>
       </div>
 

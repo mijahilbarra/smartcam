@@ -23,10 +23,10 @@ const env = getEnvironmentInfo();
           <AppBadge
             :variant="env.isLocal ? 'success' : 'info'"
             class="text-[10px] font-mono tracking-wide py-0.5 px-2 flex items-center gap-1.5"
-            :title="`Modo: ${env.environmentLabel} | Base de Datos: ${env.databaseId} | Destino: ${env.dispatchTarget}`"
+            :title="`Modo: ${env.environmentLabel} | DB: ${env.databaseId} | Storage: ${env.storageBucket} | Destino: ${env.dispatchTarget}`"
           >
             <span class="w-1.5 h-1.5 rounded-full" :class="env.isLocal ? 'bg-emerald-400 animate-pulse' : 'bg-blue-400'"></span>
-            <span>{{ env.isLocal ? `Local: E2 Sim [${env.databaseId}]` : `Cloud: GCP VM [${env.databaseId}]` }}</span>
+            <span>{{ env.isLocal ? `Local: [${env.databaseId} • test-storage]` : `Cloud: GCP VM [${env.databaseId}]` }}</span>
           </AppBadge>
         </div>
         <p class="text-xs sm:text-sm text-slate-400">

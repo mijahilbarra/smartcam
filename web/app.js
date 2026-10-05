@@ -31,9 +31,10 @@ const isLocalHost = typeof window !== 'undefined' && (window.location.hostname =
 const customDbId = typeof localStorage !== 'undefined' ? localStorage.getItem("CAMERA_CATCHER_FIRESTORE_DB") : null;
 const firestoreDbId = customDbId || (isLocalHost ? 'test' : '(default)');
 
+const storageBucketName = isLocalHost ? "gs://skip-bigotes-test" : "gs://skip-bigotes.firebasestorage.app";
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app, firestoreDbId);
-const storage = getStorage(app);
+const storage = getStorage(app, storageBucketName);
 
 // Backend API URL
 let storedUrl = localStorage.getItem("CAMERA_CATCHER_API_URL");
