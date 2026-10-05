@@ -14,7 +14,24 @@
       }
     ]
   },
-  "storage": {
-    "rules": "storage.rules"
-  }
+  "firestore": [
+    {
+      "database": "(default)",
+      "rules": "firestore.rules"
+    },
+    {
+      "database": "test",
+      "rules": "firestore.rules"
+    }
+  ],
+  "storage": [
+    {
+      "target": "default",
+      "rules": "storage.rules"
+    },
+    {
+      "target": "test",
+      "rules": "storage.rules"
+    }
+  ]
 }

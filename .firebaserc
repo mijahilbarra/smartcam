@@ -1,5 +1,18 @@
 {
   "projects": {
     "default": "skip-bigotes"
-  }
+  },
+  "targets": {
+    "skip-bigotes": {
+      "storage": {
+        "test": [
+          "skip-bigotes-test"
+        ],
+        "default": [
+          "skip-bigotes.firebasestorage.app"
+        ]
+      }
+    }
+  },
+  "etags": {}
 }
