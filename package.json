@@ -6,13 +6,14 @@
   "type": "module",
   "scripts": {
     "start": "node src/index.js",
+    "dev": "node scripts/dev.js",
+    "dev:web": "vite",
+    "build:web": "vite build",
+    "preview:web": "vite preview",
     "test": "node test/test-firestore-sanitizer.js && node test/test-daemon-reporter.js && node test/test-detector.js && node test/test-working-hours.js && node test/test-core-modular.js",
     "test:e2": "docker compose -f docker-compose.e2-sim.yml run --rm e2-simulator npm test",
     "sim:e2": "docker compose -f docker-compose.e2-sim.yml up --build",
-    "sim:e2:down": "docker compose -f docker-compose.e2-sim.yml down",
-    "dev:web": "vite",
-    "build:web": "vite build",
-    "preview:web": "vite preview"
+    "sim:e2:down": "docker compose -f docker-compose.e2-sim.yml down"
   },
   "dependencies": {
     "express": "^4.19.2",
