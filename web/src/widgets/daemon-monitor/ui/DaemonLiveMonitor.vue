@@ -22,6 +22,7 @@ const {
   workingHoursConfig,
   workingHoursStatus,
   isConnected,
+  statusLabel,
   canvasImageData,
   addLog
 } = useDaemonState();
@@ -216,7 +217,7 @@ onMounted(() => {
       <div class="flex items-center gap-3 self-end sm:self-center">
         <StatusPill
           :active="isConnected"
-          :text="isConnected ? 'Daemon Conectado' : 'Desconectado'"
+          :text="statusLabel"
         />
         <AppButton
           variant="primary"

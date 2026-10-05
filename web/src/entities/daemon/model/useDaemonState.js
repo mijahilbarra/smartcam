@@ -1,6 +1,6 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { doc, onSnapshot, collection } from 'firebase/firestore';
-import { db, resolveStorageUrl } from '@/shared/api/firebase';
+import { db, resolveStorageUrl, IS_LOCAL_ENV } from '@/shared/api/firebase';
 import { checkIsWithinWorkingHours } from '@/shared/lib/date-utils';
 
 const STEP_DEFINITIONS = [
@@ -21,7 +21,7 @@ export function useDaemonState() {
   const totalIntervalSeconds = ref(180);
   const countdownTimeFormatted = ref('--:--');
   const workingHoursConfig = ref({ start: '11:00', end: '23:00' });
-  const isConnected = ref(true);
+  const isConnected = ref(false);
 
   // Latest image data resolved for canvas
   const canvasImageData = ref({
@@ -52,6 +52,13 @@ export function useDaemonState() {
   });
 
   const stepList = computed(() => STEP_DEFINITIONS);
+
+  const statusLabel = computed(() => {
+    if (isConnected.value) {
+      return IS_LOCAL_ENV ? 'Daemon Local Activo' : 'Daemon Cloud Activo';
+    }
+    return IS_LOCAL_ENV ? 'Daemon Local Desconectado' : 'Daemon Desconectado';
+  });
 
   const startCountdownTicker = (nextIso, intervalMin) => {
     if (countdownInterval) clearInterval(countdownInterval);
@@ -90,10 +97,23 @@ export function useDaemonState() {
   const subscribe = () => {
     const docRef = doc(db, 'camera_catcher', 'daemon_state');
     unsubscribeDaemon = onSnapshot(docRef, async (snap) => {
-      if (!snap.exists()) return;
+      if (!snap.exists()) {
+        daemonState.value = null;
+        isConnected.value = false;
+        return;
+      }
       const data = snap.data();
       daemonState.value = data;
-      isConnected.value = true;
+
+      // Evaluar si el reporte del daemon es reciente
+      const lastIso = data.updatedAt || data.timestamp || data.countdown?.timestamp;
+      if (lastIso) {
+        const ageMs = Date.now() - new Date(lastIso).getTime();
+        const maxStaleMs = (data.intervalMinutes ? data.intervalMinutes * 2 : 5) * 60 * 1000;
+        isConnected.value = ageMs < maxStaleMs;
+      } else {
+        isConnected.value = false;
+      }
 
       // Update Working hours from state if present
       if (data.workingHours) {
@@ -162,6 +182,7 @@ export function useDaemonState() {
     workingHoursConfig,
     workingHoursStatus,
     isConnected,
+    statusLabel,
     canvasImageData,
     addLog
   };
