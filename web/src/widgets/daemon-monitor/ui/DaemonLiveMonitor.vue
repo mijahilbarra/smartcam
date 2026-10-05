@@ -7,7 +7,7 @@ import StatusPill from '@/shared/ui/molecules/StatusPill.vue';
 import StatPill from '@/shared/ui/molecules/StatPill.vue';
 import { useDaemonState } from '@/entities/daemon/model/useDaemonState';
 import { useTriggerCapture } from '@/features/trigger-capture/model/useTriggerCapture';
-import { hexToRgba } from '@/shared/lib/geometry';
+import { hexToRgba, toPointObject, ensureNorm01 } from '@/shared/lib/geometry';
 
 const emit = defineEmits(['open-calibrator-photo']);
 
@@ -77,8 +77,9 @@ const renderCanvas = () => {
       if (poly.length >= 3) {
         ctx.beginPath();
         poly.forEach((pt, i) => {
-          const x = (pt[0] / 1000) * W;
-          const y = (pt[1] / 1000) * H;
+          const ptObj = toPointObject(pt);
+          const x = ptObj.x * W;
+          const y = ptObj.y * H;
           if (i === 0) ctx.moveTo(x, y);
           else ctx.lineTo(x, y);
         });
@@ -90,9 +91,9 @@ const renderCanvas = () => {
         ctx.stroke();
 
         // Label
-        const firstPt = poly[0];
-        const lx = (firstPt[0] / 1000) * W + 4;
-        const ly = (firstPt[1] / 1000) * H + 18;
+        const firstPt = toPointObject(poly[0]);
+        const lx = firstPt.x * W + 4;
+        const ly = firstPt.y * H + 18;
         ctx.fillStyle = color;
         ctx.font = 'bold 12px Inter, sans-serif';
         ctx.fillText(q.badge || q.name || 'Zona', lx, ly);
@@ -103,12 +104,16 @@ const renderCanvas = () => {
   // 3. Draw Humans Layer (YOLOv8)
   if (showHumans.value && canvasImageData.value.humanBoxes?.length) {
     canvasImageData.value.humanBoxes.forEach((box) => {
-      // box: [ymin, xmin, ymax, xmax] (0-1000)
-      const [ymin, xmin, ymax, xmax] = box;
-      const x = (xmin / 1000) * W;
-      const y = (ymin / 1000) * H;
-      const w = ((xmax - xmin) / 1000) * W;
-      const h = ((ymax - ymin) / 1000) * H;
+      // box: [ymin, xmin, ymax, xmax]
+      const ymin = ensureNorm01(box[0]);
+      const xmin = ensureNorm01(box[1]);
+      const ymax = ensureNorm01(box[2]);
+      const xmax = ensureNorm01(box[3]);
+
+      const x = xmin * W;
+      const y = ymin * H;
+      const w = (xmax - xmin) * W;
+      const h = (ymax - ymin) * H;
 
       ctx.strokeStyle = '#10b981';
       ctx.lineWidth = 2.5;
@@ -127,11 +132,15 @@ const renderCanvas = () => {
   if (showBiometry.value && canvasImageData.value.peopleIdentified?.length) {
     canvasImageData.value.peopleIdentified.forEach((p) => {
       if (p.box) {
-        const [ymin, xmin, ymax, xmax] = p.box;
-        const x = (xmin / 1000) * W;
-        const y = (ymin / 1000) * H;
-        const w = ((xmax - xmin) / 1000) * W;
-        const h = ((ymax - ymin) / 1000) * H;
+        const ymin = ensureNorm01(p.box[0]);
+        const xmin = ensureNorm01(p.box[1]);
+        const ymax = ensureNorm01(p.box[2]);
+        const xmax = ensureNorm01(p.box[3]);
+
+        const x = xmin * W;
+        const y = ymin * H;
+        const w = (xmax - xmin) * W;
+        const h = (ymax - ymin) * H;
 
         ctx.strokeStyle = '#f59e0b';
         ctx.lineWidth = 2;

@@ -1,0 +1,28 @@
+services:
+  e2-simulator:
+    build:
+      context: .
+      dockerfile: Dockerfile.e2-sim
+    container_name: e2-micro-sim
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'            # Simula las 2 vCPUs compartidas de Compute Engine e2-micro
+          memory: 1024M          # Límite estricto de 1 GB RAM (dispara OOM Killer si se supera)
+        reservations:
+          memory: 512M
+    # Montar el socket de Docker del host (Sibling Containers) para que funcione la captura Neolink
+    # y /tmp para el intercambio de archivos fotográficos con el contenedor Neolink
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /tmp:/tmp
+      - ./neolink.toml:/opt/camera-catcher/neolink.toml
+      - ./src:/opt/camera-catcher/src
+    ports:
+      - "8085:8085"
+    environment:
+      - NODE_ENV=production
+      - FIREBASE_PROJECT_ID=skip-bigotes
+      - STORAGE_BUCKET=skip-bigotes.firebasestorage.app
+      - PORT=8085

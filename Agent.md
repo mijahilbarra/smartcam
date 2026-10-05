@@ -30,9 +30,8 @@ La carpeta [`agent/`](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/a
 
 * **Estructura**:
   * [`agent/decisions/index.md`](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/index.md): Índice principal de **Registros de Decisiones de Arquitectura (ADRs)**, diagrama de arquitectura global y diagramas de flujo de datos.
-  * [`agent/decisions/01-...md` a `07-...md`](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions): Fichas individuales de cada tecnología activa en producción.
+  * [`agent/decisions/01-...md` a `13-...md`](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions): Fichas individuales de cada tecnología activa en producción.
   * [`agent/decisions/removed.md`](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/removed.md): Registro histórico de tecnologías descartadas o reemplazadas.
-  * `agent/decision`: Enlace simbólico (symlink) que apunta a `decisions/`.
 
 * **Reglas para modificar la arquitectura**:
   1. **Toda tecnología en uso DEBE estar documentada en `agent/decisions/`** y listada en `index.md`.

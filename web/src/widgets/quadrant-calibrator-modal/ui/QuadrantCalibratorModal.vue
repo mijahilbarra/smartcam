@@ -9,7 +9,7 @@ import AppInput from '@/shared/ui/atoms/AppInput.vue';
 import AppSelect from '@/shared/ui/atoms/AppSelect.vue';
 import { useQuadrants } from '@/entities/quadrant/model/useQuadrants';
 import { useCalibratorTools } from '@/features/calibrate-quadrants/model/useCalibratorTools';
-import { hexToRgba, boxNormToPolygonNorm } from '@/shared/lib/geometry';
+import { hexToRgba, boxNormToPolygonNorm, toPointObject } from '@/shared/lib/geometry';
 
 const props = defineProps({
   show: {
@@ -95,14 +95,56 @@ const onSave = async () => {
   }
 };
 
-// Pointer/Mouse events on interactive stage
+// Generador de puntos SVG en escala 0..1000
+const getPolygonPoints = (q) => {
+  if (!q) return '';
+  const poly = q.polygonNorm && q.polygonNorm.length >= 3
+    ? q.polygonNorm
+    : boxNormToPolygonNorm(q.boxNorm || [0.2, 0.2, 0.6, 0.6]);
+
+  return poly
+    .map(p => {
+      const pt = toPointObject(p);
+      return `${(pt.x * 1000).toFixed(1)},${(pt.y * 1000).toFixed(1)}`;
+    })
+    .join(' ');
+};
+
+const getCentroid = (q) => {
+  if (!q) return { x: 500, y: 500 };
+  const poly = q.polygonNorm && q.polygonNorm.length >= 3
+    ? q.polygonNorm
+    : boxNormToPolygonNorm(q.boxNorm || [0.2, 0.2, 0.6, 0.6]);
+
+  const avgX = poly.reduce((acc, p) => acc + toPointObject(p).x, 0) / poly.length;
+  const avgY = poly.reduce((acc, p) => acc + toPointObject(p).y, 0) / poly.length;
+  return {
+    x: Math.round(avgX * 1000),
+    y: Math.round(avgY * 1000)
+  };
+};
+
+const getCornerPoint = (q, cornerIdx) => {
+  if (!q) return { x: 0, y: 0 };
+  const poly = q.polygonNorm && q.polygonNorm.length >= 4
+    ? q.polygonNorm
+    : boxNormToPolygonNorm(q.boxNorm || [0.2, 0.2, 0.6, 0.6]);
+
+  const pt = toPointObject(poly[cornerIdx] || poly[0]);
+  return {
+    x: Math.round(pt.x * 1000),
+    y: Math.round(pt.y * 1000)
+  };
+};
+
+// Coordenadas normalizadas 0..1 para eventos de puntero
 const getStageCoords = (e) => {
   const rect = stageRef.value?.getBoundingClientRect();
-  if (!rect) return { x: 0, y: 0, w: 1, h: 1 };
+  if (!rect) return { normX: 0, normY: 0, clientX: 0, clientY: 0, w: 1, h: 1 };
   const clientX = e.touches ? e.touches[0].clientX : e.clientX;
   const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-  const normX = Math.max(0, Math.min(1000, ((clientX - rect.left) / rect.width) * 1000));
-  const normY = Math.max(0, Math.min(1000, ((clientY - rect.top) / rect.height) * 1000));
+  const normX = Math.max(0, Math.min(1.0, (clientX - rect.left) / rect.width));
+  const normY = Math.max(0, Math.min(1.0, (clientY - rect.top) / rect.height));
   return { normX, normY, clientX, clientY, w: rect.width, h: rect.height };
 };
 
@@ -113,8 +155,7 @@ const onPointerDown = (e, idx = null, handle = null) => {
     startDrawing(normX, normY);
   } else if (idx !== null) {
     selectedIndex.value = idx;
-    const rect = stageRef.value?.getBoundingClientRect();
-    startDrag(idx, handle || 'body', clientX, clientY, rect);
+    startDrag(idx, handle || 'body', clientX, clientY);
   }
 };
 
@@ -140,6 +181,7 @@ const onPointerUp = () => {
         name: `Zona ${nextIdx}`,
         badge: `Z${nextIdx}`,
         color: '#06b6d4',
+        type: 'custom_zone',
         boxNorm: newBox,
         polygonNorm: boxNormToPolygonNorm(newBox)
       });
@@ -255,43 +297,53 @@ const onPointerUp = () => {
             preserveAspectRatio="none"
             class="absolute inset-0 w-full h-full"
           >
-            <!-- Quadrants -->
+            <!-- Quadrants Polygons & Labels -->
             <g
               v-for="(q, idx) in quadrants"
-              :key="q.id"
+              :key="q.id || `quad-${idx}`"
               class="cursor-pointer"
               @pointerdown.stop="onPointerDown($event, idx, 'body')"
             >
-              <!-- Bounding Box / Polygon -->
-              <rect
-                :x="q.boxNorm[1]"
-                :y="q.boxNorm[0]"
-                :width="q.boxNorm[3] - q.boxNorm[1]"
-                :height="q.boxNorm[2] - q.boxNorm[0]"
-                :fill="hexToRgba(q.color, idx === selectedIndex ? 0.35 : 0.18)"
+              <!-- Perspective Polygon -->
+              <polygon
+                :points="getPolygonPoints(q)"
+                :fill="hexToRgba(q.color, idx === selectedIndex ? 0.38 : 0.18)"
                 :stroke="q.color"
                 :stroke-width="idx === selectedIndex ? 3.5 : 2"
-                :stroke-dasharray="idx === selectedIndex ? 'none' : '4,2'"
+                :stroke-dasharray="idx === selectedIndex ? 'none' : '5,3'"
               />
 
-              <!-- Label Badge on SVG -->
-              <text
-                :x="q.boxNorm[1] + 8"
-                :y="q.boxNorm[0] + 24"
-                :fill="q.color"
-                font-family="Inter, sans-serif"
-                font-size="20"
-                font-weight="bold"
-              >
-                {{ q.badge || q.name }}
-              </text>
+              <!-- Label Badge on SVG at centroid -->
+              <g :transform="`translate(${getCentroid(q).x}, ${getCentroid(q).y})`">
+                <rect
+                  :x="-((q.badge || q.name).length * 8 + 14) / 2"
+                  :y="-14"
+                  :width="(q.badge || q.name).length * 8 + 14"
+                  :height="24"
+                  rx="6"
+                  :fill="q.color"
+                  fill-opacity="0.9"
+                />
+                <text
+                  x="0"
+                  y="2"
+                  fill="#ffffff"
+                  font-family="Inter, sans-serif"
+                  font-size="12"
+                  font-weight="bold"
+                  text-anchor="middle"
+                  dominant-baseline="middle"
+                >
+                  {{ q.badge || q.name }}
+                </text>
+              </g>
 
               <!-- Resize handles for selected quadrant -->
               <template v-if="idx === selectedIndex && currentMode === 'move'">
-                <!-- NW -->
+                <!-- NW (Corner 0) -->
                 <circle
-                  :cx="q.boxNorm[1]"
-                  :cy="q.boxNorm[0]"
+                  :cx="getCornerPoint(q, 0).x"
+                  :cy="getCornerPoint(q, 0).y"
                   r="12"
                   fill="#ffffff"
                   :stroke="q.color"
@@ -299,10 +351,10 @@ const onPointerUp = () => {
                   class="cursor-nwse-resize"
                   @pointerdown.stop="onPointerDown($event, idx, 'nw')"
                 />
-                <!-- NE -->
+                <!-- NE (Corner 1) -->
                 <circle
-                  :cx="q.boxNorm[3]"
-                  :cy="q.boxNorm[0]"
+                  :cx="getCornerPoint(q, 1).x"
+                  :cy="getCornerPoint(q, 1).y"
                   r="12"
                   fill="#ffffff"
                   :stroke="q.color"
@@ -310,10 +362,10 @@ const onPointerUp = () => {
                   class="cursor-nesw-resize"
                   @pointerdown.stop="onPointerDown($event, idx, 'ne')"
                 />
-                <!-- SE -->
+                <!-- SE (Corner 2) -->
                 <circle
-                  :cx="q.boxNorm[3]"
-                  :cy="q.boxNorm[2]"
+                  :cx="getCornerPoint(q, 2).x"
+                  :cy="getCornerPoint(q, 2).y"
                   r="12"
                   fill="#ffffff"
                   :stroke="q.color"
@@ -321,10 +373,10 @@ const onPointerUp = () => {
                   class="cursor-nwse-resize"
                   @pointerdown.stop="onPointerDown($event, idx, 'se')"
                 />
-                <!-- SW -->
+                <!-- SW (Corner 3) -->
                 <circle
-                  :cx="q.boxNorm[1]"
-                  :cy="q.boxNorm[2]"
+                  :cx="getCornerPoint(q, 3).x"
+                  :cy="getCornerPoint(q, 3).y"
                   r="12"
                   fill="#ffffff"
                   :stroke="q.color"
@@ -338,10 +390,10 @@ const onPointerUp = () => {
             <!-- Real-time drawing preview -->
             <rect
               v-if="isDrawing && drawCurrentBox"
-              :x="drawCurrentBox[1]"
-              :y="drawCurrentBox[0]"
-              :width="drawCurrentBox[3] - drawCurrentBox[1]"
-              :height="drawCurrentBox[2] - drawCurrentBox[0]"
+              :x="drawCurrentBox[1] * 1000"
+              :y="drawCurrentBox[0] * 1000"
+              :width="(drawCurrentBox[3] - drawCurrentBox[1]) * 1000"
+              :height="(drawCurrentBox[2] - drawCurrentBox[0]) * 1000"
               fill="rgba(56, 189, 248, 0.25)"
               stroke="#38bdf8"
               stroke-width="2.5"
@@ -352,7 +404,7 @@ const onPointerUp = () => {
 
         <div class="text-[11px] text-slate-400 flex items-center gap-1.5">
           <AppIcon name="lightbulb" :size="15" class="text-amber-400" />
-          <span>Arrastra cualquier caja para moverla o ajusta sus 4 esquinas blancas. En modo dibujo, haz clic y arrastra.</span>
+          <span>Arrastra cualquier zona para moverla o ajusta sus 4 esquinas blancas. En modo dibujo, haz clic y arrastra sobre la imagen.</span>
         </div>
       </div>
 
@@ -368,7 +420,7 @@ const onPointerUp = () => {
         <div class="flex flex-col gap-2.5">
           <div
             v-for="(q, idx) in quadrants"
-            :key="q.id"
+            :key="q.id || `quad-side-${idx}`"
             :class="[
               'p-3 rounded-xl border transition-all cursor-pointer flex flex-col gap-2',
               idx === selectedIndex
@@ -388,7 +440,7 @@ const onPointerUp = () => {
                 <span class="font-bold text-xs text-white">{{ q.name }}</span>
               </div>
               <AppBadge variant="default" class="text-[10px] font-mono">
-                {{ q.badge }}
+                {{ q.badge || q.name }}
               </AppBadge>
             </div>
 
@@ -403,7 +455,7 @@ const onPointerUp = () => {
                 <AppInput v-model="q.badge" />
               </div>
               <div class="col-span-2 text-[10px] text-slate-500 font-mono pt-1">
-                Coords: [{{ q.boxNorm.join(', ') }}]
+                Coords: [{{ (q.boxNorm || []).map(v => Number(v).toFixed(3)).join(', ') }}]
               </div>
             </div>
           </div>

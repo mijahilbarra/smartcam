@@ -4,10 +4,11 @@ import { db } from '@/shared/api/firebase';
 import { normalizeQuadrants, serializeQuadrantsForFirestore, boxNormToPolygonNorm } from '@/shared/lib/geometry';
 
 export const DEFAULT_QUADRANTS = [
-  { id: 'quad_1', name: 'Sillón 1 (Izquierda)', badge: 'Sillón 1', color: '#3b82f6', boxNorm: [250, 100, 850, 400] },
-  { id: 'quad_2', name: 'Sillón 2 (Centro)', badge: 'Sillón 2', color: '#10b981', boxNorm: [250, 380, 850, 680] },
-  { id: 'quad_3', name: 'Sillón 3 (Derecha)', badge: 'Sillón 3', color: '#f59e0b', boxNorm: [250, 660, 850, 950] },
-  { id: 'quad_4', name: 'Sofá de Espera', badge: 'Espera', color: '#a855f7', boxNorm: [350, 10, 750, 220] }
+  { id: 'silla_barbero_puesto1', name: 'Silla de barbero (Puesto 1)', badge: 'Sillón 1', color: '#FFD700', boxNorm: [0.65, 0.80, 1.00, 1.00] },
+  { id: 'silla_barbero_puesto2', name: 'Silla de barbero (Frente)', badge: 'Sillón 2', color: '#007BFF', boxNorm: [0.80, 0.36, 1.00, 0.67] },
+  { id: 'silla_espera', name: 'Silla de espera', badge: 'Espera', color: '#D250DC', boxNorm: [0.55, 0.73, 0.92, 0.90] },
+  { id: 'zona_barbero', name: 'Zona de trabajo de barbero', badge: 'Barbero', color: '#FF4500', boxNorm: [0.45, 0.65, 0.95, 0.82] },
+  { id: 'puerta_entrada', name: 'Entrada / Pasillo peatonal', badge: 'Entrada', color: '#10b981', boxNorm: [0.30, 0.40, 0.88, 0.60] }
 ];
 
 export function useQuadrants() {
@@ -24,9 +25,17 @@ export function useQuadrants() {
     unsubscribe = onSnapshot(docRef, (snap) => {
       if (snap.exists()) {
         const data = snap.data();
-        const rawList = data.zones || data.quadrants || data.items || [];
-        if (Array.isArray(rawList) && rawList.length > 0) {
-          quadrants.value = normalizeQuadrants(rawList);
+        let quadsRaw = [];
+        if (Array.isArray(data?.quadrants) && data.quadrants.length > 0) {
+          quadsRaw = data.quadrants;
+        } else if (data?.quadrants && typeof data.quadrants === 'object') {
+          quadsRaw = Object.values(data.quadrants);
+        } else if (Array.isArray(data?.zones) && data.zones.length > 0) {
+          quadsRaw = data.zones;
+        }
+
+        if (quadsRaw.length > 0) {
+          quadrants.value = normalizeQuadrants(quadsRaw);
         } else {
           quadrants.value = normalizeQuadrants(DEFAULT_QUADRANTS);
         }
@@ -46,8 +55,9 @@ export function useQuadrants() {
       const serialized = serializeQuadrantsForFirestore(quadrants.value);
       const docRef = doc(db, 'camera_catcher', 'quadrants');
       await setDoc(docRef, {
-        zones: serialized,
-        updatedAt: new Date().toISOString()
+        quadrants: serialized,
+        updatedAt: new Date().toISOString(),
+        updatedBy: 'web-dashboard'
       }, { merge: true });
       saving.value = false;
       return { success: true };
@@ -60,13 +70,15 @@ export function useQuadrants() {
 
   const addQuadrant = () => {
     const nextIdx = quadrants.value.length + 1;
+    const newBox = [0.25, 0.25, 0.65, 0.65];
     const newQ = {
       id: `quad_${Date.now()}`,
       name: `Zona ${nextIdx}`,
       badge: `Z${nextIdx}`,
       color: '#06b6d4',
-      polygonNorm: boxNormToPolygonNorm([200, 200, 600, 600]),
-      boxNorm: [200, 200, 600, 600]
+      type: 'custom_zone',
+      polygonNorm: boxNormToPolygonNorm(newBox),
+      boxNorm: newBox
     };
     quadrants.value.push(newQ);
     selectedIndex.value = quadrants.value.length - 1;

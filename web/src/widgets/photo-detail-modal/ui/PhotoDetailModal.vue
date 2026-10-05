@@ -6,7 +6,7 @@ import AppIcon from '@/shared/ui/atoms/AppIcon.vue';
 import AppButton from '@/shared/ui/atoms/AppButton.vue';
 import AppBadge from '@/shared/ui/atoms/AppBadge.vue';
 import { formatDateTime } from '@/shared/lib/date-utils';
-import { hexToRgba } from '@/shared/lib/geometry';
+import { hexToRgba, toPointObject, ensureNorm01 } from '@/shared/lib/geometry';
 
 const props = defineProps({
   show: {
@@ -128,7 +128,7 @@ const copyDocId = () => {
               <polygon
                 v-for="q in photo?.quadrants || []"
                 :key="q.id || q.name"
-                :points="(q.polygonNorm || []).map(p => `${p[0]},${p[1]}`).join(' ')"
+                :points="(q.polygonNorm || []).map(p => `${(toPointObject(p).x * 1000).toFixed(1)},${(toPointObject(p).y * 1000).toFixed(1)}`).join(' ')"
                 :fill="hexToRgba(q.color || '#3b82f6', 0.2)"
                 :stroke="q.color || '#3b82f6'"
                 stroke-width="3"
@@ -138,10 +138,10 @@ const copyDocId = () => {
               <g v-for="(box, i) in photo?.detections?.humans || []" :key="`human-${i}`">
                 <!-- box: [ymin, xmin, ymax, xmax] -->
                 <rect
-                  :x="box[1]"
-                  :y="box[0]"
-                  :width="box[3] - box[1]"
-                  :height="box[2] - box[0]"
+                  :x="ensureNorm01(box[1]) * 1000"
+                  :y="ensureNorm01(box[0]) * 1000"
+                  :width="(ensureNorm01(box[3]) - ensureNorm01(box[1])) * 1000"
+                  :height="(ensureNorm01(box[2]) - ensureNorm01(box[0])) * 1000"
                   fill="none"
                   stroke="#10b981"
                   stroke-width="4"

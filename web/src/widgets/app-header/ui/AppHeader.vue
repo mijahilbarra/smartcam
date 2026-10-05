@@ -1,8 +1,11 @@
 <script setup>
 import AppIcon from '@/shared/ui/atoms/AppIcon.vue';
 import AppButton from '@/shared/ui/atoms/AppButton.vue';
+import AppBadge from '@/shared/ui/atoms/AppBadge.vue';
+import { getEnvironmentInfo } from '@/shared/api/firebase';
 
 const emit = defineEmits(['open-settings', 'open-calibrator']);
+const env = getEnvironmentInfo();
 </script>
 
 <template>
@@ -12,9 +15,20 @@ const emit = defineEmits(['open-settings', 'open-calibrator']);
         <AppIcon name="videocam" :size="28" />
       </div>
       <div>
-        <h1 class="text-xl sm:text-2xl font-bold tracking-tight text-white flex items-center gap-2">
-          IOT Camera Catcher
-        </h1>
+        <div class="flex items-center gap-2 flex-wrap">
+          <h1 class="text-xl sm:text-2xl font-bold tracking-tight text-white flex items-center gap-2">
+            IOT Camera Catcher
+          </h1>
+          <!-- Insignia de Entorno Detectado -->
+          <AppBadge
+            :variant="env.isLocal ? 'success' : 'info'"
+            class="text-[10px] font-mono tracking-wide py-0.5 px-2 flex items-center gap-1"
+            :title="`Modo: ${env.environmentLabel}. Destino: ${env.dispatchTarget}`"
+          >
+            <span class="w-1.5 h-1.5 rounded-full" :class="env.isLocal ? 'bg-emerald-400 animate-pulse' : 'bg-blue-400'"></span>
+            <span>{{ env.isLocal ? 'Local: Simulador E2 (8085)' : 'Cloud: GCP Compute Engine' }}</span>
+          </AppBadge>
+        </div>
         <p class="text-xs sm:text-sm text-slate-400">
           Monitoreo y Análisis Visual con Gemini Vision • Barbería
         </p>

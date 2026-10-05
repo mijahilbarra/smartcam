@@ -1,60 +1,70 @@
 import { ref } from 'vue';
 import { doc, setDoc } from 'firebase/firestore';
-import { db, BACKEND_URL } from '@/shared/api/firebase';
+import { db, BACKEND_URL, IS_LOCAL_ENV, getEnvironmentInfo } from '@/shared/api/firebase';
 
 export function useTriggerCapture() {
   const isTriggering = ref(false);
   const statusMessage = ref('');
   const statusType = ref('info');
+  const envInfo = getEnvironmentInfo();
 
   const triggerCapture = async (addLogCallback = null) => {
     isTriggering.value = true;
     statusMessage.value = 'Iniciando captura inmediata...';
     statusType.value = 'info';
 
+    const timestampNow = Date.now();
+
     if (addLogCallback) {
       addLogCallback({
         title: '⚡ Disparo de Captura Solicitado',
-        desc: 'El usuario pulsó Capturar Ahora en el Dashboard.',
+        desc: `Pulsado en ${envInfo.environmentLabel}. Destino: ${envInfo.dispatchTarget}`,
         type: 'action'
       });
     }
 
     try {
-      // 1. Try direct HTTP to daemon backend
-      let fetchSuccess = false;
-      try {
-        const res = await fetch(`${BACKEND_URL}/capture`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ source: 'dashboard_button', timestamp: new Date().toISOString() })
-        });
-        if (res.ok) {
-          fetchSuccess = true;
-          statusMessage.value = '¡Captura procesada con éxito por el daemon!';
-          statusType.value = 'success';
+      let dispatchedViaHttp = false;
+
+      // 1. Si estamos en ENTORNO LOCAL y existe BACKEND_URL, intentar HTTP directo al simulador E2 / daemon
+      if (IS_LOCAL_ENV && BACKEND_URL) {
+        try {
+          const res = await fetch(`${BACKEND_URL}/capture`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ source: 'dashboard_local_button', timestamp: new Date().toISOString() })
+          });
+          if (res.ok) {
+            dispatchedViaHttp = true;
+            statusMessage.value = '¡Captura procesada por el simulador local E2 (HTTP)!';
+            statusType.value = 'success';
+          }
+        } catch (httpErr) {
+          console.warn('[TriggerCapture] Simulador local HTTP no respondió, enviando por Firestore:', httpErr.message);
         }
-      } catch (httpErr) {
-        console.warn('[TriggerCapture] Backend HTTP directo no respondió, enviando comando a Firestore:', httpErr);
       }
 
-      // 2. Fallback to Firestore command queue
-      if (!fetchSuccess) {
-        const cmdRef = doc(db, 'camera_catcher', 'daemon_command');
+      // 2. Si estamos en SERVIDOR CLOUD (o si falló HTTP local), enviar por el Bus de Eventos de Firestore
+      if (!dispatchedViaHttp) {
+        const cmdRef = doc(db, 'camera_catcher', 'commands');
         await setDoc(cmdRef, {
-          command: 'TRIGGER_CYCLE',
-          requestedAt: new Date().toISOString(),
-          requestedBy: 'dashboard_ui'
+          action: 'capture',
+          source: IS_LOCAL_ENV ? 'dashboard-local-fallback' : 'dashboard-web-cloud',
+          requestedAt: timestampNow
         }, { merge: true });
 
-        statusMessage.value = 'Comando enviado a la cola de Firestore';
+        statusMessage.value = IS_LOCAL_ENV
+          ? 'Comando enviado a Firestore (Simulador Local)'
+          : 'Comando enviado a GCP Compute Engine (Firestore Event Bus)';
         statusType.value = 'success';
       }
 
       if (addLogCallback) {
         addLogCallback({
           title: '✓ Ciclo activado',
-          desc: 'El daemon ha recibido la orden de captura.',
+          desc: dispatchedViaHttp
+            ? 'Orden ejecutada vía HTTP directo (Simulador E2 localhost:8085).'
+            : 'Orden enviada vía WebSocket a Firestore (GCP Compute Engine daemon).',
           type: 'success'
         });
       }
@@ -73,6 +83,7 @@ export function useTriggerCapture() {
     isTriggering,
     statusMessage,
     statusType,
+    envInfo,
     triggerCapture
   };
 }

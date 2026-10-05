@@ -1,0 +1,28 @@
+# Dockerfile de Simulación de Google Compute Engine e2-micro
+# Simula el entorno Ubuntu/Debian x86_64 con Node 20 idéntico al daemon en producción.
+FROM node:20-bookworm-slim
+
+# Instalar cliente Docker (para invocar Neolink como contenedor hermano), procps, curl y certificados
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    docker.io \
+    procps \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/camera-catcher
+
+# Copiar manifiestos de dependencias e instalarlos en entorno Linux
+COPY package.json package-lock.json ./
+RUN npm install --omit=dev
+
+# Copiar código fuente, modelos ONNX, tests y configuración Neolink
+COPY src ./src
+COPY neolink.toml ./neolink.toml
+COPY test ./test
+
+# Exponer puerto del daemon Express (8085)
+EXPOSE 8085
+
+# Por defecto arrancar el daemon
+CMD ["npm", "start"]
