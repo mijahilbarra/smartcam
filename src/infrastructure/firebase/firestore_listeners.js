@@ -129,8 +129,16 @@ export function registerFirestoreListeners({ db, scheduler, onManualCapture }) {
     }
 
     const data = snapshot.data();
-    if (data && data.quadrants) {
-      setCustomQuadrants(data.quadrants);
+    if (data) {
+      let quads = [];
+      if (Array.isArray(data.quadrants)) {
+        quads = data.quadrants;
+      } else if (data.quadrants && typeof data.quadrants === "object") {
+        quads = Object.values(data.quadrants);
+      } else if (Array.isArray(data.zones)) {
+        quads = data.zones;
+      }
+      setCustomQuadrants(quads);
     }
   }, (err) => {
     console.warn(`[Quadrants] Error escuchando camera_catcher/quadrants:`, err.message);
@@ -144,9 +152,20 @@ export function registerFirestoreListeners({ db, scheduler, onManualCapture }) {
 export async function prefetchQuadrants(db) {
   try {
     const snap = await db.doc("camera_catcher/quadrants").get();
-    if (snap.exists && snap.data()?.quadrants) {
-      setCustomQuadrants(snap.data().quadrants);
-      console.log(`[Quadrants] Cuadrantes dinámicos precargados exitosamente de Firestore (${snap.data().quadrants.length} zonas).`);
+    if (snap.exists) {
+      const data = snap.data();
+      let quads = [];
+      if (Array.isArray(data?.quadrants)) {
+        quads = data.quadrants;
+      } else if (data?.quadrants && typeof data.quadrants === "object") {
+        quads = Object.values(data.quadrants);
+      } else if (Array.isArray(data?.zones)) {
+        quads = data.zones;
+      }
+      setCustomQuadrants(quads);
+      console.log(`[Quadrants] Cuadrantes dinámicos precargados exitosamente de Firestore (${quads.length} zonas).`);
+    } else {
+      console.log(`[Quadrants] camera_catcher/quadrants no existe aún en Firestore.`);
     }
   } catch (err) {
     console.warn(`[Quadrants] No se pudieron precargar cuadrantes al iniciar:`, err.message);

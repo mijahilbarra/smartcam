@@ -7,7 +7,8 @@ import StatusPill from '@/shared/ui/molecules/StatusPill.vue';
 import StatPill from '@/shared/ui/molecules/StatPill.vue';
 import { useDaemonState } from '@/entities/daemon/model/useDaemonState';
 import { useTriggerCapture } from '@/features/trigger-capture/model/useTriggerCapture';
-import { hexToRgba, toPointObject, ensureNorm01 } from '@/shared/lib/geometry';
+import { useQuadrants } from '@/entities/quadrant/model/useQuadrants';
+import { hexToRgba, toPointObject, ensureNorm01, boxNormToPolygonNorm } from '@/shared/lib/geometry';
 
 const emit = defineEmits(['open-calibrator-photo']);
 
@@ -28,6 +29,7 @@ const {
 } = useDaemonState();
 
 const { isTriggering, triggerCapture } = useTriggerCapture();
+const { quadrants: configuredQuadrants } = useQuadrants();
 
 // Canvas controls & layers
 const canvasRef = ref(null);
@@ -70,11 +72,40 @@ const renderCanvas = () => {
     }
   }
 
-  // 2. Draw Quadrants Layer
-  if (showQuadrants.value && canvasImageData.value.quadrants?.length) {
-    canvasImageData.value.quadrants.forEach((q) => {
-      const color = q.color || '#3b82f6';
-      const poly = q.polygonNorm || [];
+  // 2. Draw Quadrants Layer (Single Source of Truth: camera_catcher/quadrants)
+  if (showQuadrants.value && configuredQuadrants.value?.length) {
+    const telemetryQuadrants = canvasImageData.value.quadrants || daemonState.value?.quadrants || [];
+
+    configuredQuadrants.value.forEach((zone) => {
+      // Find matching telemetry items for this physical zone
+      const matches = telemetryQuadrants.filter(t => t.id === zone.id || t.zoneId === zone.id);
+
+      let dynamicStatus = 'disponible';
+      if (zone.type === 'walking_zone') {
+        dynamicStatus = 'despejado';
+      }
+
+      if (matches.length > 0) {
+        if (matches.some(m => m.status === 'en_corte' || m.id?.startsWith('cliente_sentado'))) {
+          dynamicStatus = 'en_corte';
+        } else if (matches.some(m => m.status === 'en_servicio' || m.id?.startsWith('barbero_'))) {
+          dynamicStatus = 'en_servicio';
+        } else if (matches.some(m => m.status === 'en_transito' || m.id?.startsWith('transito_'))) {
+          dynamicStatus = 'en_transito';
+        } else if (matches.some(m => m.status === 'en_espera' || m.id?.startsWith('cliente_espera'))) {
+          dynamicStatus = 'en_espera';
+        } else if (matches.some(m => m.status === 'ocupada')) {
+          dynamicStatus = 'ocupada';
+        } else if (matches[0]?.status) {
+          dynamicStatus = matches[0].status;
+        }
+      }
+
+      const color = zone.color || '#3b82f6';
+      const poly = (zone.polygonNorm && zone.polygonNorm.length >= 3)
+        ? zone.polygonNorm
+        : (zone.boxNorm ? boxNormToPolygonNorm(zone.boxNorm) : []);
+
       if (poly.length >= 3) {
         ctx.beginPath();
         poly.forEach((pt, i) => {
@@ -85,19 +116,40 @@ const renderCanvas = () => {
           else ctx.lineTo(x, y);
         });
         ctx.closePath();
-        ctx.fillStyle = hexToRgba(color, 0.18);
+        const isOccupied = dynamicStatus === 'ocupada' || dynamicStatus === 'en_corte' || dynamicStatus === 'en_servicio' || dynamicStatus === 'en_transito';
+        ctx.fillStyle = hexToRgba(color, isOccupied ? 0.28 : 0.16);
         ctx.fill();
         ctx.strokeStyle = color;
         ctx.lineWidth = 2;
         ctx.stroke();
 
-        // Label
+        // Label with dynamic business status
         const firstPt = toPointObject(poly[0]);
-        const lx = firstPt.x * W + 4;
-        const ly = firstPt.y * H + 18;
+        const lx = Math.max(8, Math.min(W - 160, firstPt.x * W + 4));
+        const ly = Math.max(18, Math.min(H - 8, firstPt.y * H + 18));
+
+        const statusMap = {
+          'en_corte': 'En corte',
+          'ocupada': 'Ocupada',
+          'en_servicio': 'En servicio',
+          'en_transito': 'En tránsito',
+          'en_espera': 'En espera',
+          'despejado': 'Despejado',
+          'disponible': 'Disponible'
+        };
+        const statusPretty = statusMap[dynamicStatus] || dynamicStatus;
+        const text = `${zone.badge || zone.name || 'Zona'} [${statusPretty}]`;
+
+        ctx.font = 'bold 11px Inter, sans-serif';
+        const textWidth = ctx.measureText(text).width;
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+        ctx.fillRect(lx - 2, ly - 13, textWidth + 8, 18);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(lx - 2, ly - 13, textWidth + 8, 18);
+
         ctx.fillStyle = color;
-        ctx.font = 'bold 12px Inter, sans-serif';
-        ctx.fillText(q.badge || q.name || 'Zona', lx, ly);
+        ctx.fillText(text, lx + 2, ly);
       }
     });
   }
@@ -192,6 +244,14 @@ watch(() => canvasImageData.value.imageUrl, (newUrl) => {
 watch([showQuadrants, showHumans, showBiometry], () => {
   renderCanvas();
 });
+
+watch(configuredQuadrants, () => {
+  renderCanvas();
+}, { deep: true });
+
+watch(() => canvasImageData.value, () => {
+  renderCanvas();
+}, { deep: true });
 
 onMounted(() => {
   renderCanvas();
@@ -372,7 +432,7 @@ onMounted(() => {
         <div class="flex flex-wrap items-center gap-2 pt-1">
           <StatPill label="Fotograma" :value="canvasImageData.docId || 'Ninguno'" />
           <StatPill label="Dimensiones" :value="`${canvasImageData.width} x ${canvasImageData.height} px`" />
-          <StatPill label="Cuadrantes" :value="`${canvasImageData.quadrants?.length || 0} activos`" />
+          <StatPill label="Cuadrantes" :value="`${configuredQuadrants?.length || 0} activos`" />
           <StatPill
             label="¿Humanos Detectados?"
             :value="canvasImageData.humanBoxes?.length ? `Sí (${canvasImageData.humanBoxes.length})` : '0'"

@@ -162,11 +162,21 @@ class DaemonReporter {
    */
   async reportQuadrantsActive(quadrants) {
     const list = Array.isArray(quadrants) ? quadrants : [];
+    // Filtrar únicamente los cuadrantes físicos configurados (excluyendo sub-detecciones secundarias y personas sin zona)
+    const physicalZones = list.filter(q => 
+      !q.zoneId && 
+      !q.id.startsWith("persona_sin_zona_") && 
+      !q.id.startsWith("cliente_sentado_") && 
+      !q.id.startsWith("barbero_") && 
+      !q.id.startsWith("transito_") &&
+      !q.id.startsWith("cliente_espera_")
+    );
+
     this.currentState.step = "quadrants_active";
     this.currentState.stepIndex = 3;
     this.currentState.stepTitle = "Activación de Cuadrantes Físicos";
-    this.currentState.stepDescription = `Se activan los cuadrantes: Se proyectan ${list.length} zonas ROI configuradas (sillas, puestos y tránsito) en el Canvas.`;
-    this.currentState.quadrants = list.map(q => ({
+    this.currentState.stepDescription = `Se activan los cuadrantes: Se proyectan ${physicalZones.length} zonas ROI configuradas (sillas, puestos y tránsito) en el Canvas.`;
+    this.currentState.quadrants = physicalZones.map(q => ({
       id: q.id,
       label: q.label || q.name || q.id,
       category: q.category || "general",
@@ -179,9 +189,9 @@ class DaemonReporter {
         : undefined
     }));
 
-    const statusCounts = list.map(q => `${q.label} [${q.status || "activo"}]`).join(", ");
+    const statusCounts = physicalZones.map(q => `${q.label} [${q.status || "activo"}]`).join(", ");
     this._addHistoryEntry(
-      `📐 Se activan los cuadrantes: dibujando ${list.length} zonas en el Canvas (${statusCounts || "sin zonas"}).`,
+      `📐 Se activan los cuadrantes: dibujando ${physicalZones.length} zonas en el Canvas (${statusCounts || "sin zonas"}).`,
       "process"
     );
 

@@ -120,7 +120,7 @@ export function mapDetectionsToBarbershopQuadrants(detections, width, height, co
     configuredZones = Object.values(configuredZonesMap);
   }
 
-  if (!configuredZones || configuredZones.length === 0) {
+  if (configuredZonesMap === null || configuredZonesMap === undefined) {
     configuredZones = Object.values(BARBERSHOP_QUADRANTS);
   }
 
@@ -174,11 +174,13 @@ export function mapDetectionsToBarbershopQuadrants(detections, width, height, co
 
         quadrants.push({
           id: zone.id,
+          name: zone.name || zone.id,
           label: zone.name || zone.id,
           category: "silla_barbero",
           type: "barber_chair",
           color: zoneColor,
           box: zonePixelBox,
+          boxNorm: zone.boxNorm,
           polygonNorm: zone.polygonNorm,
           status: isOccupied ? "ocupada" : "disponible",
           description: isOccupied ? `Sillón de barbero ocupado en corte` : `Sillón de barbero disponible`
@@ -203,6 +205,20 @@ export function mapDetectionsToBarbershopQuadrants(detections, width, height, co
 
       case "barber_workstation": {
         const isWorking = matchingPersonDets.length > 0;
+        quadrants.push({
+          id: zone.id,
+          name: zone.name || zone.id,
+          label: zone.name || zone.id,
+          category: "personal",
+          type: "barber_workstation",
+          color: zoneColor || "#FF4500",
+          box: zonePixelBox,
+          boxNorm: zone.boxNorm,
+          polygonNorm: zone.polygonNorm,
+          status: isWorking ? "en_servicio" : "disponible",
+          description: isWorking ? `Barbero / Personal activo atendiendo en ${zone.name}` : `Puesto de barbero libre`
+        });
+
         if (isWorking) {
           const barberDet = matchingPersonDets[0];
           quadrants.push({
@@ -214,21 +230,8 @@ export function mapDetectionsToBarbershopQuadrants(detections, width, height, co
             color: zoneColor || "#FF4500",
             confidence: barberDet.score,
             box: barberDet.box,
-            polygonNorm: zone.polygonNorm,
             status: "en_servicio",
             description: `Barbero / Personal activo atendiendo en ${zone.name}`
-          });
-        } else {
-          quadrants.push({
-            id: zone.id,
-            label: zone.name || zone.id,
-            category: "personal",
-            type: "barber_workstation",
-            color: zoneColor || "#FF4500",
-            box: zonePixelBox,
-            polygonNorm: zone.polygonNorm,
-            status: "disponible",
-            description: `Puesto de barbero libre`
           });
         }
         break;
@@ -236,6 +239,20 @@ export function mapDetectionsToBarbershopQuadrants(detections, width, height, co
 
       case "waiting_chair": {
         const isOccupied = matchingPersonDets.length > 0;
+        quadrants.push({
+          id: zone.id,
+          name: zone.name || zone.id,
+          label: zone.name || zone.id,
+          category: "silla_espera",
+          type: "waiting_chair",
+          color: zoneColor || "#D250DC",
+          box: zonePixelBox,
+          boxNorm: zone.boxNorm,
+          polygonNorm: zone.polygonNorm,
+          status: isOccupied ? "ocupada" : "disponible",
+          description: isOccupied ? `Banca de espera ocupada (${matchingPersonDets.length})` : `Banca de espera disponible`
+        });
+
         if (isOccupied) {
           matchingPersonDets.forEach((pDet, pIdx) => {
             quadrants.push({
@@ -251,22 +268,26 @@ export function mapDetectionsToBarbershopQuadrants(detections, width, height, co
             });
           });
         }
-        quadrants.push({
-          id: zone.id,
-          label: zone.name || zone.id,
-          category: "silla_espera",
-          type: "waiting_chair",
-          color: zoneColor || "#D250DC",
-          box: zonePixelBox,
-          polygonNorm: zone.polygonNorm,
-          status: isOccupied ? "ocupada" : "disponible",
-          description: isOccupied ? `Banca de espera ocupada (${matchingPersonDets.length})` : `Banca de espera disponible`
-        });
         break;
       }
 
       case "walking_zone": {
-        if (matchingPersonDets.length > 0) {
+        const isOccupied = matchingPersonDets.length > 0;
+        quadrants.push({
+          id: zone.id,
+          name: zone.name || zone.id,
+          label: zone.name || zone.id,
+          category: "transito",
+          type: "walking_zone",
+          color: zoneColor || "#007BFF",
+          box: zonePixelBox,
+          boxNorm: zone.boxNorm,
+          polygonNorm: zone.polygonNorm,
+          status: isOccupied ? "en_transito" : "despejado",
+          description: isOccupied ? `Persona en tránsito por ${zone.name}` : `Zona peatonal despejada`
+        });
+
+        if (isOccupied) {
           matchingPersonDets.forEach((pDet, pIdx) => {
             quadrants.push({
               id: `transito_${zone.id}_${pIdx + 1}`,
@@ -277,22 +298,9 @@ export function mapDetectionsToBarbershopQuadrants(detections, width, height, co
               color: zoneColor || "#007BFF",
               confidence: pDet.score,
               box: pDet.box,
-              polygonNorm: zone.polygonNorm,
               status: "en_transito",
               description: `Persona en tránsito por ${zone.name}`
             });
-          });
-        } else {
-          quadrants.push({
-            id: zone.id,
-            label: zone.name || zone.id,
-            category: "transito",
-            type: "walking_zone",
-            color: zoneColor || "#007BFF",
-            box: zonePixelBox,
-            polygonNorm: zone.polygonNorm,
-            status: "despejado",
-            description: `Zona peatonal despejada`
           });
         }
         break;
@@ -300,6 +308,20 @@ export function mapDetectionsToBarbershopQuadrants(detections, width, height, co
 
       default: {
         const isOccupied = matchingPersonDets.length > 0;
+        quadrants.push({
+          id: zone.id,
+          name: zone.name || zone.id,
+          label: zone.name || zone.id,
+          category: zone.category || "custom",
+          type: zoneType,
+          color: zoneColor || "#10B981",
+          box: zonePixelBox,
+          boxNorm: zone.boxNorm,
+          polygonNorm: zone.polygonNorm,
+          status: isOccupied ? "ocupada" : "disponible",
+          description: isOccupied ? `Zona ${zone.name} ocupada` : `Zona ${zone.name} disponible`
+        });
+
         if (isOccupied) {
           matchingPersonDets.forEach((pDet, pIdx) => {
             quadrants.push({
@@ -316,17 +338,6 @@ export function mapDetectionsToBarbershopQuadrants(detections, width, height, co
             });
           });
         }
-        quadrants.push({
-          id: zone.id,
-          label: zone.name || zone.id,
-          category: zone.category || "custom",
-          type: zoneType,
-          color: zoneColor || "#10B981",
-          box: zonePixelBox,
-          polygonNorm: zone.polygonNorm,
-          status: isOccupied ? "ocupada" : "disponible",
-          description: isOccupied ? `Zona ${zone.name} ocupada` : `Zona ${zone.name} disponible`
-        });
         break;
       }
     }

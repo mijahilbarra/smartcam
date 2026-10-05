@@ -68,6 +68,16 @@ El repositorio utiliza GitHub Actions con filtros por ruta (`paths:`):
 
 ---
 
+### 5. Prohibición Estricta de Parches Superficiales (Arquitectura Primero)
+> [!CAUTION]
+> **PROHIBIDO APLICAR WORKAROUNDS O PARCHES SUPERFICIALES (MONKEY-PATCHING)**.
+> Cuando se descubra un error, bug, limitación o fallo sistémico cuya causa raíz pertenezca a la arquitectura, infraestructura o modelo de datos (por ejemplo: configuración de CORS en buckets, políticas de red, ciclo de vida de procesos, desacoplamientos de capas, esquemas de bases de datos o dependencias nativas):
+> 1. **No aplicar apaños temporales** en capas superiores (como proxies cosméticos, timeouts ciegos, supresión de errores en consola o hacks en frontend para enmascarar fallos de backend/cloud).
+> 2. **Reportar la causa raíz al usuario**: Explicar técnicamente el origen estructural del problema, el impacto y la solución arquitectónica correcta.
+> 3. **Detenerse y esperar confirmación explícita del usuario** antes de aplicar la modificación arquitectónica o de infraestructura.
+
+---
+
 ## 🛠️ Resumen de Componentes Técnicos
 
 1. **Captura P2P (Neolink)**:

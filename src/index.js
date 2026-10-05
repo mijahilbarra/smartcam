@@ -99,8 +99,14 @@ app.all("/capture", async (req, res) => {
 });
 
 const PORT = process.env.PORT || 8085;
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`[Server] Daemon escuchando en http://localhost:${PORT}`);
+}).on("error", (err) => {
+  if (err.code === "EADDRINUSE") {
+    console.warn(`[Server] Puerto ${PORT} ya en uso (simulador u otra instancia activa). Omitiendo binding HTTP local.`);
+  } else {
+    console.error("[Server] Error iniciando servidor HTTP:", err.message);
+  }
 });
 
 // 5. Registrar Listeners en Tiempo Real de Firestore
@@ -121,28 +127,28 @@ try {
   }, { merge: true }).catch(() => {});
 } catch (_) {}
 
-prefetchQuadrants(db);
+await prefetchQuadrants(db);
 
-getDynamicConfig(db).then(cfg => {
+try {
+  const cfg = await getDynamicConfig(db);
   console.log(`[Startup] Configuración cargada: Intervalo ${cfg.intervalMinutes} min, Horario ${cfg.workStartTime} a ${cfg.workEndTime} (${cfg.timezone}).`);
   scheduler.updateWorkingHours(cfg.workStartTime, cfg.workEndTime, cfg.timezone);
   scheduler.setupTimer(cfg.intervalMinutes);
-}).catch(() => {
+} catch (_) {
   scheduler.setupTimer(15);
-});
+}
 
-cleanupZombies().then(() => {
-  console.log("[Startup] Limpieza de procesos completada. Sistema listo.");
-  setTimeout(() => {
-    if (!scheduler.isWorkingNow()) {
-      console.log(`[Startup] Fuera de horario laboral. Omitiendo captura inicial automática.`);
-      return;
-    }
-    console.log("[Startup] Ejecutando captura inicial automática de arranque...");
-    orchestrator.execute("startup").catch(err => {
-      console.error("[Startup] Error en captura inicial:", err.message);
-    });
-  }, 4000);
-});
+await cleanupZombies();
+console.log("[Startup] Limpieza de procesos completada. Sistema listo.");
+setTimeout(() => {
+  if (!scheduler.isWorkingNow()) {
+    console.log(`[Startup] Fuera de horario laboral. Omitiendo captura inicial automática.`);
+    return;
+  }
+  console.log("[Startup] Ejecutando captura inicial automática de arranque...");
+  orchestrator.execute("startup").catch(err => {
+    console.error("[Startup] Error en captura inicial:", err.message);
+  });
+}, 4000);
 
 export { app, scheduler, orchestrator, db, bucket };

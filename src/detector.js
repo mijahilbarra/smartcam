@@ -67,14 +67,14 @@ const COCO_CLASSES = {
   67: "cell phone"
 };
 
-let dynamicQuadrants = { ...BARBERSHOP_QUADRANTS };
+let dynamicQuadrants = null;
 
 /**
- * Actualiza los cuadrantes en memoria en tiempo real
+ * Actualiza los cuadrantes en memoria en tiempo real (Single Source of Truth)
  * @param {Array|Object} newQuadrants
  */
 export function setCustomQuadrants(newQuadrants) {
-  if (!newQuadrants) return;
+  if (newQuadrants === null || newQuadrants === undefined) return;
   const list = Array.isArray(newQuadrants) ? newQuadrants : Object.values(newQuadrants);
   const map = {};
   for (const rawQ of list) {
@@ -93,7 +93,7 @@ export function setCustomQuadrants(newQuadrants) {
 }
 
 export function getActiveQuadrants() {
-  return dynamicQuadrants || BARBERSHOP_QUADRANTS;
+  return dynamicQuadrants !== null ? dynamicQuadrants : BARBERSHOP_QUADRANTS;
 }
 
 export function getDefaultQuadrantsArray() {

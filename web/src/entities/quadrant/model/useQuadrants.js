@@ -4,15 +4,15 @@ import { db } from '@/shared/api/firebase';
 import { normalizeQuadrants, serializeQuadrantsForFirestore, boxNormToPolygonNorm } from '@/shared/lib/geometry';
 
 export const DEFAULT_QUADRANTS = [
-  { id: 'silla_barbero_puesto1', name: 'Silla de barbero (Puesto 1)', badge: 'Sillón 1', color: '#FFD700', boxNorm: [0.65, 0.80, 1.00, 1.00] },
-  { id: 'silla_barbero_puesto2', name: 'Silla de barbero (Frente)', badge: 'Sillón 2', color: '#007BFF', boxNorm: [0.80, 0.36, 1.00, 0.67] },
-  { id: 'silla_espera', name: 'Silla de espera', badge: 'Espera', color: '#D250DC', boxNorm: [0.55, 0.73, 0.92, 0.90] },
-  { id: 'zona_barbero', name: 'Zona de trabajo de barbero', badge: 'Barbero', color: '#FF4500', boxNorm: [0.45, 0.65, 0.95, 0.82] },
-  { id: 'puerta_entrada', name: 'Entrada / Pasillo peatonal', badge: 'Entrada', color: '#10b981', boxNorm: [0.30, 0.40, 0.88, 0.60] }
+  { id: 'silla_barbero_puesto1', name: 'Silla de barbero (Puesto 1)', badge: 'Sillón 1', type: 'barber_chair', color: '#FFD700', boxNorm: [0.65, 0.80, 1.00, 1.00] },
+  { id: 'silla_barbero_puesto2', name: 'Silla de barbero (Frente)', badge: 'Sillón 2', type: 'barber_chair', color: '#007BFF', boxNorm: [0.80, 0.36, 1.00, 0.67] },
+  { id: 'silla_espera', name: 'Silla de espera', badge: 'Espera', type: 'waiting_chair', color: '#D250DC', boxNorm: [0.55, 0.73, 0.92, 0.90] },
+  { id: 'zona_barbero', name: 'Zona de trabajo de barbero', badge: 'Barbero', type: 'barber_workstation', color: '#FF4500', boxNorm: [0.45, 0.65, 0.95, 0.82] },
+  { id: 'puerta_entrada', name: 'Entrada / Pasillo peatonal', badge: 'Entrada', type: 'walking_zone', color: '#10b981', boxNorm: [0.30, 0.40, 0.88, 0.60] }
 ];
 
 export function useQuadrants() {
-  const quadrants = ref(normalizeQuadrants(DEFAULT_QUADRANTS));
+  const quadrants = ref([]);
   const loading = ref(true);
   const saving = ref(false);
   const selectedIndex = ref(0);
@@ -26,20 +26,18 @@ export function useQuadrants() {
       if (snap.exists()) {
         const data = snap.data();
         let quadsRaw = [];
-        if (Array.isArray(data?.quadrants) && data.quadrants.length > 0) {
+        if (Array.isArray(data?.quadrants)) {
           quadsRaw = data.quadrants;
         } else if (data?.quadrants && typeof data.quadrants === 'object') {
           quadsRaw = Object.values(data.quadrants);
-        } else if (Array.isArray(data?.zones) && data.zones.length > 0) {
+        } else if (Array.isArray(data?.zones)) {
           quadsRaw = data.zones;
         }
 
-        if (quadsRaw.length > 0) {
-          quadrants.value = normalizeQuadrants(quadsRaw);
-        } else {
-          quadrants.value = normalizeQuadrants(DEFAULT_QUADRANTS);
-        }
+        // Single Source of Truth: Si el documento existe, usar SIEMPRE sus datos sin forzar defaults
+        quadrants.value = normalizeQuadrants(quadsRaw);
       } else {
+        // Solo si el documento NO existe en Firestore se inicializa con los defaults
         quadrants.value = normalizeQuadrants(DEFAULT_QUADRANTS);
       }
       loading.value = false;
