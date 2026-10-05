@@ -78,6 +78,16 @@ El repositorio utiliza GitHub Actions con filtros por ruta (`paths:`):
 
 ---
 
+### 6. Delegación Obligatoria en Subagentes (Contexto Limpio y Especializado)
+> [!IMPORTANT]
+> **TODA TAREA DE EJECUCIÓN, INVESTIGACIÓN O IMPLEMENTACIÓN DEBE DELEGARSE SIEMPRE A SUBAGENTES**.
+> Para asegurar que el agente encargado de resolver la tarea trabaje con un contexto limpio, sin ruido ni sobrecarga del historial previo de la conversación:
+> 1. **El Agente Principal actúa como Orquestador**: Analiza la solicitud, dialoga con el usuario, diseña la estrategia y valida los resultados finales.
+> 2. **Delegación sistemática mediante `invoke_subagent`**: Toda modificación de código, refactorización, resolución de bugs o investigación técnica debe ser delegada a un subagente especializado.
+> 3. **Prompt autónomo y detallado**: Cada subagente debe recibir un prompt claro y auto-contenido con los antecedentes exactos, archivos a intervenir, restricciones de arquitectura y pasos de verificación que debe cumplir antes de reportar el resultado.
+
+---
+
 ## 🛠️ Resumen de Componentes Técnicos
 
 1. **Captura P2P (Neolink)**:
