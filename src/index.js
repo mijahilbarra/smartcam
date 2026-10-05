@@ -25,7 +25,7 @@ import { CaptureOrchestrator } from "./services/capture_orchestrator.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PROJECT_ROOT = path.resolve(__dirname, "..");
-const TOML_PATH = path.join(PROJECT_ROOT, "neolink.toml");
+const TOML_PATH = process.env.NEOLINK_TOML_PATH || path.join(PROJECT_ROOT, "neolink.toml");
 const DAEMON_LOG_FILE = path.join(PROJECT_ROOT, "daemon.log");
 const TMP_LOG_FILE = "/tmp/camera-catcher.log";
 

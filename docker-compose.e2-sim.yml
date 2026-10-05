@@ -19,6 +19,7 @@ services:
       - /tmp:/tmp
       - ./neolink.toml:/opt/camera-catcher/neolink.toml
       - ./src:/opt/camera-catcher/src
+      - ${HOME:-~}/.config/gcloud:/root/.config/gcloud:ro
     ports:
       - "8085:8085"
     environment:
@@ -28,3 +29,5 @@ services:
       - FIREBASE_PROJECT_ID=skip-bigotes
       - STORAGE_BUCKET=skip-bigotes-test
       - PORT=8085
+      - GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
+      - NEOLINK_TOML_PATH=${PWD}/neolink.toml
