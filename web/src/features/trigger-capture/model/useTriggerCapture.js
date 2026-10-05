@@ -30,7 +30,7 @@ export function useTriggerCapture() {
       if (IS_LOCAL_ENV && BACKEND_URL) {
         try {
           const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 2500);
+          const timeoutId = setTimeout(() => controller.abort(), 8000);
 
           const res = await fetch(`${BACKEND_URL}/capture`, {
             method: 'POST',
@@ -40,10 +40,16 @@ export function useTriggerCapture() {
           });
           clearTimeout(timeoutId);
 
+          const data = await res.json().catch(() => null);
+
           if (res.ok) {
             dispatchedViaHttp = true;
-            statusMessage.value = '¡Captura procesada por el daemon/simulador local (HTTP)!';
+            statusMessage.value = data?.message || '¡Captura iniciada exitosamente en el daemon/simulador local (HTTP)!';
             statusType.value = 'success';
+          } else if (res.status === 409) {
+            dispatchedViaHttp = true;
+            statusMessage.value = data?.message || 'Ya hay una captura en curso en el daemon.';
+            statusType.value = 'warning';
           }
         } catch (httpErr) {
           console.warn('[TriggerCapture] Daemon local (8085) no conectado. Enviando a Firestore:', httpErr.message);
@@ -69,12 +75,15 @@ export function useTriggerCapture() {
       }
 
       if (addLogCallback) {
+        const isWarning = statusType.value === 'warning';
         addLogCallback({
-          title: dispatchedViaHttp ? '✓ Ciclo activado (HTTP)' : '✓ Ciclo enviado a Firestore',
+          title: dispatchedViaHttp
+            ? (isWarning ? '⚠️ Captura en curso (HTTP)' : '✓ Ciclo activado (HTTP)')
+            : '✓ Ciclo enviado a Firestore',
           desc: dispatchedViaHttp
-            ? 'Orden ejecutada vía HTTP directo (Simulador E2 localhost:8085).'
+            ? (isWarning ? (statusMessage.value || 'Captura en curso.') : 'Orden ejecutada vía HTTP directo (Simulador E2 localhost:8085).')
             : `Orden enviada vía Firestore [${envInfo.databaseId}].`,
-          type: dispatchedViaHttp ? 'success' : (IS_LOCAL_ENV ? 'warning' : 'success')
+          type: dispatchedViaHttp ? (isWarning ? 'warning' : 'success') : (IS_LOCAL_ENV ? 'warning' : 'success')
         });
       }
     } catch (err) {

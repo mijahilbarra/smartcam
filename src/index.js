@@ -81,21 +81,22 @@ app.get("/", (req, res) => {
   });
 });
 
-app.all("/capture", async (req, res) => {
-  try {
-    const result = await orchestrator.execute("manual");
-    res.status(200).json({
-      success: true,
-      message: "Capture and analysis completed successfully",
-      data: result
-    });
-  } catch (err) {
-    console.error("[Error] Capture process failed:", err);
-    res.status(500).json({
+app.all("/capture", (req, res) => {
+  if (orchestrator.isCapturing) {
+    return res.status(409).json({
       success: false,
-      error: err.message
+      status: "already_running",
+      message: "Ya hay una captura en curso."
     });
   }
+
+  orchestrator.execute("manual").catch(err => console.error("[Daemon] Error en captura asíncrona:", err));
+
+  return res.status(202).json({
+    success: true,
+    status: "started",
+    message: "Ciclo de captura iniciado exitosamente."
+  });
 });
 
 const PORT = process.env.PORT || 8085;
