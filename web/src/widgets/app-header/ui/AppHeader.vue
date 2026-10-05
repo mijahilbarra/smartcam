@@ -19,14 +19,14 @@ const env = getEnvironmentInfo();
           <h1 class="text-xl sm:text-2xl font-bold tracking-tight text-white flex items-center gap-2">
             IOT Camera Catcher
           </h1>
-          <!-- Insignia de Entorno Detectado -->
+          <!-- Insignia de Entorno y Base de Datos Detectada -->
           <AppBadge
             :variant="env.isLocal ? 'success' : 'info'"
-            class="text-[10px] font-mono tracking-wide py-0.5 px-2 flex items-center gap-1"
-            :title="`Modo: ${env.environmentLabel}. Destino: ${env.dispatchTarget}`"
+            class="text-[10px] font-mono tracking-wide py-0.5 px-2 flex items-center gap-1.5"
+            :title="`Modo: ${env.environmentLabel} | Base de Datos: ${env.databaseId} | Destino: ${env.dispatchTarget}`"
           >
             <span class="w-1.5 h-1.5 rounded-full" :class="env.isLocal ? 'bg-emerald-400 animate-pulse' : 'bg-blue-400'"></span>
-            <span>{{ env.isLocal ? 'Local: Simulador E2 (8085)' : 'Cloud: GCP Compute Engine' }}</span>
+            <span>{{ env.isLocal ? `Local: E2 Sim [${env.databaseId}]` : `Cloud: GCP VM [${env.databaseId}]` }}</span>
           </AppBadge>
         </div>
         <p class="text-xs sm:text-sm text-slate-400">

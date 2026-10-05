@@ -1,49 +1,34 @@
-import { initializeApp } from 'firebase/app';
-import { 
-  getFirestore, 
-  collection, 
-  doc, 
-  onSnapshot, 
-  setDoc,
-  getDoc,
-  updateDoc,
-  deleteDoc 
-} from 'firebase/firestore';
-import { 
-  getStorage, 
-  ref, 
-  getDownloadURL 
-} from 'firebase/storage';
+import { initializeApp } from "firebase/app";
+import { getFirestore } from "firebase/firestore";
+import { getStorage, ref, getDownloadURL } from "firebase/storage";
+import { isLocalEnvironment, getEnvironmentInfo, switchFirestoreDatabase } from '@/shared/lib/environment';
 
-// Firebase Web Configuration for skip-bigotes
 export const firebaseConfig = {
-  projectId: "skip-bigotes",
-  appId: "1:1033289992711:web:4a490808d63b933a08f8a2",
-  storageBucket: "skip-bigotes.firebasestorage.app",
-  apiKey: "AIzaSyB0ihpyYO-jBnsYF4x9Uy77WbgpwqVPYUo",
+  apiKey: "AIzaSyC2qf1_REPLACE_WITH_REAL_OR_PROD_IF_SET",
   authDomain: "skip-bigotes.firebaseapp.com",
+  projectId: "skip-bigotes",
+  storageBucket: "skip-bigotes.firebasestorage.app",
   messagingSenderId: "1033289992711",
   measurementId: "G-3369KSG3CS"
 };
 
-// Initialize Firebase
+// 1. Inicializar Firebase App
 export const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app);
+
+// 2. Resolver Entorno y Base de Datos (test en local, default en prod)
+const envInfo = getEnvironmentInfo();
+export const IS_LOCAL_ENV = envInfo.isLocal;
+export const IS_SERVER_ENV = envInfo.isServer;
+export const FIRESTORE_DATABASE_ID = envInfo.databaseId;
+
+// 3. Inicializar Firestore en la base de datos adecuada ("test" en local, "(default)" en prod)
+export const db = getFirestore(app, FIRESTORE_DATABASE_ID);
 export const storage = getStorage(app);
 
-import { isLocalEnvironment, getEnvironmentInfo } from '@/shared/lib/environment';
-
-export { isLocalEnvironment, getEnvironmentInfo };
-export const IS_LOCAL_ENV = isLocalEnvironment();
-export const IS_SERVER_ENV = !IS_LOCAL_ENV;
-
 // Backend API URL: En local apunta al simulador/daemon (8085). En servidor (GCP/Hosting) es nulo ya que la VM usa Firestore
-let storedUrl = typeof localStorage !== 'undefined' ? localStorage.getItem("CAMERA_CATCHER_API_URL") : null;
-if (storedUrl && storedUrl.includes("run.app")) {
-  localStorage.removeItem("CAMERA_CATCHER_API_URL");
-  storedUrl = null;
-}
-export const BACKEND_URL = storedUrl || (IS_LOCAL_ENV ? "http://localhost:8085" : null);
+export const BACKEND_URL = envInfo.backendUrl;
+
+export { isLocalEnvironment, getEnvironmentInfo, switchFirestoreDatabase };
 
 // Cache resolved image URLs from Storage SDK to avoid redundant network calls
 const urlCache = new Map();

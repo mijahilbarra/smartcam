@@ -26,9 +26,13 @@ const firebaseConfig = {
   measurementId: "G-3369KSG3CS"
 };
 
-// Initialize Firebase
+// Initialize Firebase con soporte multibase de datos (test en local, (default) en prod)
+const isLocalHost = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' || window.location.hostname === '0.0.0.0');
+const customDbId = typeof localStorage !== 'undefined' ? localStorage.getItem("CAMERA_CATCHER_FIRESTORE_DB") : null;
+const firestoreDbId = customDbId || (isLocalHost ? 'test' : '(default)');
+
 const app = initializeApp(firebaseConfig);
-const db = getFirestore(app);
+const db = getFirestore(app, firestoreDbId);
 const storage = getStorage(app);
 
 // Backend API URL

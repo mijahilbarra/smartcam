@@ -23,6 +23,8 @@ services:
       - "8085:8085"
     environment:
       - NODE_ENV=production
+      - IS_LOCAL_SIMULATOR=true
+      - FIRESTORE_DATABASE_ID=test
       - FIREBASE_PROJECT_ID=skip-bigotes
       - STORAGE_BUCKET=skip-bigotes.firebasestorage.app
       - PORT=8085

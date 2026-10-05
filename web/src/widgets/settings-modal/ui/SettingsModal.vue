@@ -10,6 +10,9 @@ import AppTextarea from '@/shared/ui/atoms/AppTextarea.vue';
 import TimeRangeField from '@/shared/ui/molecules/TimeRangeField.vue';
 import { useSettings } from '@/features/configure-settings/model/useSettings';
 import { checkIsWithinWorkingHours } from '@/shared/lib/date-utils';
+import { getEnvironmentInfo, switchFirestoreDatabase } from '@/shared/api/firebase';
+
+const envInfo = getEnvironmentInfo();
 
 defineProps({
   show: {
@@ -110,6 +113,49 @@ const onSave = async () => {
             {{ workingHoursStatus.isWithin ? 'Dentro de Horario' : 'Fuera de Horario' }}
           </AppBadge>
         </div>
+      </div>
+
+      <!-- Firestore Database Setting -->
+      <div class="flex flex-col gap-2 pt-2 border-t border-slate-800">
+        <label class="text-xs text-slate-300 font-semibold flex items-center justify-between">
+          <span class="flex items-center gap-1.5">
+            <AppIcon name="database" :size="16" class="text-blue-400" />
+            Base de Datos Firestore:
+          </span>
+          <AppBadge :variant="envInfo.databaseId === 'test' ? 'warning' : 'info'" class="text-[10px] font-mono">
+            {{ envInfo.databaseId }}
+          </AppBadge>
+        </label>
+        <div class="flex items-center gap-2">
+          <AppButton
+            variant="secondary"
+            class="text-xs py-1 px-2.5"
+            :class="{ 'border-amber-500/50 bg-amber-500/10 text-amber-300': envInfo.databaseId === 'test' }"
+            @click="switchFirestoreDatabase('test')"
+          >
+            Usar "test" (Local / Dev)
+          </AppButton>
+          <AppButton
+            variant="secondary"
+            class="text-xs py-1 px-2.5"
+            :class="{ 'border-blue-500/50 bg-blue-500/10 text-blue-300': envInfo.databaseId === '(default)' }"
+            @click="switchFirestoreDatabase('(default)')"
+          >
+            Usar "(default)" (Prod)
+          </AppButton>
+          <AppButton
+            v-if="envInfo.hasCustomDb"
+            variant="secondary"
+            class="text-[11px] py-1 px-2 text-slate-400"
+            @click="switchFirestoreDatabase('auto')"
+            title="Restablecer al valor automático según entorno"
+          >
+            Auto
+          </AppButton>
+        </div>
+        <small class="text-[11px] text-slate-400">
+          Por defecto: <strong class="text-amber-400">test</strong> en local y <strong class="text-blue-400">(default)</strong> en producción.
+        </small>
       </div>
 
       <!-- Status Banner -->
