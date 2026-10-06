@@ -227,7 +227,7 @@ export async function generateAnnotatedImage(imageBuffer, quadrants, width, heig
       Math.abs(slot.x - x1) < 160 && Math.abs(slot.y - badgeY) < 28
     );
 
-    if (collides || q.id?.startsWith("cliente_sentado")) {
+    if (collides || !q.isConfiguredZone) {
       badgeY = y1 + 8;
     }
 
@@ -346,26 +346,29 @@ export async function detectObjectsAndQuadrants(imageBuffer, options = {}) {
     options.quadrants || getActiveQuadrants()
   );
 
-  // Extraer recortes de personas ÚNICAMENTE si provienen de personas reales dentro de cuadrantes de silla o puesto
-  // (Descarta por completo a peatones, transeúntes, áreas de circulación y sillas vacías/disponibles)
+  // Extraer recortes de personas en zonas donde capturePerson está habilitado o según rol/semántica
+  // (Descarta por completo transeúntes en zonas de tránsito y zonas con capturePerson: false)
   const clientCrops = [];
   const personQuadrants = quadrants.filter(q => {
-    if (!q || !q.box || isTransitZone(q)) return false;
-    // Si la zona está disponible o despejada, es una silla vacía (no hay persona real)
+    if (!q || !q.box || q.isConfiguredZone) return false;
+    // Si capturePerson está explícitamente desactivado, ignorar
+    if (q.capturePerson === false) return false;
+    // Si es zona de tránsito y no tiene captura explícita, descartar
+    if (isTransitZone(q) && q.capturePerson !== true) return false;
+    // Si la zona está disponible o despejada, no hay persona real
     if (q.status === "disponible" || q.status === "despejado") return false;
 
-    // Solo cuadrantes de persona real sentada o staff trabajando guiados por su tipo semántico y estado
-    const isClientSeated = (q.type === "barber_chair" || q.type === "waiting_chair" || q.category === "cliente") &&
-      (q.status === "en_corte" || q.status === "en_espera");
-    const isStaffWorking = (q.type === "barber_workstation" || q.category === "personal") &&
-      q.status === "en_servicio";
+    // Acepta si capturePerson es true o si coincide con rol semántico de atención/trabajo
+    const isClient = q.role === "client" || q.category === "cliente" || q.type === "barber_chair" || q.type === "waiting_chair";
+    const isStaff = q.role === "staff" || q.category === "personal" || q.type === "barber_workstation";
+    const isVisitor = q.role === "visitor";
 
-    return isClientSeated || isStaffWorking;
+    return q.capturePerson === true || isClient || isStaff || isVisitor;
   });
 
   for (let i = 0; i < personQuadrants.length; i++) {
     const q = personQuadrants[i];
-    const isStaffZone = q.type === "barber_workstation" || q.category === "personal";
+    const isStaffZone = q.role === "staff" || q.type === "barber_workstation" || q.category === "personal";
     const [x1, y1, x2, y2] = q.box;
     const cropW = Math.max(10, Math.min(origWidth - x1, x2 - x1));
     const cropH = Math.max(10, Math.min(origHeight - y1, y2 - y1));
@@ -375,15 +378,19 @@ export async function detectObjectsAndQuadrants(imageBuffer, options = {}) {
       .jpeg({ quality: 92 })
       .toBuffer();
 
+    const role = q.role || (isStaffZone ? "staff" : "client");
+
     clientCrops.push({
-      id: isStaffZone ? `staff_${i + 1}` : `client_${i + 1}`,
-      role: isStaffZone ? "staff" : "client",
-      isStaffHint: isStaffZone,
+      id: `${role}_${i + 1}`,
+      role: role,
+      isStaffHint: role === "staff",
       zoneId: q.zoneId || q.id,
       zoneType: q.type,
       box: q.box,
       confidence: q.confidence !== undefined ? q.confidence : null,
-      status: q.status || (isStaffZone ? "en_servicio" : "en_corte"),
+      status: q.status || (role === "staff" ? "en_servicio" : "en_corte"),
+      capturePerson: q.capturePerson !== false,
+      requiresClearCapture: q.requiresClearCapture === true,
       buffer: cropBuffer
     });
   }

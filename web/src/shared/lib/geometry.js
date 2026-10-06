@@ -135,6 +135,12 @@ export function normalizeQuadrants(quads) {
 
     const boxNorm = polygonNormToBoundingBoxNorm(polygonNorm);
     const resolvedType = q.type && q.type !== 'custom_zone' ? q.type : inferZoneType(q);
+    const isTransit = resolvedType === 'walking_zone' || resolvedType === 'transit';
+    const capturePerson = q.capturePerson !== undefined
+      ? Boolean(q.capturePerson)
+      : !isTransit;
+    const role = q.role || (resolvedType === 'barber_workstation' ? 'staff' : (isTransit ? 'visitor' : 'client'));
+    const labelOnOccupied = q.labelOnOccupied || '';
 
     return {
       id: q.id || `quad_${idx + 1}`,
@@ -142,6 +148,9 @@ export function normalizeQuadrants(quads) {
       badge: q.badge || q.name || `Z${idx + 1}`,
       type: resolvedType,
       color: q.color || '#3b82f6',
+      capturePerson,
+      role,
+      labelOnOccupied,
       polygonNorm,
       boxNorm
     };
@@ -167,6 +176,12 @@ export function serializeQuadrantsForFirestore(quads) {
 
     const boxNorm = polygonNormToBoundingBoxNorm(polygonNorm);
     const resolvedType = q.type && q.type !== 'custom_zone' ? q.type : inferZoneType(q);
+    const isTransit = resolvedType === 'walking_zone' || resolvedType === 'transit';
+    const capturePerson = q.capturePerson !== undefined
+      ? Boolean(q.capturePerson)
+      : !isTransit;
+    const role = q.role || (resolvedType === 'barber_workstation' ? 'staff' : (isTransit ? 'visitor' : 'client'));
+    const labelOnOccupied = q.labelOnOccupied || '';
 
     return {
       id: q.id,
@@ -174,6 +189,9 @@ export function serializeQuadrantsForFirestore(quads) {
       badge: q.badge || q.name || q.id,
       type: resolvedType,
       color: q.color || '#3b82f6',
+      capturePerson,
+      role,
+      labelOnOccupied,
       boxNorm,
       polygonNorm
     };

@@ -1,5 +1,6 @@
 import admin from "firebase-admin";
-import { captureSnapshotAdaptive } from "../infrastructure/camera/neolink_client.js";
+import sharp from "sharp";
+import { captureSnapshotAdaptive, captureSnapshotFromRtsp } from "../infrastructure/camera/neolink_client.js";
 import { uploadRawSnapshot, uploadClientCrop } from "../infrastructure/firebase/storage_client.js";
 import { sanitizeForFirestore } from "../infrastructure/firebase/firestore_sanitizer.js";
 import { daemonReporter } from "../daemon_reporter.js";
@@ -8,6 +9,24 @@ import { processPeopleRecognition } from "./people_service.js";
 import { telemetryStream } from "../infrastructure/streaming/telemetry_stream.js";
 import { calculateIoU } from "../core/geometry.js";
 import { isServiceChair, isTransitZone } from "../core/barbershop_rules.js";
+
+/**
+ * Adquisición bajo demanda del fotograma en alta resolución (Stream Clear / Mainstream 2560x1440).
+ * Utiliza captureSnapshotFromRtsp sobre el stream RTSP principal.
+ */
+export async function acquireClearFrame({
+  localOutputPath,
+  rtspUrl = "rtsp://127.0.0.1:8554/barberia/main",
+  timeoutMs = 8000
+} = {}) {
+  const outputPath = localOutputPath || `/tmp/snap_clear_${Date.now()}.jpeg`;
+  try {
+    return await captureSnapshotFromRtsp({ rtspUrl, localOutputPath: outputPath, timeoutMs });
+  } catch (err) {
+    console.warn(`[ClearStream] Aviso al capturar fotograma de alta resolución (${rtspUrl}):`, err.message);
+    return null;
+  }
+}
 
 /**
  * 1. Adquisición del fotograma: en tiempo real obtiene el buffer en RAM (0 ms);
@@ -123,6 +142,9 @@ export async function extractClientCrops({ bucket, clientCrops = [], docId, isMa
       confidence: crop.confidence,
       role: crop.role || "client",
       isStaffHint: crop.isStaffHint === true,
+      capturePerson: crop.capturePerson !== false,
+      requiresClearCapture: crop.requiresClearCapture === true,
+      isHighRes: crop.isHighRes === true,
       status: crop.status || "en_corte",
       detectedAt: new Date().toISOString()
     });
@@ -410,6 +432,125 @@ export async function runProcessCycle(context = {}, options = {}) {
 
   // 4. Seguimiento temporal y espacial de entidades (PersonTracker)
   const activeTracks = trackEntities(tracker, mlResult);
+
+  // 4b. Adquisición reactiva de fotograma en alta resolución (Stream Clear) bajo demanda
+  const acquireClearFn = options.acquireClearFrame || context.acquireClearFrame || acquireClearFrame;
+  const clearRtspUrl = options.clearRtspUrl || context.clearRtspUrl || "rtsp://127.0.0.1:8554/barberia/main";
+  const now = Date.now();
+  const CLEAR_COOLDOWN_MS = 12000; // 12 segundos de enfriamiento por track
+
+  const tracksNeedingClear = activeTracks.filter(track => {
+    const quad = track.currentQuadrant;
+    if (!quad) return false;
+    const isCaptureZone = quad.capturePerson !== false && (
+      quad.capturePerson === true ||
+      quad.type === "barber_chair" ||
+      quad.type === "waiting_chair" ||
+      quad.type === "barber_workstation" ||
+      quad.category === "cliente" ||
+      quad.category === "personal"
+    );
+    if (!isCaptureZone) return false;
+
+    const currentSharpness = track.bestFace?.sharpnessScore || track.sharpnessScore || 0;
+    const lacksClearFace = !track.bestFace || currentSharpness < 60;
+    const offCooldown = !track.lastClearCaptureTime || (now - track.lastClearCaptureTime > CLEAR_COOLDOWN_MS);
+
+    return lacksClearFace && offCooldown;
+  });
+
+  if (tracksNeedingClear.length > 0) {
+    console.log(`[ClearStream] Se detectaron ${tracksNeedingClear.length} persona(s) que requieren captura Clear: Tracks [${tracksNeedingClear.map(t => `#${t.trackId}`).join(", ")}].`);
+
+    tracksNeedingClear.forEach(t => {
+      t.lastClearCaptureTime = now;
+    });
+
+    try {
+      const clearBuffer = await acquireClearFn({
+        localOutputPath: localOutputPath ? `${localOutputPath}_clear.jpeg` : `/tmp/snap_clear_${docId}.jpeg`,
+        rtspUrl: clearRtspUrl
+      });
+
+      if (clearBuffer) {
+        const clearMeta = await sharp(clearBuffer).metadata();
+        const clearW = clearMeta.width || 2560;
+        const clearH = clearMeta.height || 1440;
+        const origW = mlResult.origWidth || mlResult.imageDimensions?.width || 640;
+        const origH = mlResult.origHeight || mlResult.imageDimensions?.height || 360;
+
+        const scaleX = clearW / origW;
+        const scaleY = clearH / origH;
+
+        for (const track of tracksNeedingClear) {
+          let cx1, cy1, cx2, cy2;
+          if (track.boxNorm && track.boxNorm.length === 4) {
+            cy1 = Math.round(track.boxNorm[0] * clearH);
+            cx1 = Math.round(track.boxNorm[1] * clearW);
+            cy2 = Math.round(track.boxNorm[2] * clearH);
+            cx2 = Math.round(track.boxNorm[3] * clearW);
+          } else if (track.box) {
+            cx1 = Math.round(track.box[0] * scaleX);
+            cy1 = Math.round(track.box[1] * scaleY);
+            cx2 = Math.round(track.box[2] * scaleX);
+            cy2 = Math.round(track.box[3] * scaleY);
+          } else {
+            continue;
+          }
+
+          cx1 = Math.max(0, Math.min(clearW - 1, cx1));
+          cy1 = Math.max(0, Math.min(clearH - 1, cy1));
+          cx2 = Math.max(cx1 + 1, Math.min(clearW, cx2));
+          cy2 = Math.max(cy1 + 1, Math.min(clearH, cy2));
+
+          const cropW = cx2 - cx1;
+          const cropH = cy2 - cy1;
+
+          if (cropW > 10 && cropH > 10) {
+            const highResCropBuffer = await sharp(clearBuffer)
+              .extract({ left: cx1, top: cy1, width: cropW, height: cropH })
+              .jpeg({ quality: 95 })
+              .toBuffer();
+
+            let matchedCrop = (mlResult.clientCrops || []).find(c => {
+              if (c.zoneId && track.currentQuadrant?.id && c.zoneId === track.currentQuadrant.id) return true;
+              if (c.box && track.box) return calculateIoU(c.box, track.box) > 0.30;
+              return false;
+            });
+
+            if (matchedCrop) {
+              matchedCrop.buffer = highResCropBuffer;
+              matchedCrop.isHighRes = true;
+              matchedCrop.scaleFactor = { scaleX, scaleY };
+              console.log(`[ClearStream] Recorte de Track #${track.trackId} actualizado a alta resolución (${cropW}x${cropH}).`);
+            } else {
+              const role = track.currentQuadrant?.role || "client";
+              mlResult.clientCrops = mlResult.clientCrops || [];
+              mlResult.clientCrops.push({
+                id: `${role}_clear_${track.trackId}`,
+                role,
+                isStaffHint: role === "staff",
+                zoneId: track.currentQuadrant?.id || null,
+                zoneType: track.currentQuadrant?.type || "custom_zone",
+                box: track.box,
+                confidence: track.confidence,
+                status: role === "staff" ? "en_servicio" : "en_corte",
+                capturePerson: true,
+                requiresClearCapture: true,
+                isHighRes: true,
+                buffer: highResCropBuffer
+              });
+              console.log(`[ClearStream] Nuevo recorte de alta resolución generado para Track #${track.trackId}.`);
+            }
+          }
+        }
+      } else {
+        console.warn(`[ClearStream] Fotograma Clear no disponible. Continuando con recortes ligeros.`);
+      }
+    } catch (err) {
+      console.warn(`[ClearStream] Fallo al capturar fotograma Clear (${err.message}). Continuando con recortes ligeros.`);
+    }
+  }
 
   // 5. Recortes y re-identificación biométrica facial
   const clientRecords = await extractClientCrops({ bucket, clientCrops: mlResult.clientCrops, docId, isManual });

@@ -8,7 +8,7 @@ import {
   calculateIoU,
   applyNMS
 } from "../src/core/geometry.js";
-import { doesDetectionOverlapZone } from "../src/core/barbershop_rules.js";
+import { doesDetectionOverlapZone, mapDetectionsToBarbershopQuadrants } from "../src/core/barbershop_rules.js";
 import { WorkingHoursManager } from "../src/core/working_hours.js";
 
 console.log("=== Test de Módulos Core y Servicios Refactorizados ===");
@@ -60,7 +60,65 @@ assert.strictEqual(doesDetectionOverlapZone(personInChair, chairZone, 1024, 576)
 
 const personFarAway = [100, 100, 200, 200];
 assert.strictEqual(doesDetectionOverlapZone(personFarAway, chairZone, 1024, 576), false);
-console.log("✓ Reglas de barbería y solapamiento de cuadrantes validadas exitosamente");
+
+// 2b. Mapeo dinámico de cuadrantes (mapDetectionsToBarbershopQuadrants) y desacoplamiento de "Cliente sentado"
+const configuredZonesFixture = [
+  {
+    id: "chair_vip",
+    name: "Silla VIP",
+    type: "barber_chair",
+    capturePerson: true,
+    role: "staff",
+    labelOnOccupied: "Barbero Maestro (Silla VIP)",
+    boxNorm: [0.65, 0.80, 1.00, 1.00]
+  },
+  {
+    id: "transit_hall",
+    name: "Pasillo Central",
+    type: "walking_zone",
+    capturePerson: false,
+    boxNorm: [0.10, 0.10, 0.50, 0.50]
+  }
+];
+
+const mockDetections = [
+  { class: "person", score: 0.94, box: [820, 380, 1000, 560] }, // En Silla VIP
+  { class: "person", score: 0.88, box: [150, 150, 250, 250] }  // En Pasillo
+];
+
+const mappedQuadrants = mapDetectionsToBarbershopQuadrants(mockDetections, 1024, 576, configuredZonesFixture);
+
+// Verificar Silla VIP
+const vipZone = mappedQuadrants.find(q => q.id === "chair_vip");
+assert.ok(vipZone, "Debe existir la zona configurada Silla VIP");
+assert.strictEqual(vipZone.status, "ocupada");
+assert.strictEqual(vipZone.capturePerson, true);
+assert.strictEqual(vipZone.role, "staff");
+assert.strictEqual(vipZone.requiresClearCapture, true);
+
+const vipPerson = mappedQuadrants.find(q => q.id === "person_chair_vip");
+assert.ok(vipPerson, "Debe existir el cuadrante de persona person_chair_vip (sin 'cliente_sentado')");
+assert.strictEqual(vipPerson.label, "Barbero Maestro (Silla VIP)");
+assert.strictEqual(vipPerson.role, "staff");
+assert.strictEqual(vipPerson.capturePerson, true);
+assert.strictEqual(vipPerson.requiresClearCapture, true);
+
+// Verificar Pasillo (sin captura)
+const transitZone = mappedQuadrants.find(q => q.id === "transit_hall");
+assert.ok(transitZone, "Debe existir la zona Pasillo Central");
+assert.strictEqual(transitZone.capturePerson, false);
+assert.strictEqual(transitZone.requiresClearCapture, false);
+
+const transitPerson = mappedQuadrants.find(q => q.id === "transito_transit_hall_1");
+assert.ok(transitPerson, "Debe existir la persona en tránsito");
+assert.strictEqual(transitPerson.capturePerson, false);
+assert.strictEqual(transitPerson.requiresClearCapture, false);
+
+// Verificar ausencia total de IDs o etiquetas rígidas de "cliente_sentado"
+const hasOldClienteSentado = mappedQuadrants.some(q => q.id.includes("cliente_sentado"));
+assert.strictEqual(hasOldClienteSentado, false, "Queda erradicado 'cliente_sentado' de los IDs");
+
+console.log("✓ Reglas de barbería y zonas dinámicas (capturePerson, roles, etiquetas) validadas exitosamente");
 
 // 3. WorkingHoursManager
 const workingHours = new WorkingHoursManager({

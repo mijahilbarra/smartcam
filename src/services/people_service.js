@@ -60,7 +60,7 @@ export async function cleanupFakeProfiles(db) {
  * @returns {Promise<Array>}
  */
 export async function processPeopleRecognition(db, clientRecords, clientCrops) {
-  if (!clientCrops || clientCrops.length === 0) return [];
+  if (!db || !clientCrops || clientCrops.length === 0) return [];
   const identifiedPeople = [];
 
   try {
@@ -84,15 +84,17 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops) {
       const crop = clientCrops[i];
       const record = clientRecords ? clientRecords[i] : null;
 
-      // Descartar si proviene de una zona de tránsito peatonal (pasillo, puerta, entrada)
-      if (isTransitZone(crop)) {
+      // Descartar si proviene de una zona de tránsito peatonal (a menos que el usuario haya habilitado captura explícita)
+      if (isTransitZone(crop) && crop.capturePerson !== true) {
         console.log(`[FaceRecognition] Recorte ${crop.id || i + 1} omitido: zona de tránsito peatonal.`);
         continue;
       }
 
-      // Regla estricta: Solo registrar clientes sentados en silla o staff en servicio
-      const isSeatedOrStaff = crop.isStaffHint || 
+      // Regla: Solo registrar personas en zonas configuradas para captura (sillas, puestos o zonas de atención)
+      const isCandidateForRecognition = crop.capturePerson === true ||
+        crop.isStaffHint || 
         crop.role === "staff" ||
+        crop.role === "visitor" ||
         crop.zoneType === "barber_workstation" ||
         crop.status === "en_servicio" ||
         crop.zoneType === "barber_chair" ||
@@ -101,8 +103,8 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops) {
         crop.status === "en_corte" || 
         crop.status === "en_espera";
 
-      if (!isSeatedOrStaff) {
-        console.log(`[FaceRecognition] Recorte ${crop.id || i + 1} omitido: persona no está sentada en silla de servicio.`);
+      if (!isCandidateForRecognition) {
+        console.log(`[FaceRecognition] Recorte ${crop.id || i + 1} omitido: zona no configurada para captura biométrica.`);
         continue;
       }
 

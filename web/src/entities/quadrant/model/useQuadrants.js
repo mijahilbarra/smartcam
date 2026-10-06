@@ -70,12 +70,17 @@ export function useQuadrants() {
       walking_zone: '#007BFF',
       custom_zone: '#10B981'
     };
+    const isTransit = type === 'walking_zone';
+    const defaultRole = type === 'barber_workstation' ? 'staff' : (isTransit ? 'visitor' : 'client');
     const newQ = {
       id: `zone_${Date.now()}`,
       name: `Zona ${nextIdx}`,
       badge: `Z${nextIdx}`,
       color: defaultColors[type] || '#FFD700',
       type: type,
+      capturePerson: !isTransit,
+      role: defaultRole,
+      labelOnOccupied: '',
       polygonNorm: boxNormToPolygonNorm(newBox),
       boxNorm: newBox
     };

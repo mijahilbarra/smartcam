@@ -62,12 +62,21 @@ src/
 
 ### Principios Clave Implementados:
 1. **Separación de Responsabilidades**:
-   - `core/`: Funciones matemáticas y lógicas 100% puras, sin dependencias de red, SO ni librerías pesadas.
-   - `infrastructure/`: Encapsula clientes de I/O (Docker, Firebase Admin, Storage, Logging).
-   - `services/`: Orquesta los flujos de negocio sin lidiar con los detalles de bajo nivel de transporte.
-2. **Retrocompatibilidad Total**:
+   - `core/`: Funciones matemáticas y lógicas 100% puras, sin dependencias de red, SO ni librerías pesadas (`barbershop_rules.js`, `geometry.js`, `working_hours.js`).
+   - `infrastructure/`: Encapsula clientes de I/O (Docker, Neolink RTSP, Firebase Admin, Storage, Logging).
+   - `services/`: Orquesta los flujos de negocio (`processes.js`, `capture_orchestrator.js`, `people_service.js`, `visit_session_service.js`).
+2. **Zonas de Captura de Personas Configurables Dinámicamente**:
+   - Se erradica por completo la etiqueta rígida hardcodeada `"cliente_sentado"` y las suposiciones fijas.
+   - Cada cuadrante en Firestore y la interfaz web ahora expone `capturePerson: boolean`, `role: 'client' | 'staff' | 'visitor'` y `labelOnOccupied: string`.
+   - Si una persona detectada ocupa una zona con `capturePerson === true`, el sistema le asigna dinámicamente el rol, la etiqueta configurada y activa la bandera `requiresClearCapture: true`.
+3. **Captura Reactiva en Alta Resolución (Stream Clear On-Demand)**:
+   - Para no sobrecargar la CPU de la VM `e2-micro`, el daemon realiza la inferencia continua YOLO sobre el substream ligero (640x360 @ 8fps).
+   - Cuando un nuevo track de persona es detectado en una zona con captura habilitada y carece de rostro nítido (`sharpnessScore < 60`), el daemon dispara de manera reactiva y controlada (rate-limited / cooldown de 12s) la extracción de un fotograma de alta definición (Clear Stream 2560x1440 vía RTSP).
+   - Se calcula el factor de escala hacia el frame Clear, se extrae el recorte con máxima resolución de píxeles y se ejecuta la re-identificación biométrica facial (`reidentifyPeople`) para extraer embeddings de máxima precisión.
+   - Si el stream Clear falla o sufre timeout, el daemon degrada suavemente al recorte ligero sin interrumpir el ciclo (Regla 5).
+4. **Retrocompatibilidad Total**:
    - `src/detector.js` y `src/index.js` actúan como fachadas re-exportando las funciones públicas requeridas por tests o integraciones previas.
-3. **Cero Impacto en CI/CD**:
+5. **Cero Impacto en CI/CD**:
    - `.github/workflows/deploy-vm.yml` sincroniza `src/**` de forma recursiva; la nueva jerarquía de carpetas se despliega de forma nativa e idéntica.
 
 ---
@@ -76,6 +85,8 @@ src/
 
 ### Positivas:
 - **Reducción de tamaño del Entrypoint**: `src/index.js` pasa de 737 líneas a ~105 líneas limpias y legibles.
-- **Testeabilidad Aislada**: Las pruebas unitarias de horarios laborales y geometría corren en menos de 5 ms sin inicializar bases de datos ni sockets.
+- **Biometría de Alta Fidelidad sin Sobrecarga**: Embeddings faciales extraídos sobre fotogramas de 2560x1440 bajo demanda, manteniendo la CPU en reposo la mayor parte del tiempo.
+- **Zonas 100% Flexibles**: El usuario configura qué zonas capturan rostros, qué roles desempeñan y cómo se nombran directamente desde el Calibrador Visual.
+- **Testeabilidad Aislada**: Las pruebas unitarias de horarios laborales, geometría y pipeline corren en milisegundos sin inicializar bases de datos ni sockets.
 - **Resiliencia en GCP `e2-micro`**: Las fallas en Neolink o Docker quedan acotadas a `neolink_client.js` sin corromper el estado del daemon ni los listeners.
-- **Compatibilidad 100% Verificada**: Todas las suites de pruebas (`npm test`) se ejecutan con éxito inmediato.
+- **Compatibilidad 100% Verificada**: Todas las suites de pruebas (`npm test`) y la compilación web (`npm run build:web`) se ejecutan con éxito inmediato.

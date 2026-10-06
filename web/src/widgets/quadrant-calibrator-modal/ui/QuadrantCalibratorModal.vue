@@ -83,6 +83,12 @@ const zoneTypeOptions = [
   { value: 'custom_zone', label: 'Otra Zona' }
 ];
 
+const roleOptions = [
+  { value: 'client', label: 'Cliente' },
+  { value: 'staff', label: 'Personal / Barbero' },
+  { value: 'visitor', label: 'Visitante' }
+];
+
 watch(() => props.preselectedPhotoId, (newId) => {
   if (newId) selectedPhotoId.value = newId;
 });
@@ -190,6 +196,9 @@ const onPointerUp = () => {
         badge: `Z${nextIdx}`,
         color: '#FFD700',
         type: 'barber_chair',
+        capturePerson: true,
+        role: 'client',
+        labelOnOccupied: '',
         boxNorm: newBox,
         polygonNorm: boxNormToPolygonNorm(newBox)
       });
@@ -469,9 +478,15 @@ const onPointerUp = () => {
                 />
                 <span class="font-bold text-xs text-white">{{ q.name }}</span>
               </div>
-              <AppBadge variant="default" class="text-[10px] font-mono">
-                {{ q.badge || q.name }}
-              </AppBadge>
+              <div class="flex items-center gap-1.5">
+                <AppBadge v-if="q.capturePerson !== false" variant="primary" class="text-[9px] flex items-center gap-1">
+                  <AppIcon name="face" :size="12" />
+                  Captura Facial
+                </AppBadge>
+                <AppBadge variant="default" class="text-[10px] font-mono">
+                  {{ q.badge || q.name }}
+                </AppBadge>
+              </div>
             </div>
 
             <!-- Form fields for selected quadrant -->
@@ -488,6 +503,33 @@ const onPointerUp = () => {
                 <label class="text-[10px] text-slate-400">Etiqueta:</label>
                 <AppInput v-model="q.badge" />
               </div>
+
+              <!-- Controles de captura de personas y biometría -->
+              <div class="col-span-2 flex items-center justify-between p-2 rounded-lg bg-slate-900/80 border border-slate-800">
+                <div class="flex items-center gap-2">
+                  <AppIcon name="face" :size="16" class="text-blue-400" />
+                  <span class="text-xs text-slate-200">Capturar personas en esta zona</span>
+                </div>
+                <label class="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    v-model="q.capturePerson"
+                    class="sr-only peer"
+                  />
+                  <div class="w-9 h-5 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
+                </label>
+              </div>
+
+              <div class="flex flex-col gap-1">
+                <label class="text-[10px] text-slate-400">Rol:</label>
+                <AppSelect v-model="q.role" :options="roleOptions" />
+              </div>
+
+              <div class="flex flex-col gap-1">
+                <label class="text-[10px] text-slate-400">Etiqueta al ocuparse:</label>
+                <AppInput v-model="q.labelOnOccupied" placeholder="Ej: Cliente en corte" />
+              </div>
+
               <div class="col-span-2 text-[10px] text-slate-500 font-mono pt-1">
                 Coords: [{{ (q.boxNorm || []).map(v => Number(v).toFixed(3)).join(', ') }}]
               </div>

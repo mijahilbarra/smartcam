@@ -196,6 +196,15 @@ export function mapDetectionsToBarbershopQuadrants(detections, width, height, co
     const zoneType = zone.type && zone.type !== "custom_zone" ? zone.type : inferZoneType(zone);
     const zoneColor = zone.color || "#007BFF";
 
+    // Propiedades dinámicas de la zona con valores por defecto basados en tipo semántico
+    const isTransit = isTransitZone(zone) || zoneType === "walking_zone";
+    const shouldCapture = zone.capturePerson !== undefined
+      ? Boolean(zone.capturePerson)
+      : (zoneType === "barber_chair" || zoneType === "waiting_chair" || zoneType === "barber_workstation");
+    const role = zone.role || (zoneType === "barber_workstation" ? "staff" : (isTransit ? "visitor" : "client"));
+    const defaultLabelOnOcc = (role === "staff" ? "Personal activo" : "Cliente") + ` (${zone.name || zone.id})`;
+    const labelOnOcc = zone.labelOnOccupied || defaultLabelOnOcc;
+
     switch (zoneType) {
       case "barber_chair": {
         // Una silla SOLO está ocupada si hay una PERSONA real detectada dentro de la zona
@@ -206,7 +215,7 @@ export function mapDetectionsToBarbershopQuadrants(detections, width, height, co
           id: zone.id,
           name: zone.name || zone.id,
           label: zone.name || zone.id,
-          category: "silla_barbero",
+          category: role === "staff" ? "personal" : "silla_barbero",
           type: "barber_chair",
           isConfiguredZone: true,
           color: zoneColor,
@@ -214,23 +223,30 @@ export function mapDetectionsToBarbershopQuadrants(detections, width, height, co
           boxNorm: zone.boxNorm,
           polygonNorm: zone.polygonNorm,
           status: isOccupied ? "ocupada" : "disponible",
-          description: isOccupied ? `Sillón de barbero ocupado en corte` : `Sillón de barbero disponible`
+          capturePerson: shouldCapture,
+          role,
+          labelOnOccupied: zone.labelOnOccupied || null,
+          requiresClearCapture: isOccupied && shouldCapture,
+          description: isOccupied ? `Sillón de barbero ocupado (${labelOnOcc})` : `Sillón de barbero disponible`
         });
 
-        // Solo generar cliente sentado si existe una PERSONA REAL con su bounding box y score real
+        // Generar persona detectada en la zona
         if (isOccupied && primaryPerson) {
           quadrants.push({
-            id: `cliente_sentado_${zone.id}`,
+            id: `person_${zone.id}`,
             zoneId: zone.id,
-            label: `Cliente sentado (${zone.name || "Silla"})`,
-            category: "cliente",
+            label: labelOnOcc,
+            category: role === "staff" ? "personal" : "cliente",
             type: "barber_chair",
             isConfiguredZone: false,
-            color: "#32DC32",
+            color: role === "staff" ? "#FF4500" : "#32DC32",
             confidence: primaryPerson.score,
             box: primaryPerson.box,
+            role,
+            capturePerson: shouldCapture,
+            requiresClearCapture: shouldCapture,
             status: "en_corte",
-            description: `Cliente sentado recibiendo servicio en ${zone.name || zone.id}`
+            description: `${labelOnOcc} recibiendo servicio en ${zone.name || zone.id}`
           });
         }
         break;
@@ -250,23 +266,30 @@ export function mapDetectionsToBarbershopQuadrants(detections, width, height, co
           boxNorm: zone.boxNorm,
           polygonNorm: zone.polygonNorm,
           status: isWorking ? "en_servicio" : "disponible",
-          description: isWorking ? `Barbero / Personal activo atendiendo en ${zone.name}` : `Puesto de barbero libre`
+          capturePerson: shouldCapture,
+          role,
+          labelOnOccupied: zone.labelOnOccupied || null,
+          requiresClearCapture: isWorking && shouldCapture,
+          description: isWorking ? `${labelOnOcc} atendiendo en ${zone.name}` : `Puesto de barbero libre`
         });
 
         if (isWorking) {
           const barberDet = matchingPersonDets[0];
           quadrants.push({
-            id: `barbero_${zone.id}`,
+            id: `person_${zone.id}`,
             zoneId: zone.id,
-            label: zone.name || "Barbero",
+            label: labelOnOcc,
             category: "personal",
             type: "barber_workstation",
             isConfiguredZone: false,
             color: zoneColor || "#FF4500",
             confidence: barberDet.score,
             box: barberDet.box,
+            role,
+            capturePerson: shouldCapture,
+            requiresClearCapture: shouldCapture,
             status: "en_servicio",
-            description: `Barbero / Personal activo atendiendo en ${zone.name}`
+            description: `${labelOnOcc} atendiendo en ${zone.name}`
           });
         }
         break;
@@ -286,23 +309,34 @@ export function mapDetectionsToBarbershopQuadrants(detections, width, height, co
           boxNorm: zone.boxNorm,
           polygonNorm: zone.polygonNorm,
           status: isOccupied ? "ocupada" : "disponible",
+          capturePerson: shouldCapture,
+          role,
+          labelOnOccupied: zone.labelOnOccupied || null,
+          requiresClearCapture: isOccupied && shouldCapture,
           description: isOccupied ? `Banca de espera ocupada (${matchingPersonDets.length})` : `Banca de espera disponible`
         });
 
         if (isOccupied) {
           matchingPersonDets.forEach((pDet, pIdx) => {
+            const personLabel = zone.labelOnOccupied
+              ? (matchingPersonDets.length > 1 ? `${zone.labelOnOccupied} (${pIdx + 1})` : zone.labelOnOccupied)
+              : `${role === "staff" ? "Personal activo" : "Cliente en espera"} (${zone.name || zone.id})${matchingPersonDets.length > 1 ? ` #${pIdx + 1}` : ""}`;
+
             quadrants.push({
-              id: `cliente_espera_${zone.id}_${pIdx + 1}`,
+              id: `person_${zone.id}_${pIdx + 1}`,
               zoneId: zone.id,
-              label: `Cliente en espera (${zone.name})`,
-              category: "cliente",
+              label: personLabel,
+              category: role === "staff" ? "personal" : "cliente",
               type: "waiting_chair",
               isConfiguredZone: false,
               color: "#D250DC",
               confidence: pDet.score,
               box: pDet.box,
+              role,
+              capturePerson: shouldCapture,
+              requiresClearCapture: shouldCapture,
               status: "en_espera",
-              description: `Cliente esperando turno en ${zone.name}`
+              description: `${personLabel} en ${zone.name || zone.id}`
             });
           });
         }
@@ -323,7 +357,11 @@ export function mapDetectionsToBarbershopQuadrants(detections, width, height, co
           boxNorm: zone.boxNorm,
           polygonNorm: zone.polygonNorm,
           status: isOccupied ? "en_transito" : "despejado",
-          description: isOccupied ? `Persona en tránsito por ${zone.name}` : `Zona peatonal despejada`
+          capturePerson: shouldCapture,
+          role,
+          labelOnOccupied: zone.labelOnOccupied || null,
+          requiresClearCapture: isOccupied && shouldCapture,
+          description: isOccupied ? `Persona en tránsito por ${zone.name || zone.id}` : `Zona peatonal despejada`
         });
 
         if (isOccupied) {
@@ -331,15 +369,20 @@ export function mapDetectionsToBarbershopQuadrants(detections, width, height, co
             quadrants.push({
               id: `transito_${zone.id}_${pIdx + 1}`,
               zoneId: zone.id,
-              label: `Tránsito en ${zone.name}`,
+              label: zone.labelOnOccupied
+                ? (matchingPersonDets.length > 1 ? `${zone.labelOnOccupied} (${pIdx + 1})` : zone.labelOnOccupied)
+                : `Tránsito en ${zone.name || zone.id}${matchingPersonDets.length > 1 ? ` #${pIdx + 1}` : ""}`,
               category: "transito",
               type: "walking_zone",
               isConfiguredZone: false,
               color: zoneColor || "#007BFF",
               confidence: pDet.score,
               box: pDet.box,
+              role,
+              capturePerson: shouldCapture,
+              requiresClearCapture: shouldCapture,
               status: "en_transito",
-              description: `Persona en tránsito por ${zone.name}`
+              description: `Persona en tránsito por ${zone.name || zone.id}`
             });
           });
         }
@@ -352,7 +395,7 @@ export function mapDetectionsToBarbershopQuadrants(detections, width, height, co
           id: zone.id,
           name: zone.name || zone.id,
           label: zone.name || zone.id,
-          category: zone.category || "custom",
+          category: zone.category || (role === "staff" ? "personal" : "custom"),
           type: zoneType,
           isConfiguredZone: true,
           color: zoneColor || "#10B981",
@@ -360,23 +403,34 @@ export function mapDetectionsToBarbershopQuadrants(detections, width, height, co
           boxNorm: zone.boxNorm,
           polygonNorm: zone.polygonNorm,
           status: isOccupied ? "ocupada" : "disponible",
-          description: isOccupied ? `Zona ${zone.name} ocupada` : `Zona ${zone.name} disponible`
+          capturePerson: shouldCapture,
+          role,
+          labelOnOccupied: zone.labelOnOccupied || null,
+          requiresClearCapture: isOccupied && shouldCapture,
+          description: isOccupied ? `Zona ${zone.name || zone.id} ocupada` : `Zona ${zone.name || zone.id} disponible`
         });
 
         if (isOccupied) {
           matchingPersonDets.forEach((pDet, pIdx) => {
+            const personLabel = zone.labelOnOccupied
+              ? (matchingPersonDets.length > 1 ? `${zone.labelOnOccupied} (${pIdx + 1})` : zone.labelOnOccupied)
+              : `${labelOnOcc}${matchingPersonDets.length > 1 ? ` #${pIdx + 1}` : ""}`;
+
             quadrants.push({
-              id: `persona_${zone.id}_${pIdx + 1}`,
+              id: `person_${zone.id}_${pIdx + 1}`,
               zoneId: zone.id,
-              label: `Presencia en ${zone.name}`,
-              category: zone.category || "custom",
+              label: personLabel,
+              category: zone.category || (role === "staff" ? "personal" : "custom"),
               type: zoneType,
               isConfiguredZone: false,
               color: zoneColor || "#10B981",
               confidence: pDet.score,
               box: pDet.box,
+              role,
+              capturePerson: shouldCapture,
+              requiresClearCapture: shouldCapture,
               status: "ocupada",
-              description: `Persona detectada en ${zone.name}`
+              description: `Persona detectada en ${zone.name || zone.id}`
             });
           });
         }

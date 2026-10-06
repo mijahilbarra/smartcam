@@ -1,10 +1,12 @@
 import assert from "assert";
+import sharp from "sharp";
 import {
   computeOccupancy,
   matchIdentitiesToTracks,
   updateVisits,
   extractClientCrops,
-  runProcessCycle
+  runProcessCycle,
+  acquireClearFrame
 } from "../src/services/processes.js";
 import { CaptureOrchestrator } from "../src/services/capture_orchestrator.js";
 import { PersonTracker } from "../src/core/person_tracker.js";
@@ -169,5 +171,93 @@ const busyResult = await orchestrator.execute("realtime");
 assert.strictEqual(busyResult.status, "already_running");
 orchestrator.isCapturing = false;
 console.log("-> Mutex de captura en CaptureOrchestrator validado exitosamente.");
+
+// 7. acquireClearFrame: retorno null en fallo sin romper el proceso
+console.log("\n[7] Probando acquireClearFrame ante desconexión / fallo RTSP...");
+const failedClear = await acquireClearFrame({
+  rtspUrl: "rtsp://127.0.0.1:9999/non_existent_stream",
+  timeoutMs: 500
+});
+assert.strictEqual(failedClear, null, "Debe retornar null cuando RTSP no está disponible o falla");
+console.log("-> acquireClearFrame maneja fallos RTSP de forma transparente retornando null.");
+
+// 8. runProcessCycle con adquisición reactiva de stream Clear
+console.log("\n[8] Probando adquisición reactiva de Stream Clear en runProcessCycle...");
+const dummyLightweightFrame = await sharp({
+  create: { width: 640, height: 360, channels: 3, background: { r: 50, g: 50, b: 50 } }
+}).jpeg().toBuffer();
+
+const dummyClearFrame = await sharp({
+  create: { width: 2560, height: 1440, channels: 3, background: { r: 200, g: 100, b: 50 } }
+}).jpeg().toBuffer();
+
+let clearCalls = 0;
+const mockAcquireClear = async () => {
+  clearCalls++;
+  return dummyClearFrame;
+};
+
+const customTracker = new PersonTracker();
+const mockZone = {
+  id: "silla_corte_1",
+  name: "Silla 1",
+  type: "barber_chair",
+  capturePerson: true,
+  role: "client",
+  boxNorm: [0.1, 0.1, 0.8, 0.8]
+};
+
+customTracker.activeTracks.set(10, {
+  trackId: 10,
+  box: [64, 36, 512, 288],
+  boxNorm: [0.1, 0.1, 0.8, 0.8],
+  confidence: 0.95,
+  currentQuadrant: mockZone,
+  sharpnessScore: 35,
+  bestFace: null
+});
+
+const mockVisit = { processTrack: async () => {}, closeSession: async () => {} };
+const mockStream = { getLatestFrame: () => dummyLightweightFrame };
+
+// Ciclo 1: debe invocar Clear Stream para el track con baja nitidez
+await runProcessCycle({
+  streamServer: mockStream,
+  tracker: customTracker,
+  visitService: mockVisit,
+  acquireClearFrame: mockAcquireClear
+}, { triggerSource: "realtime" });
+
+assert.strictEqual(clearCalls, 1, "Debe haber llamado a acquireClearFrame en el ciclo 1");
+const updatedTrack = customTracker.getTrack(10);
+assert.ok(updatedTrack.lastClearCaptureTime > 0, "Debe haber registrado lastClearCaptureTime");
+
+// Ciclo 2 inmediatamente: debe estar en cooldown (no debe llamar de nuevo)
+await runProcessCycle({
+  streamServer: mockStream,
+  tracker: customTracker,
+  visitService: mockVisit,
+  acquireClearFrame: mockAcquireClear
+}, { triggerSource: "realtime" });
+
+assert.strictEqual(clearCalls, 1, "No debe llamar a acquireClearFrame mientras esté en cooldown");
+console.log("-> Rate limiting / cooldown de Clear stream validado exitosamente.");
+
+// Ciclo 3: Fallo en acquireClearFrame no debe romper la ejecución
+let fallbackWorked = false;
+try {
+  updatedTrack.lastClearCaptureTime = 0; // reset cooldown
+  await runProcessCycle({
+    streamServer: mockStream,
+    tracker: customTracker,
+    visitService: mockVisit,
+    acquireClearFrame: async () => { throw new Error("RTSP timeout"); }
+  }, { triggerSource: "realtime" });
+  fallbackWorked = true;
+} catch (e) {
+  fallbackWorked = false;
+}
+assert.strictEqual(fallbackWorked, true, "Fallo en frame Clear debe degradar transparentemente sin error");
+console.log("-> Fallback transparente a frame ligero validado exitosamente.");
 
 console.log("\n🎉 ¡Todos los tests del pipeline funcional de procesos pasaron exitosamente!");
