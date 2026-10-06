@@ -187,7 +187,9 @@ try {
   const cfg = await getDynamicConfig(db);
   console.log(`[Startup] Configuración cargada: Horario ${cfg.workStartTime} a ${cfg.workEndTime} (${cfg.timezone}).`);
   workingHours.updateWorkingHours(cfg.workStartTime, cfg.workEndTime, cfg.timezone);
-} catch (_) {}
+} catch (err) {
+  console.warn("[Startup] Aviso cargando config:", err.message);
+}
 
 await cleanupZombies();
 await startNeolinkDaemon({ tomlPath: TOML_PATH });

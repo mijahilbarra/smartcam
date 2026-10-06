@@ -1,4 +1,5 @@
 import fs from "fs/promises";
+import { existsSync } from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { detectObjectsAndQuadrants } from "../src/detector.js";
@@ -6,7 +7,11 @@ import { detectObjectsAndQuadrants } from "../src/detector.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const sampleImagePath = "/Users/javierli/.gemini/antigravity/brain/4b779ab0-e87d-421c-994f-5d82dc08f9e7/.user_uploaded/media_1790975016490.png";
+const localFallbackPath = path.join(__dirname, "photo_barber_working.jpg");
+const absoluteCandidatePath = "/Users/javierli/.gemini/antigravity/brain/4b779ab0-e87d-421c-994f-5d82dc08f9e7/.user_uploaded/media_1790975016490.png";
+const sampleImagePath = existsSync(absoluteCandidatePath)
+  ? absoluteCandidatePath
+  : localFallbackPath;
 const outputImagePath = path.join(__dirname, "test-annotated-output.jpg");
 
 async function main() {

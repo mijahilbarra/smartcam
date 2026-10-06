@@ -45,5 +45,5 @@ El usuario requería una vista completamente descriptiva que notificara cada pro
 
 ## Consecuencias y Beneficios
 * **Transparencia total**: Visibilidad total e inmediata del ciclo de captura y ML sin necesidad de conectarse por SSH a la VM ni consultar logs en `/tmp/camera-catcher.log`.
-* **Cero costo adicional ($0.00)**: Las actualizaciones a `camera_catcher/daemon_state` operan cómodamente dentro del Free Tier de Firestore (20,000 escrituras y 50,000 lecturas gratuitas por día).
-* **Experiencia de usuario enriquecida**: Interfaz intuitiva con cuenta regresiva, pipeline visual animado y bitácora en tiempo real.
+* **Cero costo de base de datos ($0.00)**: La telemetría se transmite efímeramente en memoria vía SSE directo hacia los clientes conectados, sin generar escrituras continuas ni consumir cuota en Firestore.
+* **Experiencia de usuario enriquecida**: Interfaz intuitiva con transmisión directa por SSE, pipeline visual animado sobre Canvas y bitácora en tiempo real.
