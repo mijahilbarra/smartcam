@@ -1,5 +1,4 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
-import { doc, onSnapshot, collection, query, limit, orderBy } from 'firebase/firestore';
 import { db, resolveStorageUrl, IS_LOCAL_ENV, BACKEND_URL } from '@/shared/api/firebase';
 
 export function useDaemonState() {

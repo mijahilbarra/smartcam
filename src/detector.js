@@ -227,7 +227,7 @@ export async function generateAnnotatedImage(imageBuffer, quadrants, width, heig
       Math.abs(slot.x - x1) < 160 && Math.abs(slot.y - badgeY) < 28
     );
 
-    if (collides || q.id === "cliente_sentado") {
+    if (collides || q.id?.startsWith("cliente_sentado")) {
       badgeY = y1 + 8;
     }
 
