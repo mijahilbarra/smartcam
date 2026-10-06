@@ -1,0 +1,200 @@
+/**
+ * Servidor de Streaming de Video en Vivo On-Demand (MJPEG / Sub-Stream)
+ * Permite a los clientes web visualizar la cámara en vivo con latencia mínima (< 400ms)
+ * sin sobrecargar la CPU de la VM ni consumir ancho de banda cuando nadie está conectado.
+ */
+
+import { spawn } from "child_process";
+
+export class StreamServer {
+  constructor(options = {}) {
+    this.rtspUrl = options.rtspUrl || process.env.RTSP_STREAM_URL || "rtsp://127.0.0.1:8554/barberia/sub";
+    this.fps = options.fps || 8;
+    this.clients = new Set();
+    this.ffmpegProcess = null;
+    this.latestFrameBuffer = null;
+    this.isActive = false;
+  }
+
+  /**
+   * Registra un cliente HTTP para recibir el flujo MJPEG
+   * @param {Object} req - Express Request
+   * @param {Object} res - Express Response
+   */
+  handleStreamRequest(req, res) {
+    res.writeHead(200, {
+      "Content-Type": "multipart/x-mixed-replace; boundary=frame",
+      "Cache-Control": "no-cache, no-store, must-revalidate",
+      "Pragma": "no-cache",
+      "Expires": "0",
+      "Connection": "close"
+    });
+
+    const client = { id: Date.now() + Math.random(), res };
+    this.clients.add(client);
+    console.log(`[Stream] Nuevo cliente web conectado. Clientes activos: ${this.clients.size}`);
+
+    // Si había un fotograma reciente, enviarlo inmediatamente
+    if (this.latestFrameBuffer) {
+      this.sendFrameToClient(client, this.latestFrameBuffer);
+    }
+
+    // Iniciar ffmpeg si es el primer cliente
+    if (this.clients.size === 1) {
+      this.startFfmpegStream();
+    }
+
+    req.on("close", () => {
+      this.clients.delete(client);
+      console.log(`[Stream] Cliente web desconectado. Clientes restantes: ${this.clients.size}`);
+      if (this.clients.size === 0) {
+        this.stopFfmpegStream();
+      }
+    });
+  }
+
+  /**
+   * Inicia el proceso de lectura RTSP con FFmpeg
+   */
+  startFfmpegStream(persistent = false) {
+    if (persistent) this.isPersistent = true;
+    if (this.ffmpegProcess) return;
+
+    console.log(`[Stream] Iniciando ingesta FFmpeg on-demand desde: ${this.rtspUrl} a ${this.fps} FPS...`);
+
+    const args = [
+      "-rtsp_transport", "tcp",
+      "-i", this.rtspUrl,
+      "-an",
+      "-r", String(this.fps),
+      "-f", "image2pipe",
+      "-q:v", "5",
+      "-vcodec", "mjpeg",
+      "pipe:1"
+    ];
+
+    try {
+      this.ffmpegProcess = spawn("ffmpeg", args, { stdio: ["ignore", "pipe", "pipe"] });
+      this.isActive = true;
+      let lastFrameTime = Date.now();
+
+      // Watchdog de inactividad: Si FFmpeg no entrega fotogramas en 12 segundos, reiniciar
+      if (this.watchdogInterval) clearInterval(this.watchdogInterval);
+      this.watchdogInterval = setInterval(() => {
+        if (this.isActive && Date.now() - lastFrameTime > 12000) {
+          console.warn("[Stream Watchdog] Inactividad de fotogramas detectada (>12s). Reiniciando ingesta FFmpeg...");
+          this.stopFfmpegStream(true);
+          setTimeout(() => this.startFfmpegStream(this.isPersistent), 1000);
+        }
+      }, 5000);
+
+      this.ffmpegProcess.stderr.on("data", (data) => {
+        const msg = data.toString().trim();
+        if (msg.includes("Error") || msg.includes("failed") || msg.includes("refused")) {
+          console.warn("[Stream FFmpeg]", msg);
+        }
+      });
+
+      let chunkBuffer = Buffer.alloc(0);
+
+      this.ffmpegProcess.stdout.on("data", (data) => {
+        chunkBuffer = Buffer.concat([chunkBuffer, data]);
+
+        // Descartar bytes corruptos previos al primer SOI (0xFF, 0xD8)
+        const firstSoi = chunkBuffer.indexOf(Buffer.from([0xff, 0xd8]));
+        if (firstSoi > 0) {
+          chunkBuffer = chunkBuffer.slice(firstSoi);
+        }
+
+        // Delimitador JPEG: SOI (0xFFD8) y EOI (0xFFD9)
+        let startIndex = chunkBuffer.indexOf(Buffer.from([0xff, 0xd8]));
+        let endIndex = chunkBuffer.indexOf(Buffer.from([0xff, 0xd9]));
+
+        while (startIndex !== -1 && endIndex !== -1 && endIndex > startIndex) {
+          const frame = chunkBuffer.slice(startIndex, endIndex + 2);
+          chunkBuffer = chunkBuffer.slice(endIndex + 2);
+
+          lastFrameTime = Date.now();
+          this.latestFrameBuffer = frame;
+          this.broadcastFrame(frame);
+
+          const nextSoi = chunkBuffer.indexOf(Buffer.from([0xff, 0xd8]));
+          if (nextSoi > 0) {
+            chunkBuffer = chunkBuffer.slice(nextSoi);
+          }
+          startIndex = chunkBuffer.indexOf(Buffer.from([0xff, 0xd8]));
+          endIndex = chunkBuffer.indexOf(Buffer.from([0xff, 0xd9]));
+        }
+
+        // Si el buffer crece demasiado por datos corruptos, reiniciar
+        if (chunkBuffer.length > 2 * 1024 * 1024) {
+          chunkBuffer = Buffer.alloc(0);
+        }
+      });
+
+      this.ffmpegProcess.on("exit", (code) => {
+        console.log(`[Stream] Proceso FFmpeg finalizó con código: ${code}`);
+        this.ffmpegProcess = null;
+        this.isActive = false;
+        if (this.watchdogInterval) clearInterval(this.watchdogInterval);
+        // Si es persistente o aún hay clientes, reiniciar tras 2 segundos
+        if (this.isPersistent || this.clients.size > 0) {
+          setTimeout(() => this.startFfmpegStream(this.isPersistent), 2000);
+        }
+      });
+
+      this.ffmpegProcess.on("error", (err) => {
+        console.warn(`[Stream] Aviso FFmpeg: ${err.message}`);
+        this.stopFfmpegStream(true);
+      });
+    } catch (err) {
+      console.error("[Stream] Error al lanzar FFmpeg:", err.message);
+      this.stopFfmpegStream(true);
+    }
+  }
+
+  /**
+   * Detiene el proceso de FFmpeg para ahorrar CPU y ancho de banda
+   */
+  stopFfmpegStream(force = false) {
+    if (!force && this.isPersistent) {
+      // En modo persistente (visión en tiempo real continua), mantener FFmpeg activo para el loop de YOLO
+      return;
+    }
+    if (this.watchdogInterval) clearInterval(this.watchdogInterval);
+    if (this.ffmpegProcess) {
+      console.log("[Stream] Deteniendo FFmpeg. CPU y Red en reposo.");
+      try {
+        this.ffmpegProcess.kill("SIGTERM");
+      } catch (_) {}
+      this.ffmpegProcess = null;
+    }
+    this.isActive = false;
+  }
+
+  /**
+   * Envía un fotograma a todos los clientes conectados
+   */
+  broadcastFrame(frameBuffer) {
+    for (const client of this.clients) {
+      this.sendFrameToClient(client, frameBuffer);
+    }
+  }
+
+  sendFrameToClient(client, frameBuffer) {
+    try {
+      client.res.write(`--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${frameBuffer.length}\r\n\r\n`);
+      client.res.write(frameBuffer);
+      client.res.write("\r\n");
+    } catch (_) {
+      this.clients.delete(client);
+    }
+  }
+
+  /**
+   * Retorna el fotograma más reciente en memoria
+   */
+  getLatestFrame() {
+    return this.latestFrameBuffer;
+  }
+}

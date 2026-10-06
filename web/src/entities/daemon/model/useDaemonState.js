@@ -1,29 +1,17 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
-import { doc, onSnapshot, collection } from 'firebase/firestore';
-import { db, resolveStorageUrl, IS_LOCAL_ENV } from '@/shared/api/firebase';
-import { checkIsWithinWorkingHours } from '@/shared/lib/date-utils';
-
-const STEP_DEFINITIONS = [
-  { key: 'CYCLE_START', index: 0, title: 'Contador de Ciclo', sub: 'Cuenta regresiva', icon: 'timer' },
-  { key: 'QUERY_CAMERA', index: 1, title: 'Consulta a Cámara', sub: 'P2P Baichuan', icon: 'sensors' },
-  { key: 'IMAGE_ARRIVED', index: 2, title: 'Llega la Imagen', sub: 'Imprime en Canvas', icon: 'image' },
-  { key: 'ACTIVATE_QUADRANTS', index: 3, title: 'Activan Cuadrantes', sub: 'Proyección ROI', icon: 'crop_free' },
-  { key: 'DETECT_HUMANS', index: 4, title: 'Detecta Humanos', sub: 'YOLOv8: ¿Sí o No?', icon: 'person_search' },
-  { key: 'BIOMETRY_PROFILE', index: 5, title: 'Biometría y Perfil', sub: 'Barbero / Frecuentes', icon: 'badge' }
-];
+import { doc, onSnapshot, collection, query, limit, orderBy } from 'firebase/firestore';
+import { db, resolveStorageUrl, IS_LOCAL_ENV, BACKEND_URL } from '@/shared/api/firebase';
 
 export function useDaemonState() {
   const daemonState = ref(null);
-  const activeStepIndex = ref(0);
-  const currentStepKey = ref('CYCLE_START');
-  const logs = ref([]);
-  const countdownSeconds = ref(0);
-  const totalIntervalSeconds = ref(180);
-  const countdownTimeFormatted = ref('--:--');
-  const workingHoursConfig = ref({ start: '11:00', end: '23:00' });
+  const rawVisits = ref([]);
+  const telemetryLogs = ref([]);
+  const actionLogs = ref([]);
   const isConnected = ref(false);
+  const isYoloStreaming = ref(false);
+  const liveOccupancy = ref(null);
 
-  // Latest image data resolved for canvas
+  // Latest image & telemetry resolved for canvas overlay
   const canvasImageData = ref({
     imageUrl: '',
     docId: '',
@@ -31,171 +19,316 @@ export function useDaemonState() {
     height: 576,
     quadrants: [],
     humanBoxes: [],
-    peopleIdentified: []
+    tracks: [],
+    peopleIdentified: [],
+    inferenceMs: 0
   });
 
   let unsubscribeDaemon = null;
-  let countdownInterval = null;
+  let unsubscribeVisits = null;
+  let sseEventSource = null;
 
-  const currentStep = computed(() => {
-    return STEP_DEFINITIONS[activeStepIndex.value] || STEP_DEFINITIONS[0];
+  // Stream URL: direct MJPEG endpoint from stream server
+  const streamUrl = computed(() => {
+    if (IS_LOCAL_ENV && BACKEND_URL) {
+      return `${BACKEND_URL}/api/stream`;
+    }
+    return '/api/stream';
   });
 
-  const countdownProgressPercent = computed(() => {
-    if (countdownTimeFormatted.value === '--:--') return 0;
-    if (totalIntervalSeconds.value <= 0) return 0;
-    const elapsed = totalIntervalSeconds.value - countdownSeconds.value;
-    return Math.min(100, Math.max(0, (elapsed / totalIntervalSeconds.value) * 100));
+  // YOLO Telemetry Stream URL (SSE direct from backend)
+  const yoloStreamUrl = computed(() => {
+    if (IS_LOCAL_ENV && BACKEND_URL) {
+      return `${BACKEND_URL}/api/yolo/stream`;
+    }
+    return '/api/yolo/stream';
   });
-
-  const workingHoursStatus = computed(() => {
-    return checkIsWithinWorkingHours(workingHoursConfig.value.start, workingHoursConfig.value.end);
-  });
-
-  const stepList = computed(() => STEP_DEFINITIONS);
 
   const statusLabel = computed(() => {
-    if (isConnected.value) {
-      return IS_LOCAL_ENV ? 'Daemon Local Activo' : 'Daemon Cloud Activo';
+    if (isConnected.value || isYoloStreaming.value) {
+      return IS_LOCAL_ENV ? 'Sesión en Vivo Local Activa' : 'Sesión en Vivo Cloud Activa';
     }
-    return IS_LOCAL_ENV ? 'Daemon Local Desconectado' : 'Daemon Desconectado';
+    return IS_LOCAL_ENV ? 'Stream Local en Espera' : 'Transmisión Desconectada';
   });
 
-  const startCountdownTicker = (nextIso, intervalMin) => {
-    if (countdownInterval) clearInterval(countdownInterval);
-    const intervalSec = (parseFloat(intervalMin) || 3) * 60;
-    totalIntervalSeconds.value = intervalSec;
+  // Dynamic Occupancy Metrics prioritizing real-time SSE stream
+  const clientsInCut = computed(() => {
+    if (typeof liveOccupancy.value?.clientsInCut === 'number') {
+      return liveOccupancy.value.clientsInCut;
+    }
+    if (typeof daemonState.value?.occupancy?.clientsInCut === 'number') {
+      return daemonState.value.occupancy.clientsInCut;
+    }
+    const activeVisitsCount = rawVisits.value.filter(v => v.status === 'en_corte').length;
+    if (activeVisitsCount > 0) return activeVisitsCount;
 
-    const tick = () => {
-      if (!nextIso) {
-        countdownTimeFormatted.value = '--:--';
-        countdownSeconds.value = 0;
-        return;
-      }
-      const targetTime = new Date(nextIso).getTime();
-      if (isNaN(targetTime)) {
-        countdownTimeFormatted.value = '--:--';
-        countdownSeconds.value = 0;
-        return;
-      }
+    const quads = canvasImageData.value.quadrants?.length
+      ? canvasImageData.value.quadrants
+      : (daemonState.value?.quadrants || []);
 
-      const diffMs = targetTime - Date.now();
-      const secLeft = Math.max(0, Math.floor(diffMs / 1000));
-      countdownSeconds.value = secLeft;
+    const cutZones = quads.filter(q => {
+      const isChair = q.type === 'barber_chair' || q.category === 'silla_barbero' || q.category === 'cliente';
+      const isBusy = q.status === 'en_corte' || q.status === 'ocupada';
+      return isChair && isBusy;
+    });
 
-      const m = Math.floor(secLeft / 60);
-      const s = secLeft % 60;
-      countdownTimeFormatted.value = `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-    };
+    return cutZones.length;
+  });
 
-    tick();
-    countdownInterval = setInterval(tick, 1000);
-  };
+  const clientsWaiting = computed(() => {
+    if (typeof liveOccupancy.value?.clientsWaiting === 'number') {
+      return liveOccupancy.value.clientsWaiting;
+    }
+    if (typeof daemonState.value?.occupancy?.clientsWaiting === 'number') {
+      return daemonState.value.occupancy.clientsWaiting;
+    }
+    const quads = canvasImageData.value.quadrants?.length
+      ? canvasImageData.value.quadrants
+      : (daemonState.value?.quadrants || []);
 
+    const waitZones = quads.filter(q => {
+      const isWait = q.type === 'waiting_chair' || q.category === 'silla_espera';
+      const isBusy = q.status === 'en_espera' || q.status === 'ocupada';
+      return isWait && isBusy;
+    });
+
+    return waitZones.length;
+  });
+
+  const activeBarbers = computed(() => {
+    if (typeof liveOccupancy.value?.activeBarbers === 'number') {
+      return liveOccupancy.value.activeBarbers;
+    }
+    if (typeof daemonState.value?.occupancy?.activeBarbers === 'number') {
+      return daemonState.value.occupancy.activeBarbers;
+    }
+    const identifiedStaff = (canvasImageData.value.peopleIdentified || daemonState.value?.people || [])
+      .filter(p => p.isStaff === true);
+
+    if (identifiedStaff.length > 0) return identifiedStaff.length;
+
+    const quads = canvasImageData.value.quadrants?.length
+      ? canvasImageData.value.quadrants
+      : (daemonState.value?.quadrants || []);
+
+    const workingZones = quads.filter(q => {
+      const isStation = q.type === 'barber_workstation' || q.category === 'personal';
+      return isStation && q.status === 'en_servicio';
+    });
+
+    return workingZones.length;
+  });
+
+  const totalHumans = computed(() => {
+    if (typeof liveOccupancy.value?.totalHumans === 'number') {
+      return liveOccupancy.value.totalHumans;
+    }
+    if (canvasImageData.value.tracks?.length) {
+      return canvasImageData.value.tracks.length;
+    }
+    if (canvasImageData.value.humanBoxes?.length) {
+      return canvasImageData.value.humanBoxes.length;
+    }
+    if (typeof daemonState.value?.humans?.count === 'number') {
+      return daemonState.value.humans.count;
+    }
+    return 0;
+  });
+
+  const occupancyKpis = computed(() => ({
+    clientsInCut: clientsInCut.value,
+    clientsWaiting: clientsWaiting.value,
+    activeBarbers: activeBarbers.value,
+    totalHumans: totalHumans.value
+  }));
+
+  // Helper to add action log from UI triggers
   const addLog = (event) => {
     const timestamp = new Date().toLocaleTimeString('es-PE', { hour12: false });
-    logs.value.unshift({
-      id: Date.now() + Math.random(),
+    actionLogs.value.unshift({
+      id: `act_${Date.now()}_${Math.random()}`,
       time: timestamp,
-      ...event
+      rawTime: Date.now(),
+      title: event.title || 'Acción',
+      desc: event.desc || event.message || '',
+      type: event.type || 'info',
+      icon: event.type === 'warning' ? 'warning' : event.type === 'error' ? 'error' : 'bolt'
     });
-    if (logs.value.length > 50) logs.value.pop();
+    if (actionLogs.value.length > 20) actionLogs.value.pop();
+  };
+
+  // Unified real-time event log
+  const logs = computed(() => {
+    const combined = [];
+
+    // 1. Visit events from Firestore collection camera_catcher_visits
+    rawVisits.value.forEach(v => {
+      const isCompleted = v.status === 'completed';
+      const eventTime = isCompleted ? (v.endedAt || v.createdAt) : (v.startedAt || v.createdAt);
+      const timeFormatted = eventTime
+        ? new Date(eventTime).toLocaleTimeString('es-PE', { hour12: false })
+        : '--:--';
+
+      combined.push({
+        id: `vis_${v.id}_${isCompleted ? 'end' : 'start'}`,
+        time: timeFormatted,
+        rawTime: eventTime ? new Date(eventTime).getTime() : 0,
+        title: isCompleted ? 'Visita Registrada' : 'Sesión de Corte Iniciada',
+        desc: isCompleted
+          ? `${v.personName || 'Cliente'} finalizó servicio en ${v.chairName || 'Silla'} (${v.durationMinutes || 1} min).`
+          : `${v.personName || 'Cliente'} inició atención en ${v.chairName || 'Silla de corte'}${v.isFrequent ? ` (Visita #${v.visitCount})` : ''}.`,
+        type: isCompleted ? 'visit_completed' : 'visit_active',
+        icon: isCompleted ? 'check_circle' : 'content_cut',
+        badge: isCompleted ? 'Finalizada' : 'En Atención',
+        badgeClass: isCompleted ? 'text-emerald-400 bg-emerald-950/60' : 'text-blue-400 bg-blue-950/60'
+      });
+    });
+
+    // 2. Telemetry logs from daemon_state history
+    telemetryLogs.value.forEach(item => {
+      let icon = 'sensors';
+      let badge = 'Telemetría';
+      let badgeClass = 'text-slate-400 bg-slate-800/60';
+
+      const textLower = (item.text || item.desc || '').toLowerCase();
+      if (textLower.includes('humano') || textLower.includes('persona')) {
+        icon = 'person_search';
+        badge = 'Detección';
+        badgeClass = 'text-emerald-400 bg-emerald-950/60';
+      } else if (textLower.includes('biométrica') || textLower.includes('clasificación') || textLower.includes('cliente') || textLower.includes('barbero')) {
+        icon = 'badge';
+        badge = 'Biometría';
+        badgeClass = 'text-amber-400 bg-amber-950/60';
+      } else if (textLower.includes('cuadrante') || textLower.includes('silla')) {
+        icon = 'crop_free';
+        badge = 'Espacio';
+        badgeClass = 'text-sky-400 bg-sky-950/60';
+      } else if (textLower.includes('error') || textLower.includes('falló')) {
+        icon = 'error';
+        badge = 'Alerta';
+        badgeClass = 'text-rose-400 bg-rose-950/60';
+      }
+
+      combined.push({
+        id: item.id || `hist_${Math.random()}`,
+        time: item.timeFormatted || (item.timestamp ? new Date(item.timestamp).toLocaleTimeString('es-PE', { hour12: false }) : '--:--'),
+        rawTime: item.timestamp ? new Date(item.timestamp).getTime() : 0,
+        title: item.type ? item.type.toUpperCase() : 'TELEMETRÍA',
+        desc: item.text || item.desc,
+        type: item.type || 'info',
+        icon,
+        badge,
+        badgeClass
+      });
+    });
+
+    // 3. User action logs
+    actionLogs.value.forEach(act => {
+      combined.push({
+        ...act,
+        badge: 'Acción',
+        badgeClass: 'text-purple-400 bg-purple-950/60'
+      });
+    });
+
+    // Sort by rawTime desc
+    combined.sort((a, b) => (b.rawTime || 0) - (a.rawTime || 0));
+
+    // Limit to 40 items
+    return combined.slice(0, 40);
+  });
+
+  // Conexión directa SSE al servidor de telemetría YOLO (Latencia < 20ms)
+  const connectYoloStream = () => {
+    if (typeof window === 'undefined' || !window.EventSource) return;
+    try {
+      if (sseEventSource) {
+        sseEventSource.close();
+        sseEventSource = null;
+      }
+      const url = yoloStreamUrl.value;
+      console.log(`[YOLO Stream] Conectando a flujo directo SSE: ${url}`);
+      sseEventSource = new EventSource(url);
+
+      sseEventSource.onopen = () => {
+        isYoloStreaming.value = true;
+        console.log('[YOLO Stream] Flujo SSE conectado exitosamente.');
+      };
+
+      sseEventSource.onmessage = (e) => {
+        try {
+          const data = JSON.parse(e.data);
+          if (data && data.type === 'yolo_telemetry') {
+            isYoloStreaming.value = true;
+
+            // Actualizar telemetría de cajas y seguimiento en tiempo real
+            canvasImageData.value = {
+              ...canvasImageData.value,
+              docId: data.docId || canvasImageData.value.docId || 'En Vivo',
+              frameWidth: data.frameWidth || 640,
+              frameHeight: data.frameHeight || 360,
+              humanBoxes: data.humanBoxes || [],
+              tracks: data.tracks || [],
+              quadrants: data.quadrants || canvasImageData.value.quadrants || [],
+              peopleIdentified: data.peopleIdentified || canvasImageData.value.peopleIdentified || [],
+              inferenceMs: data.inferenceMs || 0
+            };
+
+            if (data.occupancy) {
+              liveOccupancy.value = data.occupancy;
+            }
+          }
+        } catch (_) {}
+      };
+
+      sseEventSource.addEventListener('daemon_state', (e) => {
+        try {
+          applyDaemonState(JSON.parse(e.data));
+        } catch (_) {}
+      });
+
+      sseEventSource.onerror = () => {
+        isYoloStreaming.value = false;
+        isConnected.value = false;
+      };
+    } catch (err) {
+      console.warn('[YOLO Stream] Error iniciando SSE:', err);
+    }
+  };
+
+  // Estado del daemon recibido DIRECTAMENTE del backend por SSE (sin Firestore)
+  const applyDaemonState = async (data) => {
+    if (!data) return;
+    isConnected.value = true;
+    daemonState.value = data;
+
+    if (Array.isArray(data.history)) {
+      telemetryLogs.value = data.history;
+    }
+
+    if (!isYoloStreaming.value && (data.humans || data.quadrants || data.people || data.tracks)) {
+      canvasImageData.value = {
+        ...canvasImageData.value,
+        docId: data.lastDocId || canvasImageData.value.docId || 'En Vivo',
+        quadrants: data.quadrants || canvasImageData.value.quadrants || [],
+        humanBoxes: data.humans?.detections?.map(d => d.box) || (data.detections?.humans) || canvasImageData.value.humanBoxes || [],
+        tracks: data.tracks || canvasImageData.value.tracks || [],
+        peopleIdentified: data.people || data.detections?.people || canvasImageData.value.peopleIdentified || [],
+        inferenceMs: data.humans?.inferenceMs || canvasImageData.value.inferenceMs || 0
+      };
+    }
+
+    if (data.image?.storagePath) {
+      const url = await resolveStorageUrl(data.image.storagePath);
+      if (url) canvasImageData.value.imageUrl = url;
+    } else if (data.image?.publicUrl) {
+      canvasImageData.value.imageUrl = data.image.publicUrl;
+    }
   };
 
   const subscribe = () => {
-    const docRef = doc(db, 'camera_catcher', 'daemon_state');
-    unsubscribeDaemon = onSnapshot(docRef, async (snap) => {
-      if (!snap.exists()) {
-        daemonState.value = null;
-        isConnected.value = false;
-        startCountdownTicker(null, 3);
-        return;
-      }
-      const data = snap.data();
-
-      // Extraer intervalo y fecha objetivo de forma resiliente
-      const rawInterval = data.countdown?.intervalMinutes || data.intervalMinutes;
-      const intervalMinutes = (!isNaN(Number(rawInterval)) && Number(rawInterval) > 0) ? Number(rawInterval) : 3;
-      const nextCaptureAtIso = data.countdown?.nextCaptureAt || data.nextCaptureAtIso || data.nextCaptureAt || null;
-
-      // Evaluar si el reporte del daemon es reciente
-      const lastIso = data.updatedAt || data.timestamp || data.countdown?.timestamp;
-      if (lastIso) {
-        const ageMs = Date.now() - new Date(lastIso).getTime();
-        const maxStaleMs = (intervalMinutes * 2) * 60 * 1000;
-        isConnected.value = ageMs < maxStaleMs;
-      } else {
-        isConnected.value = false;
-      }
-
-      // Normalizar campos aplanados para uso directo en la UI
-      data.intervalMinutes = intervalMinutes;
-      data.nextCaptureAtIso = nextCaptureAtIso;
-      daemonState.value = data;
-
-      // Update Working hours from state if present
-      if (data.workingHours) {
-        workingHoursConfig.value = {
-          start: data.workingHours.start || '11:00',
-          end: data.workingHours.end || '23:00'
-        };
-      } else if (data.countdown?.workHours) {
-        const match = String(data.countdown.workHours).match(/^(\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})/);
-        if (match) {
-          workingHoursConfig.value = {
-            start: match[1],
-            end: match[2]
-          };
-        }
-      }
-
-      // Update Stepper
-      const stepIdx = typeof data.stepIndex === 'number' ? data.stepIndex : 0;
-      activeStepIndex.value = Math.min(Math.max(0, stepIdx), 5);
-      currentStepKey.value = data.stepKey || STEP_DEFINITIONS[activeStepIndex.value].key;
-
-      // Update Countdown ticker: si no hay fecha pero el daemon está activo, calcular la estimada
-      let targetNextIso = nextCaptureAtIso;
-      if (!targetNextIso && isConnected.value) {
-        const baseTime = lastIso ? new Date(lastIso).getTime() : Date.now();
-        const estTime = baseTime + intervalMinutes * 60 * 1000;
-        targetNextIso = new Date(estTime > Date.now() ? estTime : Date.now() + intervalMinutes * 60 * 1000).toISOString();
-      }
-
-      startCountdownTicker(targetNextIso, intervalMinutes);
-
-      // Update Event log if history exists or single event is recorded
-      if (Array.isArray(data.history) && data.history.length > 0) {
-        logs.value = data.history.map(item => ({
-          id: item.id || `${item.timestamp}_${Math.random()}`,
-          time: item.timeFormatted || (item.timestamp ? new Date(item.timestamp).toLocaleTimeString('es-PE', { hour12: false }) : '--:--'),
-          title: item.type ? item.type.toUpperCase() : 'TELEMETRÍA',
-          desc: item.text,
-          type: item.type
-        }));
-      } else if (data.lastEvent) {
-        addLog(data.lastEvent);
-      }
-
-      // Resolve canvas image if available
-      if (data.image?.storagePath) {
-        const url = await resolveStorageUrl(data.image.storagePath);
-        if (url) {
-          canvasImageData.value = {
-            imageUrl: url,
-            docId: data.image.docId || 'Reciente',
-            width: data.image.width || 1024,
-            height: data.image.height || 576,
-            quadrants: data.quadrants || [],
-            humanBoxes: data.detections?.humans || [],
-            peopleIdentified: data.detections?.people || []
-          };
-        }
-      }
-    }, (err) => {
-      console.warn('[DaemonState] Error de conexión:', err);
-      isConnected.value = false;
-    });
+    // Única fuente de telemetría en vivo: conexión directa SSE con el daemon
+    connectYoloStream();
   };
 
   onMounted(() => {
@@ -204,25 +337,25 @@ export function useDaemonState() {
 
   onUnmounted(() => {
     if (unsubscribeDaemon) unsubscribeDaemon();
-    if (countdownInterval) clearInterval(countdownInterval);
+    if (sseEventSource) {
+      sseEventSource.close();
+      sseEventSource = null;
+    }
   });
 
   return {
     daemonState,
-    activeStepIndex,
-    currentStepKey,
-    currentStep,
-    stepList,
-    logs,
-    countdownSeconds,
-    totalIntervalSeconds,
-    countdownTimeFormatted,
-    countdownProgressPercent,
-    workingHoursConfig,
-    workingHoursStatus,
     isConnected,
+    isYoloStreaming,
     statusLabel,
+    streamUrl,
     canvasImageData,
+    clientsInCut,
+    clientsWaiting,
+    activeBarbers,
+    totalHumans,
+    occupancyKpis,
+    logs,
     addLog
   };
 }

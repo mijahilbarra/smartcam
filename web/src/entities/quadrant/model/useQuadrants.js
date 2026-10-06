@@ -3,13 +3,7 @@ import { doc, onSnapshot, setDoc } from 'firebase/firestore';
 import { db } from '@/shared/api/firebase';
 import { normalizeQuadrants, serializeQuadrantsForFirestore, boxNormToPolygonNorm } from '@/shared/lib/geometry';
 
-export const DEFAULT_QUADRANTS = [
-  { id: 'silla_barbero_puesto1', name: 'Silla de barbero (Puesto 1)', badge: 'Sillón 1', type: 'barber_chair', color: '#FFD700', boxNorm: [0.65, 0.80, 1.00, 1.00] },
-  { id: 'silla_barbero_puesto2', name: 'Silla de barbero (Frente)', badge: 'Sillón 2', type: 'barber_chair', color: '#007BFF', boxNorm: [0.80, 0.36, 1.00, 0.67] },
-  { id: 'silla_espera', name: 'Silla de espera', badge: 'Espera', type: 'waiting_chair', color: '#D250DC', boxNorm: [0.55, 0.73, 0.92, 0.90] },
-  { id: 'zona_barbero', name: 'Zona de trabajo de barbero', badge: 'Barbero', type: 'barber_workstation', color: '#FF4500', boxNorm: [0.45, 0.65, 0.95, 0.82] },
-  { id: 'puerta_entrada', name: 'Entrada / Pasillo peatonal', badge: 'Entrada', type: 'walking_zone', color: '#10b981', boxNorm: [0.30, 0.40, 0.88, 0.60] }
-];
+export const DEFAULT_QUADRANTS = [];
 
 export function useQuadrants() {
   const quadrants = ref([]);
@@ -34,11 +28,11 @@ export function useQuadrants() {
           quadsRaw = data.zones;
         }
 
-        // Single Source of Truth: Si el documento existe, usar SIEMPRE sus datos sin forzar defaults
+        // Single Source of Truth: Usar exclusivamente los cuadrantes guardados por el usuario
         quadrants.value = normalizeQuadrants(quadsRaw);
       } else {
-        // Solo si el documento NO existe en Firestore se inicializa con los defaults
-        quadrants.value = normalizeQuadrants(DEFAULT_QUADRANTS);
+        // Si el documento NO existe en Firestore, iniciar vacío para calibración inicial
+        quadrants.value = [];
       }
       loading.value = false;
     }, (err) => {
@@ -66,15 +60,22 @@ export function useQuadrants() {
     }
   };
 
-  const addQuadrant = () => {
+  const addQuadrant = (type = 'barber_chair') => {
     const nextIdx = quadrants.value.length + 1;
     const newBox = [0.25, 0.25, 0.65, 0.65];
+    const defaultColors = {
+      barber_chair: '#FFD700',
+      waiting_chair: '#D250DC',
+      barber_workstation: '#FF4500',
+      walking_zone: '#007BFF',
+      custom_zone: '#10B981'
+    };
     const newQ = {
-      id: `quad_${Date.now()}`,
+      id: `zone_${Date.now()}`,
       name: `Zona ${nextIdx}`,
       badge: `Z${nextIdx}`,
-      color: '#06b6d4',
-      type: 'custom_zone',
+      color: defaultColors[type] || '#FFD700',
+      type: type,
       polygonNorm: boxNormToPolygonNorm(newBox),
       boxNorm: newBox
     };
@@ -85,15 +86,17 @@ export function useQuadrants() {
   const deleteQuadrant = (idx) => {
     if (idx >= 0 && idx < quadrants.value.length) {
       quadrants.value.splice(idx, 1);
-      if (selectedIndex.value >= quadrants.value.length) {
+      if (quadrants.value.length === 0) {
+        selectedIndex.value = -1;
+      } else if (selectedIndex.value >= quadrants.value.length) {
         selectedIndex.value = Math.max(0, quadrants.value.length - 1);
       }
     }
   };
 
   const resetToDefaults = () => {
-    quadrants.value = normalizeQuadrants(DEFAULT_QUADRANTS);
-    selectedIndex.value = 0;
+    quadrants.value = [];
+    selectedIndex.value = -1;
   };
 
   onMounted(() => {

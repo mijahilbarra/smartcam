@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, watch } from 'vue';
+import { ref, onMounted, watch, computed } from 'vue';
 import AppIcon from '@/shared/ui/atoms/AppIcon.vue';
 import AppButton from '@/shared/ui/atoms/AppButton.vue';
 import AppBadge from '@/shared/ui/atoms/AppBadge.vue';
@@ -14,35 +14,77 @@ const emit = defineEmits(['open-calibrator-photo']);
 
 const {
   daemonState,
-  activeStepIndex,
-  currentStep,
-  stepList,
-  logs,
-  countdownTimeFormatted,
-  countdownProgressPercent,
-  workingHoursConfig,
-  workingHoursStatus,
   isConnected,
+  isYoloStreaming,
   statusLabel,
+  streamUrl,
   canvasImageData,
+  clientsInCut,
+  clientsWaiting,
+  activeBarbers,
+  totalHumans,
+  logs,
   addLog
 } = useDaemonState();
 
 const { isTriggering, triggerCapture } = useTriggerCapture();
 const { quadrants: configuredQuadrants } = useQuadrants();
 
-// Canvas controls & layers
+// Viewport & canvas refs
+const viewportRef = ref(null);
 const canvasRef = ref(null);
+
+// Layers switches
 const showQuadrants = ref(true);
 const showHumans = ref(true);
 const showBiometry = ref(true);
+
+// Stream & image loading state
+const streamKey = ref(Date.now());
+const streamActive = ref(true);
+const streamLoaded = ref(true);
 const currentLoadedImage = ref(null);
+
+const onStreamLoad = () => {
+  streamLoaded.value = true;
+  streamActive.value = true;
+};
+
+const reloadStream = () => {
+  streamLoaded.value = false;
+  streamActive.value = false;
+  streamKey.value = Date.now();
+  setTimeout(() => {
+    streamActive.value = true;
+  }, 150);
+};
+
+const onStreamError = () => {
+  streamActive.value = false;
+  streamLoaded.value = false;
+  console.info('[LiveStream] Reconectando flujo MJPEG...');
+  setTimeout(() => {
+    streamKey.value = Date.now();
+    streamActive.value = true;
+  }, 2500);
+};
 
 const onTriggerClick = () => {
   triggerCapture(addLog);
 };
 
-// Render on canvas
+const toggleFullscreen = () => {
+  if (!viewportRef.value) return;
+  if (!document.fullscreenElement) {
+    viewportRef.value.requestFullscreen().catch((err) => {
+      console.warn('[Fullscreen] Error solicitando pantalla completa:', err.message);
+    });
+  } else {
+    document.exitFullscreen().catch(() => {});
+  }
+};
+
+// Render telemetry overlays on canvas
 const renderCanvas = () => {
   const canvas = canvasRef.value;
   if (!canvas) return;
@@ -52,32 +94,32 @@ const renderCanvas = () => {
   const W = canvas.width;
   const H = canvas.height;
 
-  // Clear
+  // Clear canvas
   ctx.clearRect(0, 0, W, H);
 
-  // 1. Draw base photo if loaded
-  if (currentLoadedImage.value) {
-    ctx.drawImage(currentLoadedImage.value, 0, 0, W, H);
-  } else {
-    // Dark grid background
-    ctx.fillStyle = '#0b1120';
-    ctx.fillRect(0, 0, W, H);
-    ctx.strokeStyle = 'rgba(148, 163, 184, 0.08)';
-    ctx.lineWidth = 1;
-    for (let x = 0; x < W; x += 40) {
-      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
-    }
-    for (let y = 0; y < H; y += 40) {
-      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  // If live stream is NOT actively loaded, render latest fallback frame or dark grid as background
+  if (!streamActive.value) {
+    if (currentLoadedImage.value) {
+      ctx.drawImage(currentLoadedImage.value, 0, 0, W, H);
+    } else {
+      ctx.fillStyle = '#0b1120';
+      ctx.fillRect(0, 0, W, H);
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.08)';
+      ctx.lineWidth = 1;
+      for (let x = 0; x < W; x += 40) {
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+      }
+      for (let y = 0; y < H; y += 40) {
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+      }
     }
   }
 
-  // 2. Draw Quadrants Layer (Single Source of Truth: camera_catcher/quadrants)
+  // 1. Draw Quadrants Layer (Physical Sillas and Zones)
   if (showQuadrants.value && configuredQuadrants.value?.length) {
     const telemetryQuadrants = canvasImageData.value.quadrants || daemonState.value?.quadrants || [];
 
     configuredQuadrants.value.forEach((zone) => {
-      // Find matching telemetry items for this physical zone
       const matches = telemetryQuadrants.filter(t => t.id === zone.id || t.zoneId === zone.id);
 
       let dynamicStatus = 'disponible';
@@ -86,13 +128,13 @@ const renderCanvas = () => {
       }
 
       if (matches.length > 0) {
-        if (matches.some(m => m.status === 'en_corte' || m.id?.startsWith('cliente_sentado'))) {
+        if (matches.some(m => m.status === 'en_corte')) {
           dynamicStatus = 'en_corte';
-        } else if (matches.some(m => m.status === 'en_servicio' || m.id?.startsWith('barbero_'))) {
+        } else if (matches.some(m => m.status === 'en_servicio')) {
           dynamicStatus = 'en_servicio';
-        } else if (matches.some(m => m.status === 'en_transito' || m.id?.startsWith('transito_'))) {
+        } else if (matches.some(m => m.status === 'en_transito')) {
           dynamicStatus = 'en_transito';
-        } else if (matches.some(m => m.status === 'en_espera' || m.id?.startsWith('cliente_espera'))) {
+        } else if (matches.some(m => m.status === 'en_espera')) {
           dynamicStatus = 'en_espera';
         } else if (matches.some(m => m.status === 'ocupada')) {
           dynamicStatus = 'ocupada';
@@ -116,16 +158,17 @@ const renderCanvas = () => {
           else ctx.lineTo(x, y);
         });
         ctx.closePath();
+
         const isOccupied = dynamicStatus === 'ocupada' || dynamicStatus === 'en_corte' || dynamicStatus === 'en_servicio' || dynamicStatus === 'en_transito';
-        ctx.fillStyle = hexToRgba(color, isOccupied ? 0.28 : 0.16);
+        ctx.fillStyle = hexToRgba(color, isOccupied ? 0.32 : 0.16);
         ctx.fill();
         ctx.strokeStyle = color;
-        ctx.lineWidth = 2;
+        ctx.lineWidth = isOccupied ? 2.5 : 1.5;
         ctx.stroke();
 
         // Label with dynamic business status
         const firstPt = toPointObject(poly[0]);
-        const lx = Math.max(8, Math.min(W - 160, firstPt.x * W + 4));
+        const lx = Math.max(8, Math.min(W - 180, firstPt.x * W + 4));
         const ly = Math.max(18, Math.min(H - 8, firstPt.y * H + 18));
 
         const statusMap = {
@@ -142,7 +185,7 @@ const renderCanvas = () => {
 
         ctx.font = 'bold 11px Inter, sans-serif';
         const textWidth = ctx.measureText(text).width;
-        ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
         ctx.fillRect(lx - 2, ly - 13, textWidth + 8, 18);
         ctx.strokeStyle = color;
         ctx.lineWidth = 1;
@@ -154,65 +197,159 @@ const renderCanvas = () => {
     });
   }
 
-  // 3. Draw Humans Layer (YOLOv8)
-  if (showHumans.value && canvasImageData.value.humanBoxes?.length) {
-    canvasImageData.value.humanBoxes.forEach((box) => {
-      // box: [ymin, xmin, ymax, xmax]
-      const ymin = ensureNorm01(box[0]);
-      const xmin = ensureNorm01(box[1]);
-      const ymax = ensureNorm01(box[2]);
-      const xmax = ensureNorm01(box[3]);
+  // 2. Draw Humans Layer (YOLO Tracking & Dynamic Detections)
+  if (showHumans.value) {
+    const frameW = canvasImageData.value.frameWidth || 640;
+    const frameH = canvasImageData.value.frameHeight || 360;
+
+    const tracksToDraw = (canvasImageData.value.tracks && canvasImageData.value.tracks.length > 0)
+      ? canvasImageData.value.tracks
+      : (canvasImageData.value.humanBoxes || []).map((b, idx) => ({ trackId: idx + 1, box: b }));
+
+    tracksToDraw.forEach((t) => {
+      let xmin, ymin, xmax, ymax;
+
+      if (t.boxNorm && Array.isArray(t.boxNorm) && t.boxNorm.length === 4) {
+        // Formato estándar normalizado [ymin, xmin, ymax, xmax] en rango 0..1
+        ymin = t.boxNorm[0];
+        xmin = t.boxNorm[1];
+        ymax = t.boxNorm[2];
+        xmax = t.boxNorm[3];
+      } else if (t.box && Array.isArray(t.box) && t.box.length === 4) {
+        const b = t.box;
+        if (b[0] <= 1 && b[1] <= 1 && b[2] <= 1 && b[3] <= 1) {
+          // Ya normalizado [ymin, xmin, ymax, xmax]
+          ymin = b[0]; xmin = b[1]; ymax = b[2]; xmax = b[3];
+        } else {
+          // Coordenadas en píxeles de YOLO [x1, y1, x2, y2]
+          xmin = b[0] / frameW;
+          ymin = b[1] / frameH;
+          xmax = b[2] / frameW;
+          ymax = b[3] / frameH;
+        }
+      } else {
+        return;
+      }
+
+      // Restringir a rango [0, 1]
+      xmin = Math.max(0, Math.min(1, xmin));
+      ymin = Math.max(0, Math.min(1, ymin));
+      xmax = Math.max(0, Math.min(1, xmax));
+      ymax = Math.max(0, Math.min(1, ymax));
 
       const x = xmin * W;
       const y = ymin * H;
-      const w = (xmax - xmin) * W;
-      const h = (ymax - ymin) * H;
+      const w = Math.max(12, (xmax - xmin) * W);
+      const h = Math.max(16, (ymax - ymin) * H);
 
-      ctx.strokeStyle = '#10b981';
-      ctx.lineWidth = 2.5;
+      const isStaff = t.identity?.isStaff;
+      const isFrequent = t.identity?.isFrequent;
+      const strokeColor = isStaff ? '#38bdf8' : (isFrequent ? '#fbbf24' : '#10b981');
+      const tagBg = isStaff ? 'rgba(12, 74, 110, 0.92)' : (isFrequent ? 'rgba(120, 53, 15, 0.92)' : 'rgba(6, 78, 59, 0.92)');
+
+      // 1. Primary Bounding Box
+      ctx.strokeStyle = strokeColor;
+      ctx.lineWidth = 2;
       ctx.strokeRect(x, y, w, h);
 
-      // Tag
-      ctx.fillStyle = '#10b981';
-      ctx.fillRect(x, Math.max(0, y - 18), 70, 18);
-      ctx.fillStyle = '#064e3b';
+      // 2. Cyber Reticle Corners (Estilo Computer Vision Target)
+      const cornerLen = Math.min(14, w * 0.25, h * 0.25);
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = '#ffffff';
+
+      // Top-Left
+      ctx.beginPath(); ctx.moveTo(x, y + cornerLen); ctx.lineTo(x, y); ctx.lineTo(x + cornerLen, y); ctx.stroke();
+      // Top-Right
+      ctx.beginPath(); ctx.moveTo(x + w - cornerLen, y); ctx.lineTo(x + w, y); ctx.lineTo(x + w, y + cornerLen); ctx.stroke();
+      // Bottom-Left
+      ctx.beginPath(); ctx.moveTo(x, y + h - cornerLen); ctx.lineTo(x, y + h); ctx.lineTo(x + cornerLen, y + h); ctx.stroke();
+      // Bottom-Right
+      ctx.beginPath(); ctx.moveTo(x + w - cornerLen, y + h); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w, y + h - cornerLen); ctx.stroke();
+
+      // 3. Person Track & Quadrant Tag
+      const confText = t.confidence ? ` ${Math.round(t.confidence * 100)}%` : '';
+      const quadText = t.quadrant ? ` [${t.quadrant}]` : '';
+      const idText = t.identity?.name ? ` • ${t.identity.name}` : '';
+      const tagText = `YOLO #${t.trackId}${quadText}${idText}${confText}`;
+
       ctx.font = 'bold 11px Inter, sans-serif';
-      ctx.fillText('Persona', x + 5, Math.max(12, y - 5));
+      const tagW = ctx.measureText(tagText).width + 12;
+
+      ctx.fillStyle = tagBg;
+      ctx.fillRect(x, Math.max(0, y - 20), tagW, 20);
+      ctx.strokeStyle = strokeColor;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x, Math.max(0, y - 20), tagW, 20);
+
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(tagText, x + 6, Math.max(14, y - 6));
     });
   }
 
-  // 4. Draw Biometry Layer
+  // 3. Draw Biometry Layer (Staff, Frequent, New Customer Badges)
   if (showBiometry.value && canvasImageData.value.peopleIdentified?.length) {
+    const frameW = canvasImageData.value.frameWidth || 640;
+    const frameH = canvasImageData.value.frameHeight || 360;
+
     canvasImageData.value.peopleIdentified.forEach((p) => {
       if (p.box) {
-        const ymin = ensureNorm01(p.box[0]);
-        const xmin = ensureNorm01(p.box[1]);
-        const ymax = ensureNorm01(p.box[2]);
-        const xmax = ensureNorm01(p.box[3]);
+        let pXmin, pYmin, pXmax, pYmax;
+        if (p.boxNorm && Array.isArray(p.boxNorm)) {
+          pYmin = p.boxNorm[0];
+          pXmin = p.boxNorm[1];
+          pYmax = p.boxNorm[2];
+          pXmax = p.boxNorm[3];
+        } else {
+          // Pixel box [x1, y1, x2, y2]
+          pXmin = p.box[0] / frameW;
+          pYmin = p.box[1] / frameH;
+          pXmax = p.box[2] / frameW;
+          pYmax = p.box[3] / frameH;
+        }
 
-        const x = xmin * W;
-        const y = ymin * H;
-        const w = (xmax - xmin) * W;
-        const h = (ymax - ymin) * H;
+        const x = pXmin * W;
+        const y = pYmin * H;
+        const w = Math.max(12, (pXmax - pXmin) * W);
+        const h = Math.max(16, (pYmax - pYmin) * H);
 
-        ctx.strokeStyle = '#f59e0b';
+        let badgeColor = '#38bdf8'; // Blue for Staff
+        let badgeBg = 'rgba(12, 74, 110, 0.9)';
+        let labelText = `Barbero: ${p.name || 'Personal'}`;
+
+        if (!p.isStaff && p.isFrequent) {
+          badgeColor = '#fbbf24'; // Gold/Amber for Frequent
+          badgeBg = 'rgba(120, 53, 15, 0.9)';
+          labelText = `Frecuente: ${p.name || 'Cliente'} (${p.visitCount || 2} v.)`;
+        } else if (!p.isStaff) {
+          badgeColor = '#34d399'; // Emerald for New
+          badgeBg = 'rgba(6, 78, 59, 0.9)';
+          labelText = `Nuevo: ${p.name || 'Cliente'}`;
+        }
+
+        ctx.strokeStyle = badgeColor;
         ctx.lineWidth = 2;
         ctx.setLineDash([4, 4]);
         ctx.strokeRect(x, y, w, h);
         ctx.setLineDash([]);
 
-        // Label
-        ctx.fillStyle = '#f59e0b';
-        ctx.fillRect(x, y + h, Math.max(80, (p.name || '').length * 8 + 10), 18);
-        ctx.fillStyle = '#000000';
+        // Biometry insignia banner
         ctx.font = 'bold 11px Inter, sans-serif';
-        ctx.fillText(p.name || 'Identificado', x + 5, y + h + 13);
+        const labelW = ctx.measureText(labelText).width + 12;
+
+        ctx.fillStyle = badgeBg;
+        ctx.fillRect(x, Math.min(H - 20, y + h + 2), labelW, 20);
+        ctx.strokeStyle = badgeColor;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x, Math.min(H - 20, y + h + 2), labelW, 20);
+
+        ctx.fillStyle = badgeColor;
+        ctx.fillText(labelText, x + 6, Math.min(H - 6, y + h + 16));
       }
     });
   }
 };
 
-// Load image into canvas with CORS fallback
+// Fallback image loader with cross-origin resilience
 const updateCanvasImage = async (url) => {
   if (!url) return;
   const loadImg = (crossOriginVal) => new Promise((resolve, reject) => {
@@ -233,7 +370,7 @@ const updateCanvasImage = async (url) => {
     currentLoadedImage.value = img;
     renderCanvas();
   } catch (err) {
-    console.warn('[LiveCanvas] Error cargando imagen:', err);
+    console.warn('[LiveCanvas] Error cargando fotograma continuo:', err);
   }
 };
 
@@ -241,7 +378,7 @@ watch(() => canvasImageData.value.imageUrl, (newUrl) => {
   if (newUrl) updateCanvasImage(newUrl);
 });
 
-watch([showQuadrants, showHumans, showBiometry], () => {
+watch([showQuadrants, showHumans, showBiometry, streamLoaded, streamActive], () => {
   renderCanvas();
 });
 
@@ -259,17 +396,23 @@ onMounted(() => {
 </script>
 
 <template>
-  <section class="w-full bg-slate-850 bg-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-6 flex flex-col gap-6 shadow-sm">
-    <!-- Header Bar -->
+  <section class="w-full bg-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-6 flex flex-col gap-6 shadow-sm">
+    <!-- Header Bar: Real-Time Live Session -->
     <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-800">
       <div class="flex items-center gap-3">
-        <div class="p-2 rounded-xl bg-blue-950/60 text-blue-400 border border-blue-500/20">
-          <AppIcon name="bolt" :size="24" />
+        <div class="p-2.5 rounded-xl bg-red-950/50 text-red-400 border border-red-500/20">
+          <AppIcon name="videocam" :size="24" />
         </div>
         <div>
-          <h2 class="text-lg sm:text-xl font-bold text-white">Flujo Operativo del Daemon en Tiempo Real</h2>
+          <div class="flex items-center gap-2.5">
+            <h2 class="text-lg sm:text-xl font-bold text-white">Sesión en Vivo en Tiempo Real</h2>
+            <div class="inline-flex items-center gap-2 px-2.5 py-1 rounded-full text-[11px] font-bold tracking-wide uppercase bg-red-950/70 text-red-400 border border-red-500/40 shadow-sm shadow-red-500/20 select-none">
+              <span class="live-dot-pulse-red"></span>
+              <span>EN VIVO</span>
+            </div>
+          </div>
           <p class="text-xs sm:text-sm text-slate-400">
-            Telemetría paso a paso: consulta P2P, fotograma base, cuadrantes, detección y biometría
+            Transmisión continua de video, análisis espacial de sillas, seguimiento y biometría
           </p>
         </div>
       </div>
@@ -281,173 +424,188 @@ onMounted(() => {
         />
         <AppButton
           variant="primary"
-          icon="bolt"
+          icon="photo_camera"
           :loading="isTriggering"
           @click="onTriggerClick"
-          title="Iniciar prueba en vivo y disparar captura"
+          title="Disparar análisis y captura inmediata en el Daemon"
         >
-          <span>Capturar Ahora (Prueba en Vivo)</span>
+          <span>Disparar Análisis Manual</span>
         </AppButton>
       </div>
     </div>
 
-    <!-- Countdown & Working Hours Bar -->
-    <div class="bg-slate-950/60 border border-slate-800/80 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row items-center gap-5">
-      <div class="relative w-24 h-24 shrink-0 flex items-center justify-center">
-        <svg viewBox="0 0 100 100" class="w-full h-full -rotate-90">
-          <circle cx="50" cy="50" r="42" stroke="rgba(51, 65, 85, 0.4)" stroke-width="8" fill="none" />
-          <circle
-            cx="50" cy="50" r="42"
-            stroke="#3b82f6"
-            stroke-width="8"
-            stroke-linecap="round"
-            fill="none"
-            stroke-dasharray="264"
-            :stroke-dashoffset="264 - (264 * countdownProgressPercent) / 100"
-            class="transition-all duration-1000 ease-linear"
-          />
-        </svg>
-        <div class="absolute inset-0 flex flex-col items-center justify-center text-center">
-          <span class="text-lg font-bold font-mono text-white tracking-wider">{{ countdownTimeFormatted }}</span>
-          <span class="text-[10px] text-slate-400 font-medium">min/seg</span>
+    <!-- Real-Time Occupancy Metrics KPI Bar -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4">
+      <!-- KPI 1: Clientes en Corte -->
+      <div class="p-3.5 sm:p-4 rounded-xl bg-slate-950/70 border border-emerald-500/30 flex items-center justify-between shadow-xs">
+        <div class="flex flex-col">
+          <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Clientes en Corte</span>
+          <span class="text-2xl sm:text-3xl font-bold text-emerald-400 font-mono mt-0.5">{{ clientsInCut }}</span>
+          <span class="text-[11px] text-slate-400">Sillas de atención</span>
+        </div>
+        <div class="p-2.5 rounded-lg bg-emerald-950/60 text-emerald-400 border border-emerald-500/20">
+          <AppIcon name="content_cut" :size="24" />
         </div>
       </div>
 
-      <div class="flex flex-col gap-2 flex-1 w-full text-center sm:text-left">
-        <div class="flex flex-wrap items-center justify-center sm:justify-start gap-2">
-          <AppBadge variant="default" icon="timer">
-            Intervalo: {{ daemonState?.intervalMinutes || daemonState?.countdown?.intervalMinutes || 3 }} min
-          </AppBadge>
-          <AppBadge variant="default" icon="schedule">
-            Horario: {{ workingHoursConfig.start }} - {{ workingHoursConfig.end }}
-          </AppBadge>
-          <AppBadge :variant="workingHoursStatus.isWithin ? 'success' : 'warning'">
-            {{ workingHoursStatus.isWithin ? '● Dentro de Horario' : '○ Fuera de Horario (En Pausa)' }}
-          </AppBadge>
+      <!-- KPI 2: Clientes en Espera -->
+      <div class="p-3.5 sm:p-4 rounded-xl bg-slate-950/70 border border-purple-500/30 flex items-center justify-between shadow-xs">
+        <div class="flex flex-col">
+          <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Clientes en Espera</span>
+          <span class="text-2xl sm:text-3xl font-bold text-purple-400 font-mono mt-0.5">{{ clientsWaiting }}</span>
+          <span class="text-[11px] text-slate-400">Sala de espera</span>
         </div>
-        <h3 class="text-base font-semibold text-white">{{ daemonState?.stepTitle || currentStep.title }}</h3>
-        <p class="text-xs text-slate-400">
-          {{ daemonState?.stepDescription || daemonState?.lastStatus || currentStep.sub || 'Sincronizando estado con Firestore...' }}
-        </p>
+        <div class="p-2.5 rounded-lg bg-purple-950/60 text-purple-400 border border-purple-500/20">
+          <AppIcon name="hourglass_empty" :size="24" />
+        </div>
       </div>
-    </div>
 
-    <!-- Process Stepper Pipeline (6 Pasos Reales) -->
-    <div class="w-full overflow-x-auto pb-2">
-      <div class="flex items-center min-w-[650px] justify-between relative px-2">
-        <div
-          v-for="(step, idx) in stepList"
-          :key="step.key"
-          class="flex items-center flex-1 last:flex-none relative"
-        >
-          <!-- Step node -->
-          <div class="flex flex-col items-center text-center gap-1.5 z-10">
-            <div
-              :class="[
-                'w-10 h-10 rounded-full flex items-center justify-center border-2 transition-all duration-300 font-semibold',
-                idx === activeStepIndex
-                  ? 'bg-blue-600 border-blue-400 text-white shadow-lg shadow-blue-500/30 scale-110'
-                  : idx < activeStepIndex
-                  ? 'bg-slate-800 border-emerald-500 text-emerald-400'
-                  : 'bg-slate-900 border-slate-700 text-slate-500'
-              ]"
-            >
-              <AppIcon :name="step.icon" :size="20" />
-            </div>
-            <span
-              :class="[
-                'text-xs font-medium whitespace-nowrap',
-                idx === activeStepIndex ? 'text-blue-400 font-bold' : 'text-slate-400'
-              ]"
-            >
-              {{ step.title }}
-            </span>
-            <span class="text-[10px] text-slate-500">{{ step.sub }}</span>
-          </div>
+      <!-- KPI 3: Barberos Activos -->
+      <div class="p-3.5 sm:p-4 rounded-xl bg-slate-950/70 border border-amber-500/30 flex items-center justify-between shadow-xs">
+        <div class="flex flex-col">
+          <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Barberos Activos</span>
+          <span class="text-2xl sm:text-3xl font-bold text-amber-400 font-mono mt-0.5">{{ activeBarbers }}</span>
+          <span class="text-[11px] text-slate-400">Personal en puesto</span>
+        </div>
+        <div class="p-2.5 rounded-lg bg-amber-950/60 text-amber-400 border border-amber-500/20">
+          <AppIcon name="badge" :size="24" />
+        </div>
+      </div>
 
-          <!-- Connector line -->
-          <div
-            v-if="idx < stepList.length - 1"
-            :class="[
-              'h-0.5 w-full mx-2 transition-colors duration-300',
-              idx < activeStepIndex ? 'bg-emerald-500' : 'bg-slate-700'
-            ]"
-          ></div>
+      <!-- KPI 4: Total Personas en Escena -->
+      <div class="p-3.5 sm:p-4 rounded-xl bg-slate-950/70 border border-sky-500/30 flex items-center justify-between shadow-xs">
+        <div class="flex flex-col">
+          <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Total en Barbería</span>
+          <span class="text-2xl sm:text-3xl font-bold text-sky-400 font-mono mt-0.5">{{ totalHumans }}</span>
+          <span class="text-[11px] text-slate-400">Detección YOLO</span>
+        </div>
+        <div class="p-2.5 rounded-lg bg-sky-950/60 text-sky-400 border border-sky-500/20">
+          <AppIcon name="group" :size="24" />
         </div>
       </div>
     </div>
 
-    <!-- Main Live Grid: Canvas & Real-time Log Feed -->
+    <!-- Main Live Grid: Video Stream / Overlays & Real-Time Event Log Feed -->
     <div class="grid grid-cols-1 lg:grid-cols-12 gap-5 w-full items-start">
-      <!-- Left: Canvas Area -->
+      <!-- Left: Real-Time Stream & Canvas Overlay Area -->
       <div class="lg:col-span-8 flex flex-col gap-3">
-        <!-- Canvas Toolbar -->
-        <div class="flex items-center justify-between bg-slate-950/80 border border-slate-800 rounded-xl px-3 py-2 text-xs">
+        <!-- Viewport Toolbar -->
+        <div class="flex flex-wrap items-center justify-between gap-3 bg-slate-950/80 border border-slate-800 rounded-xl px-3 py-2 text-xs">
           <div class="flex items-center gap-2 text-slate-300">
-            <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
-            <span>Canvas Listo • {{ canvasImageData.imageUrl ? 'Fotograma Activo' : 'Esperando imagen' }}</span>
+            <span class="live-dot-pulse-red"></span>
+            <span class="font-medium text-white">Transmisión en Vivo</span>
+            <span class="text-slate-500">•</span>
+            <span class="font-mono text-slate-400">{{ streamActive && streamLoaded ? 'Stream MJPEG' : 'Fotograma Continuo' }}</span>
+            <span class="text-slate-500">•</span>
+            <div class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-mono bg-emerald-950/70 text-emerald-400 border border-emerald-500/30 select-none">
+              <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+              <span>YOLOv8: {{ canvasImageData.tracks?.length || canvasImageData.humanBoxes?.length || 0 }} pers. ({{ canvasImageData.inferenceMs }} ms)</span>
+            </div>
+            <AppBadge variant="default" class="text-[10px] font-mono">1024x576</AppBadge>
           </div>
 
           <!-- Layers Switches -->
-          <div class="flex items-center gap-3 select-none text-slate-300">
-            <label class="flex items-center gap-1.5 cursor-pointer hover:text-white">
+          <div class="flex items-center gap-3 sm:gap-4 select-none text-slate-300">
+            <label class="flex items-center gap-1.5 cursor-pointer hover:text-white transition" title="Mostrar proyección de sillas y cuadrantes">
               <input type="checkbox" v-model="showQuadrants" class="accent-blue-500 rounded cursor-pointer" />
-              <span>Cuadrantes</span>
+              <AppIcon name="crop_free" :size="16" class="text-blue-400" />
+              <span>Sillas</span>
             </label>
-            <label class="flex items-center gap-1.5 cursor-pointer hover:text-white">
+            <label class="flex items-center gap-1.5 cursor-pointer hover:text-white transition" title="Mostrar seguimiento de personas YOLO">
               <input type="checkbox" v-model="showHumans" class="accent-emerald-500 rounded cursor-pointer" />
-              <span>Humanos</span>
+              <AppIcon name="person_search" :size="16" class="text-emerald-400" />
+              <span>Personas</span>
             </label>
-            <label class="flex items-center gap-1.5 cursor-pointer hover:text-white">
+            <label class="flex items-center gap-1.5 cursor-pointer hover:text-white transition" title="Mostrar insignias biométricas (Staff, Frecuente, Nuevo)">
               <input type="checkbox" v-model="showBiometry" class="accent-amber-500 rounded cursor-pointer" />
+              <AppIcon name="badge" :size="16" class="text-amber-400" />
               <span>Biometría</span>
             </label>
+            <button
+              type="button"
+              @click="reloadStream"
+              class="p-1 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white transition cursor-pointer"
+              title="Recargar transmisión en vivo"
+            >
+              <AppIcon name="refresh" :size="18" />
+            </button>
+            <button
+              type="button"
+              @click="toggleFullscreen"
+              class="p-1 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white transition cursor-pointer"
+              title="Pantalla Completa"
+            >
+              <AppIcon name="fullscreen" :size="18" />
+            </button>
           </div>
         </div>
 
-        <!-- Canvas Viewport -->
-        <div class="relative w-full aspect-video bg-black rounded-xl overflow-hidden border border-slate-800 flex items-center justify-center">
+        <!-- Viewport Box: Video Stream + Transparent Canvas Overlays -->
+        <div
+          ref="viewportRef"
+          class="relative w-full aspect-video bg-black rounded-xl overflow-hidden border border-slate-800 flex items-center justify-center select-none shadow-inner"
+        >
+          <!-- Live MJPEG Stream -->
+          <img
+            v-if="streamActive && streamUrl"
+            :src="`${streamUrl}?t=${streamKey}`"
+            @load="onStreamLoad"
+            @error="onStreamError"
+            alt="Transmisión en Vivo"
+            class="absolute inset-0 w-full h-full object-contain pointer-events-none"
+          />
+
+          <!-- Canvas Overlay for Quadrants, YOLO boxes & Biometry badges -->
           <canvas
             ref="canvasRef"
             width="1024"
             height="576"
-            class="w-full h-full object-contain"
+            class="absolute inset-0 w-full h-full object-contain pointer-events-none z-10"
           ></canvas>
 
+          <!-- Fallback when stream is inactive and no image is loaded yet -->
           <div
-            v-if="!canvasImageData.imageUrl"
-            class="absolute inset-0 flex flex-col items-center justify-center text-center p-6 bg-slate-950/80 backdrop-blur-xs text-slate-400 gap-2 select-none"
+            v-if="!streamActive && !currentLoadedImage && !canvasImageData.imageUrl"
+            class="absolute inset-0 flex flex-col items-center justify-center text-center p-6 bg-slate-950/85 text-slate-400 gap-2 z-20"
           >
             <div class="p-3 bg-slate-900 rounded-full border border-slate-800 text-slate-400">
-              <AppIcon name="photo_camera" :size="32" />
+              <AppIcon name="videocam" :size="32" />
             </div>
-            <h3 class="text-base font-semibold text-slate-200">Lienzo en Vivo del Daemon</h3>
+            <h3 class="text-base font-semibold text-slate-200">Reconectando Transmisión</h3>
             <p class="text-xs max-w-md text-slate-400">
-              En cuanto el Daemon consulte la cámara o se dispare una captura, la imagen, cuadrantes y detecciones se dibujarán aquí en tiempo real.
+              Sincronizando flujo de video en vivo del Daemon...
             </p>
           </div>
         </div>
 
-        <!-- Canvas Bottom Stats -->
+        <!-- Viewport Bottom Telemetry Strip -->
         <div class="flex flex-wrap items-center gap-2 pt-1">
-          <StatPill label="Fotograma" :value="canvasImageData.docId || 'Ninguno'" />
-          <StatPill label="Dimensiones" :value="`${canvasImageData.width} x ${canvasImageData.height} px`" />
-          <StatPill label="Cuadrantes" :value="`${configuredQuadrants?.length || 0} activos`" />
           <StatPill
-            label="¿Humanos Detectados?"
-            :value="canvasImageData.humanBoxes?.length ? `Sí (${canvasImageData.humanBoxes.length})` : '0'"
-            :value-class="canvasImageData.humanBoxes?.length ? 'text-emerald-400 font-bold' : 'text-slate-400'"
+            label="Transmisión"
+            :value="streamActive && streamLoaded ? 'En Vivo' : 'Fotograma Continuo'"
+            :value-class="streamActive && streamLoaded ? 'text-red-400 font-bold' : 'text-emerald-400 font-medium'"
           />
-          <StatPill label="Clasificación" :value="`${canvasImageData.peopleIdentified?.length || 0} identificados`" />
+          <StatPill
+            label="YOLO Streaming"
+            :value="isYoloStreaming ? 'SSE Directo (<20ms)' : 'Conectando...'"
+            :value-class="isYoloStreaming ? 'text-emerald-400 font-bold' : 'text-slate-400'"
+          />
+          <StatPill label="Inferencia ML" :value="canvasImageData.inferenceMs ? `${canvasImageData.inferenceMs} ms` : 'En tiempo real'" />
+          <StatPill label="Sillas Activas" :value="`${configuredQuadrants?.length || 0} configuradas`" />
+          <StatPill
+            label="Biometría"
+            :value="`${canvasImageData.peopleIdentified?.length || 0} identificados`"
+            :value-class="canvasImageData.peopleIdentified?.length ? 'text-amber-400 font-bold' : 'text-slate-400'"
+          />
         </div>
       </div>
 
-      <!-- Right: Real-time Descriptive Log Area -->
-      <div class="lg:col-span-4 flex flex-col bg-slate-950/60 border border-slate-800 rounded-xl overflow-hidden h-[460px]">
-        <div class="flex items-center justify-between p-3 border-b border-slate-800 bg-slate-900/60">
+      <!-- Right: Real-Time Event Log Area (Bitácora de Visitas y Seguimiento) -->
+      <div class="lg:col-span-4 flex flex-col bg-slate-950/70 border border-slate-800 rounded-xl overflow-hidden h-[480px]">
+        <div class="flex items-center justify-between p-3 border-b border-slate-800 bg-slate-900/80">
           <div class="flex items-center gap-2 text-sm font-semibold text-slate-200">
-            <AppIcon name="terminal" :size="18" class="text-blue-400" />
-            <h4>Bitácora de Procesos Reales</h4>
+            <AppIcon name="timeline" :size="18" class="text-blue-400" />
+            <h4>Bitácora de Visitas y Seguimiento</h4>
           </div>
           <AppBadge variant="default" class="text-[11px] font-mono">
             {{ logs.length }} eventos
@@ -458,20 +616,30 @@ onMounted(() => {
           <div
             v-for="log in logs"
             :key="log.id"
-            class="p-2.5 rounded-lg border border-slate-800/80 bg-slate-900/80 flex flex-col gap-1 transition"
+            class="p-2.5 rounded-lg border border-slate-800/90 bg-slate-900/90 flex flex-col gap-1 transition hover:border-slate-700"
           >
             <div class="flex items-center justify-between text-[11px] text-slate-400">
-              <span class="font-bold text-slate-200">{{ log.title || 'Evento' }}</span>
-              <span>{{ log.time }}</span>
+              <div class="flex items-center gap-1.5 font-bold text-slate-200">
+                <AppIcon :name="log.icon || 'sensors'" :size="15" class="text-blue-400" />
+                <span>{{ log.title }}</span>
+              </div>
+              <span class="font-mono text-slate-500">{{ log.time }}</span>
             </div>
-            <p class="text-slate-300 font-sans text-xs">{{ log.desc || log.message }}</p>
+
+            <p class="text-slate-300 font-sans text-xs leading-relaxed">{{ log.desc }}</p>
+
+            <div v-if="log.badge" class="self-start mt-0.5">
+              <span :class="['px-2 py-0.5 rounded-md text-[10px] font-semibold font-sans uppercase tracking-wider', log.badgeClass || 'text-slate-400 bg-slate-800']">
+                {{ log.badge }}
+              </span>
+            </div>
           </div>
 
           <div
             v-if="logs.length === 0"
             class="h-full flex items-center justify-center text-slate-500 text-xs text-center p-4 font-sans"
           >
-            Conectando con Firestore camera_catcher/daemon_state...
+            Esperando eventos de seguimiento y visitas en tiempo real...
           </div>
         </div>
       </div>

@@ -31,7 +31,11 @@ export { sanitizeForFirestore } from "./infrastructure/firebase/firestore_saniti
 export {
   BARBERSHOP_QUADRANTS,
   doesDetectionOverlapZone,
-  mapDetectionsToBarbershopQuadrants
+  mapDetectionsToBarbershopQuadrants,
+  inferZoneType,
+  isTransitZone,
+  isChairZone,
+  isServiceChair
 } from "./core/barbershop_rules.js";
 
 import {
@@ -43,7 +47,9 @@ import {
 
 import {
   BARBERSHOP_QUADRANTS,
-  mapDetectionsToBarbershopQuadrants
+  mapDetectionsToBarbershopQuadrants,
+  isTransitZone,
+  isChairZone
 } from "./core/barbershop_rules.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -89,15 +95,20 @@ export function setCustomQuadrants(newQuadrants) {
     }
   }
   dynamicQuadrants = map;
-  console.log(`[Detector] Cuadrantes actualizados dinámicamente (${Object.keys(dynamicQuadrants).length}): ${Object.keys(dynamicQuadrants).join(", ")}`);
+  const count = Object.keys(dynamicQuadrants).length;
+  if (count === 0) {
+    console.log(`[Detector] Cuadrantes actualizados: 0 zonas configuradas. Se requiere calibración inicial desde el Calibrador Visual.`);
+  } else {
+    console.log(`[Detector] Cuadrantes actualizados dinámicamente (${count}): ${Object.keys(dynamicQuadrants).join(", ")}`);
+  }
 }
 
 export function getActiveQuadrants() {
-  return dynamicQuadrants !== null ? dynamicQuadrants : BARBERSHOP_QUADRANTS;
+  return dynamicQuadrants !== null ? dynamicQuadrants : {};
 }
 
 export function getDefaultQuadrantsArray() {
-  return Object.values(BARBERSHOP_QUADRANTS);
+  return [];
 }
 
 let inferenceSession = null;
@@ -248,7 +259,7 @@ export async function generateAnnotatedImage(imageBuffer, quadrants, width, heig
  * @param {Object|number} options
  */
 export async function detectObjectsAndQuadrants(imageBuffer, options = {}) {
-  const confThreshold = typeof options === "number" ? options : (options.confThreshold || 0.18);
+  const confThreshold = typeof options === "number" ? options : (options.confThreshold || 0.52);
   const forceRecheck = typeof options === "object" && options.forceRecheck === true;
   const changeThreshold = typeof options === "object" && options.changeThreshold ? options.changeThreshold : 2.5;
   const shouldAnnotate = typeof options === "object" && options.generateAnnotated !== undefined ? options.generateAnnotated : false;
@@ -290,7 +301,12 @@ export async function detectObjectsAndQuadrants(imageBuffer, options = {}) {
       }
     }
 
-    if (maxScore >= confThreshold && COCO_CLASSES[maxClass]) {
+    // Para personas, exigir mínimo 0.52 de confianza para erradicar falsos positivos de siluetas de sillas y sombras
+    const targetThreshold = COCO_CLASSES[maxClass] === "person"
+      ? Math.max(0.52, confThreshold)
+      : confThreshold;
+
+    if (maxScore >= targetThreshold && COCO_CLASSES[maxClass]) {
       const cx = output[0 * numAnchors + a];
       const cy = output[1 * numAnchors + a];
       const w = output[2 * numAnchors + a];
@@ -304,12 +320,18 @@ export async function detectObjectsAndQuadrants(imageBuffer, options = {}) {
       const x2 = Math.min(origWidth, Math.round((cx + w / 2) * scaleX));
       const y2 = Math.min(origHeight, Math.round((cy + h / 2) * scaleY));
 
-      rawDetections.push({
-        class: COCO_CLASSES[maxClass],
-        classId: maxClass,
-        score: Math.round(maxScore * 100) / 100,
-        box: [x1, y1, x2, y2]
-      });
+      const boxW = x2 - x1;
+      const boxH = y2 - y1;
+
+      // Descartar manchas diminutas (<24px ancho o <38px alto) que corresponden a gente a 50m en la calle de enfrente
+      if (boxW >= 24 && boxH >= 38) {
+        rawDetections.push({
+          class: COCO_CLASSES[maxClass],
+          classId: maxClass,
+          score: Math.round(maxScore * 100) / 100,
+          box: [x1, y1, x2, y2]
+        });
+      }
     }
   }
 
@@ -324,20 +346,26 @@ export async function detectObjectsAndQuadrants(imageBuffer, options = {}) {
     options.quadrants || getActiveQuadrants()
   );
 
-  // Extraer recortes de personas
+  // Extraer recortes de personas ÚNICAMENTE si provienen de personas reales dentro de cuadrantes de silla o puesto
+  // (Descarta por completo a peatones, transeúntes, áreas de circulación y sillas vacías/disponibles)
   const clientCrops = [];
-  const personQuadrants = quadrants.filter(q => 
-    q.category === "cliente" || 
-    q.category === "personal" || 
-    q.id.startsWith("cliente_sentado") || 
-    q.id.startsWith("cliente_espera") || 
-    q.id.startsWith("barbero_") || 
-    q.id.startsWith("staff_")
-  );
+  const personQuadrants = quadrants.filter(q => {
+    if (!q || !q.box || isTransitZone(q)) return false;
+    // Si la zona está disponible o despejada, es una silla vacía (no hay persona real)
+    if (q.status === "disponible" || q.status === "despejado") return false;
+
+    // Solo cuadrantes de persona real sentada o staff trabajando guiados por su tipo semántico y estado
+    const isClientSeated = (q.type === "barber_chair" || q.type === "waiting_chair" || q.category === "cliente") &&
+      (q.status === "en_corte" || q.status === "en_espera");
+    const isStaffWorking = (q.type === "barber_workstation" || q.category === "personal") &&
+      q.status === "en_servicio";
+
+    return isClientSeated || isStaffWorking;
+  });
 
   for (let i = 0; i < personQuadrants.length; i++) {
     const q = personQuadrants[i];
-    const isStaffZone = q.category === "personal" || q.id.startsWith("barbero_");
+    const isStaffZone = q.type === "barber_workstation" || q.category === "personal";
     const [x1, y1, x2, y2] = q.box;
     const cropW = Math.max(10, Math.min(origWidth - x1, x2 - x1));
     const cropH = Math.max(10, Math.min(origHeight - y1, y2 - y1));
@@ -351,8 +379,10 @@ export async function detectObjectsAndQuadrants(imageBuffer, options = {}) {
       id: isStaffZone ? `staff_${i + 1}` : `client_${i + 1}`,
       role: isStaffZone ? "staff" : "client",
       isStaffHint: isStaffZone,
+      zoneId: q.zoneId || q.id,
+      zoneType: q.type,
       box: q.box,
-      confidence: q.confidence || 0.85,
+      confidence: q.confidence !== undefined ? q.confidence : null,
       status: q.status || (isStaffZone ? "en_servicio" : "en_corte"),
       buffer: cropBuffer
     });
@@ -364,6 +394,8 @@ export async function detectObjectsAndQuadrants(imageBuffer, options = {}) {
 
   lastDetectionResult = {
     inferenceMs,
+    origWidth,
+    origHeight,
     imageDimensions: { width: origWidth, height: origHeight },
     rawDetections: detections,
     quadrants,

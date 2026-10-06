@@ -75,6 +75,14 @@ const photoOptions = computed(() => {
   return opts;
 });
 
+const zoneTypeOptions = [
+  { value: 'barber_chair', label: 'Silla de Barbero (Corte)' },
+  { value: 'waiting_chair', label: 'Silla de Espera' },
+  { value: 'barber_workstation', label: 'Puesto de Barbero (Personal)' },
+  { value: 'walking_zone', label: 'Zona de Tránsito / Puerta' },
+  { value: 'custom_zone', label: 'Otra Zona' }
+];
+
 watch(() => props.preselectedPhotoId, (newId) => {
   if (newId) selectedPhotoId.value = newId;
 });
@@ -177,11 +185,11 @@ const onPointerUp = () => {
     if (newBox) {
       const nextIdx = quadrants.value.length + 1;
       quadrants.value.push({
-        id: `quad_${Date.now()}`,
+        id: `zone_${Date.now()}`,
         name: `Zona ${nextIdx}`,
         badge: `Z${nextIdx}`,
-        color: '#06b6d4',
-        type: 'custom_zone',
+        color: '#FFD700',
+        type: 'barber_chair',
         boxNorm: newBox,
         polygonNorm: boxNormToPolygonNorm(newBox)
       });
@@ -202,20 +210,20 @@ const onPointerUp = () => {
       @close="emit('close')"
     >
       <template #actions>
-        <AppButton size="sm" variant="secondary" icon="add_box" @click="addQuadrant">
+        <AppButton size="sm" variant="secondary" icon="add_box" @click="addQuadrant('barber_chair')">
           Crear Zona
         </AppButton>
         <AppButton
           size="sm"
           variant="danger-outline"
           icon="delete"
-          :disabled="quadrants.length <= 1"
+          :disabled="quadrants.length === 0 || selectedIndex < 0"
           @click="deleteQuadrant(selectedIndex)"
         >
           Eliminar Zona
         </AppButton>
-        <AppButton size="sm" variant="secondary" icon="restart_alt" @click="resetToDefaults">
-          Defaults
+        <AppButton size="sm" variant="secondary" icon="layers_clear" :disabled="quadrants.length === 0" @click="resetToDefaults">
+          Limpiar Zonas
         </AppButton>
         <AppButton size="sm" variant="primary" icon="save" :loading="saving" @click="onSave">
           Guardar en Firebase
@@ -289,6 +297,22 @@ const onPointerUp = () => {
             class="w-full h-full flex flex-col items-center justify-center text-slate-500 text-xs"
           >
             Esperando imagen para calibración...
+          </div>
+
+          <!-- Overlay si no hay zonas configuradas -->
+          <div
+            v-if="quadrants.length === 0"
+            class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none bg-black/40 text-center p-4 z-10"
+          >
+            <div class="bg-slate-900/90 border border-slate-700/80 rounded-xl p-4 max-w-sm backdrop-blur-sm shadow-xl">
+              <p class="text-amber-400 font-bold text-xs flex items-center justify-center gap-1.5 mb-1">
+                <AppIcon name="warning" :size="16" />
+                Calibración Inicial Requerida
+              </p>
+              <p class="text-slate-300 text-xs">
+                No hay zonas configuradas. Usa el botón <strong>Crear Zona</strong> o activa <strong>Dibujar con Ratón</strong> para delimitar tus sillas y áreas.
+              </p>
+            </div>
           </div>
 
           <!-- Interactive SVG layer -->
@@ -417,7 +441,13 @@ const onPointerUp = () => {
           <span class="text-[10px] text-slate-500 font-mono">[ymin, xmin, ymax, xmax]</span>
         </div>
 
-        <div class="flex flex-col gap-2.5">
+        <div v-if="quadrants.length === 0" class="py-10 px-3 text-center text-slate-500 text-xs flex flex-col items-center gap-2">
+          <AppIcon name="crop_free" :size="32" class="text-slate-600 mb-1" />
+          <span class="font-medium text-slate-300">Sin zonas configuradas</span>
+          <span class="text-[11px] text-slate-500 leading-relaxed">Las zonas se configuran 100% dinámicamente. Haz clic en "Crear Zona" para agregar tu primer puesto o silla.</span>
+        </div>
+
+        <div v-else class="flex flex-col gap-2.5">
           <div
             v-for="(q, idx) in quadrants"
             :key="q.id || `quad-side-${idx}`"
@@ -446,6 +476,10 @@ const onPointerUp = () => {
 
             <!-- Form fields for selected quadrant -->
             <div v-if="idx === selectedIndex" class="grid grid-cols-2 gap-2 pt-2 border-t border-slate-800">
+              <div class="col-span-2 flex flex-col gap-1">
+                <label class="text-[10px] text-slate-400">Tipo / Categoría de Zona:</label>
+                <AppSelect v-model="q.type" :options="zoneTypeOptions" />
+              </div>
               <div class="flex flex-col gap-1">
                 <label class="text-[10px] text-slate-400">Nombre:</label>
                 <AppInput v-model="q.name" />

@@ -50,3 +50,28 @@ export async function uploadClientCrop(bucket, storagePath, cropBuffer, metadata
   });
   return storagePath;
 }
+
+/**
+ * Sube un recorte de rostro nítido de alta calidad a Firebase Storage (~30 KB)
+ * @param {Object} bucket
+ * @param {string} storagePath
+ * @param {Buffer} faceBuffer
+ * @param {Object} metadata
+ */
+export async function uploadFaceCrop(bucket, storagePath, faceBuffer, metadata = {}) {
+  const file = bucket.file(storagePath);
+  await file.save(faceBuffer, {
+    metadata: {
+      contentType: "image/jpeg",
+      metadata: {
+        capturedAt: new Date().toISOString(),
+        camera: "barberia",
+        source: "gcp-e2-micro",
+        type: "sharp_face_crop",
+        ...metadata
+      }
+    }
+  });
+  return storagePath;
+}
+

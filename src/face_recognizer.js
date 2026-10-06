@@ -106,10 +106,10 @@ export async function extractFaceEmbedding(imageBuffer) {
  * Identify a face embedding against a gallery of known profiles
  * @param {number[]} embedding - 512-dim query embedding
  * @param {Array<{ id: string, name: string, isStaff: boolean, embedding: number[] }>} knownProfiles 
- * @param {number} threshold - Match threshold (default 0.45)
+ * @param {number} threshold - Match threshold (default 0.65)
  * @returns {{ matched: boolean, profile: object|null, similarity: number }}
  */
-export function identifyFace(embedding, knownProfiles = [], threshold = 0.45) {
+export function identifyFace(embedding, knownProfiles = [], threshold = 0.65) {
   if (!embedding || !knownProfiles || knownProfiles.length === 0) {
     return { matched: false, profile: null, similarity: 0 };
   }

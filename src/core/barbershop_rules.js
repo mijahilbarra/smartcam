@@ -12,49 +12,9 @@ import {
   calculateIoU
 } from "./geometry.js";
 
-// Cuadrantes físicos por defecto basados en resolución 1024x576
-export const BARBERSHOP_QUADRANTS = {
-  puerta_entrada: {
-    id: "puerta_entrada",
-    name: "Entrada / Pasillo peatonal",
-    boxNorm: [0.30, 0.40, 0.88, 0.60], // [ymin, xmin, ymax, xmax]
-    polygonNorm: [{ x: 0.40, y: 0.30 }, { x: 0.60, y: 0.30 }, { x: 0.60, y: 0.88 }, { x: 0.40, y: 0.88 }],
-    type: "walking_zone",
-    color: "#007BFF"
-  },
-  silla_barbero_puesto1: {
-    id: "silla_barbero_puesto1",
-    name: "Silla de barbero (Puesto 1)",
-    boxNorm: [0.65, 0.80, 1.00, 1.00],
-    polygonNorm: [{ x: 0.80, y: 0.65 }, { x: 1.00, y: 0.65 }, { x: 1.00, y: 1.00 }, { x: 0.80, y: 1.00 }],
-    type: "barber_chair",
-    color: "#FFD700"
-  },
-  silla_barbero_puesto2: {
-    id: "silla_barbero_puesto2",
-    name: "Silla de barbero (Frente)",
-    boxNorm: [0.80, 0.36, 1.00, 0.67],
-    polygonNorm: [{ x: 0.36, y: 0.80 }, { x: 0.67, y: 0.80 }, { x: 0.67, y: 1.00 }, { x: 0.36, y: 1.00 }],
-    type: "barber_chair",
-    color: "#FFD700"
-  },
-  silla_espera: {
-    id: "silla_espera",
-    name: "Silla de espera",
-    boxNorm: [0.55, 0.73, 0.92, 0.90],
-    polygonNorm: [{ x: 0.73, y: 0.55 }, { x: 0.90, y: 0.55 }, { x: 0.90, y: 0.92 }, { x: 0.73, y: 0.92 }],
-    type: "waiting_chair",
-    color: "#D250DC"
-  },
-  zona_barbero: {
-    id: "zona_barbero",
-    name: "Zona de trabajo de barbero",
-    boxNorm: [0.45, 0.65, 0.95, 0.82],
-    polygonNorm: [{ x: 0.65, y: 0.45 }, { x: 0.82, y: 0.45 }, { x: 0.82, y: 0.95 }, { x: 0.65, y: 0.95 }],
-    type: "barber_workstation",
-    color: "#FF4500"
-  }
-};
+// Cuadrantes físicos por defecto: objeto vacío para que todo provenga dinámicamente de Firestore
+export const BARBERSHOP_QUADRANTS = {};
+
 
 /**
  * Determina si una detección [x1, y1, x2, y2] solapa espacialmente con una zona configurada
@@ -103,6 +63,78 @@ export function doesDetectionOverlapZone(detBox, zone, width, height) {
 }
 
 /**
+ * Infiere el tipo semántico de una zona según sus metadatos o nombre
+ * @param {Object} zone
+ * @returns {string}
+ */
+export function inferZoneType(zone) {
+  if (!zone) return "custom_zone";
+  if (zone.type) return zone.type;
+  const name = (zone.name || zone.label || zone.id || "").toLowerCase();
+  if (/transito|tránsito|pasillo|puerta|entrada|walking|corredor|hallway/.test(name)) {
+    return "walking_zone";
+  }
+  if (/espera|waiting/.test(name)) {
+    return "waiting_chair";
+  }
+  if (/silla|chair|corte|puesto_corte|sillon|sillón/.test(name)) {
+    return "barber_chair";
+  }
+  if (/barbero|barber|workstation|puesto/.test(name)) {
+    return "barber_workstation";
+  }
+  return "custom_zone";
+}
+
+/**
+ * Determina si una zona corresponde a área de tránsito peatonal
+ * @param {Object} zone
+ * @returns {boolean}
+ */
+export function isTransitZone(zone) {
+  if (!zone) return false;
+  if (zone.type) {
+    const t = zone.type.toLowerCase();
+    return t === "walking_zone" || t === "transit" || t === "transito";
+  }
+  const name = (zone.name || zone.label || zone.id || "").toLowerCase();
+  return /transito|tránsito|pasillo|puerta|entrada|walking|corredor|hallway/.test(name);
+}
+
+/**
+ * Determina si una zona corresponde a cualquier tipo de silla (corte o espera)
+ * @param {Object} zone
+ * @returns {boolean}
+ */
+export function isChairZone(zone) {
+  if (!zone) return false;
+  if (isTransitZone(zone)) return false;
+  if (zone.type) {
+    const t = zone.type.toLowerCase();
+    return t === "barber_chair" || t === "waiting_chair";
+  }
+  const name = (zone.name || zone.label || zone.id || "").toLowerCase();
+  return /silla|chair|corte|espera|banca|sillon|sillón/.test(name);
+}
+
+/**
+ * Determina si una zona corresponde específicamente a una silla de barbero para servicio
+ * @param {Object} zone
+ * @returns {boolean}
+ */
+export function isServiceChair(zone) {
+  if (!zone) return false;
+  if (isTransitZone(zone)) return false;
+  if (zone.type) {
+    const t = zone.type.toLowerCase();
+    return t === "barber_chair";
+  }
+  const name = (zone.name || zone.label || zone.id || "").toLowerCase();
+  if (/espera|waiting/.test(name)) return false;
+  return /silla|chair|corte|puesto|sillon|sillón/.test(name);
+}
+
+/**
  * Clasifica detecciones de objetos en cuadrantes semánticos de la barbería
  * @param {Array} detections
  * @param {number} width
@@ -120,8 +152,10 @@ export function mapDetectionsToBarbershopQuadrants(detections, width, height, co
     configuredZones = Object.values(configuredZonesMap);
   }
 
+  // Las zonas provienen ÚNICAMENTE de la configuración dinámica de Firestore.
+  // Si no hay zonas configuradas por el usuario, opera con lista vacía [].
   if (configuredZonesMap === null || configuredZonesMap === undefined) {
-    configuredZones = Object.values(BARBERSHOP_QUADRANTS);
+    configuredZones = [];
   }
 
   // Normalizar cada zona
@@ -149,27 +183,23 @@ export function mapDetectionsToBarbershopQuadrants(detections, width, height, co
       Math.round(bNorm[2] * height)
     ];
 
+    // Ocupación basada EXCLUSIVAMENTE en personas reales detectadas
     const matchingPersonDets = [];
-    const matchingPhoneDets = [];
-    const matchingChairDets = [];
 
     detections.forEach((det, idx) => {
       if (det.class === "person" && doesDetectionOverlapZone(det.box, zone, width, height)) {
         matchingPersonDets.push(det);
         matchedPersonIndices.add(idx);
-      } else if (det.class === "cell phone" && doesDetectionOverlapZone(det.box, zone, width, height)) {
-        matchingPhoneDets.push(det);
-      } else if (det.class === "chair" && calculateIoU(det.box, zonePixelBox) > 0.35) {
-        matchingChairDets.push(det);
       }
     });
 
-    const zoneType = zone.type || "custom_zone";
+    const zoneType = zone.type && zone.type !== "custom_zone" ? zone.type : inferZoneType(zone);
     const zoneColor = zone.color || "#007BFF";
 
     switch (zoneType) {
       case "barber_chair": {
-        const isOccupied = matchingPersonDets.length > 0 || matchingPhoneDets.length > 0 || matchingChairDets.length > 0;
+        // Una silla SOLO está ocupada si hay una PERSONA real detectada dentro de la zona
+        const isOccupied = matchingPersonDets.length > 0;
         const primaryPerson = matchingPersonDets[0];
 
         quadrants.push({
@@ -178,6 +208,7 @@ export function mapDetectionsToBarbershopQuadrants(detections, width, height, co
           label: zone.name || zone.id,
           category: "silla_barbero",
           type: "barber_chair",
+          isConfiguredZone: true,
           color: zoneColor,
           box: zonePixelBox,
           boxNorm: zone.boxNorm,
@@ -186,16 +217,18 @@ export function mapDetectionsToBarbershopQuadrants(detections, width, height, co
           description: isOccupied ? `Sillón de barbero ocupado en corte` : `Sillón de barbero disponible`
         });
 
-        if (isOccupied) {
-          const clientBox = primaryPerson ? primaryPerson.box : [zonePixelBox[0] + 15, zonePixelBox[1] + 10, zonePixelBox[2] - 15, zonePixelBox[3] - 10];
+        // Solo generar cliente sentado si existe una PERSONA REAL con su bounding box y score real
+        if (isOccupied && primaryPerson) {
           quadrants.push({
             id: `cliente_sentado_${zone.id}`,
             zoneId: zone.id,
             label: `Cliente sentado (${zone.name || "Silla"})`,
             category: "cliente",
+            type: "barber_chair",
+            isConfiguredZone: false,
             color: "#32DC32",
-            confidence: primaryPerson ? primaryPerson.score : 0.85,
-            box: clientBox,
+            confidence: primaryPerson.score,
+            box: primaryPerson.box,
             status: "en_corte",
             description: `Cliente sentado recibiendo servicio en ${zone.name || zone.id}`
           });
@@ -211,6 +244,7 @@ export function mapDetectionsToBarbershopQuadrants(detections, width, height, co
           label: zone.name || zone.id,
           category: "personal",
           type: "barber_workstation",
+          isConfiguredZone: true,
           color: zoneColor || "#FF4500",
           box: zonePixelBox,
           boxNorm: zone.boxNorm,
@@ -227,6 +261,7 @@ export function mapDetectionsToBarbershopQuadrants(detections, width, height, co
             label: zone.name || "Barbero",
             category: "personal",
             type: "barber_workstation",
+            isConfiguredZone: false,
             color: zoneColor || "#FF4500",
             confidence: barberDet.score,
             box: barberDet.box,
@@ -245,6 +280,7 @@ export function mapDetectionsToBarbershopQuadrants(detections, width, height, co
           label: zone.name || zone.id,
           category: "silla_espera",
           type: "waiting_chair",
+          isConfiguredZone: true,
           color: zoneColor || "#D250DC",
           box: zonePixelBox,
           boxNorm: zone.boxNorm,
@@ -260,6 +296,8 @@ export function mapDetectionsToBarbershopQuadrants(detections, width, height, co
               zoneId: zone.id,
               label: `Cliente en espera (${zone.name})`,
               category: "cliente",
+              type: "waiting_chair",
+              isConfiguredZone: false,
               color: "#D250DC",
               confidence: pDet.score,
               box: pDet.box,
@@ -279,6 +317,7 @@ export function mapDetectionsToBarbershopQuadrants(detections, width, height, co
           label: zone.name || zone.id,
           category: "transito",
           type: "walking_zone",
+          isConfiguredZone: true,
           color: zoneColor || "#007BFF",
           box: zonePixelBox,
           boxNorm: zone.boxNorm,
@@ -295,6 +334,7 @@ export function mapDetectionsToBarbershopQuadrants(detections, width, height, co
               label: `Tránsito en ${zone.name}`,
               category: "transito",
               type: "walking_zone",
+              isConfiguredZone: false,
               color: zoneColor || "#007BFF",
               confidence: pDet.score,
               box: pDet.box,
@@ -314,6 +354,7 @@ export function mapDetectionsToBarbershopQuadrants(detections, width, height, co
           label: zone.name || zone.id,
           category: zone.category || "custom",
           type: zoneType,
+          isConfiguredZone: true,
           color: zoneColor || "#10B981",
           box: zonePixelBox,
           boxNorm: zone.boxNorm,
@@ -330,6 +371,7 @@ export function mapDetectionsToBarbershopQuadrants(detections, width, height, co
               label: `Presencia en ${zone.name}`,
               category: zone.category || "custom",
               type: zoneType,
+              isConfiguredZone: false,
               color: zoneColor || "#10B981",
               confidence: pDet.score,
               box: pDet.box,
@@ -350,6 +392,7 @@ export function mapDetectionsToBarbershopQuadrants(detections, width, height, co
         id: `persona_sin_zona_${idx + 1}`,
         label: "Persona fuera de zonas",
         category: "otro",
+        isConfiguredZone: false,
         color: "#6C757D",
         confidence: det.score,
         box: det.box,

@@ -8,7 +8,7 @@ import {
   calculateIoU,
   applyNMS
 } from "../src/core/geometry.js";
-import { doesDetectionOverlapZone, BARBERSHOP_QUADRANTS } from "../src/core/barbershop_rules.js";
+import { doesDetectionOverlapZone } from "../src/core/barbershop_rules.js";
 import { SchedulerService } from "../src/services/scheduler_service.js";
 
 console.log("=== Test de Módulos Core y Servicios Refactorizados ===");
@@ -46,8 +46,13 @@ assert.strictEqual(nmsResult[0].score, 0.9);
 assert.strictEqual(nmsResult[1].score, 0.85);
 console.log("✓ Geometría pura (IoU, NMS, polígonos) validada exitosamente");
 
-// 2. Reglas de Barbería
-const chairZone = BARBERSHOP_QUADRANTS.silla_barbero_puesto1;
+// 2. Reglas de Barbería (fixture de prueba local: las zonas reales vienen del Setup en Firestore)
+const chairZone = {
+  id: "fixture_chair",
+  name: "Silla de prueba",
+  type: "barber_chair",
+  boxNorm: [0.65, 0.80, 1.00, 1.00]
+};
 // Detection in the lower-right quadrant: [x1, y1, x2, y2]
 // chairZone boxNorm is [0.65, 0.80, 1.00, 1.00] in 1024x576 -> y: ~374-576, x: ~819-1024
 const personInChair = [820, 380, 1000, 560];

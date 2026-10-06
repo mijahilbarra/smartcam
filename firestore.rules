@@ -12,6 +12,11 @@ service cloud.firestore {
       allow read, write: if true;
     }
 
+    // Registro de eventos de visitas de clientes identificados
+    match /camera_catcher_visits/{visitId} {
+      allow read, write: if true;
+    }
+
     // Por defecto denegar acceso a cualquier otra colección
     match /{document=**} {
       allow read, write: if false;

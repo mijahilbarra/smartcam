@@ -71,10 +71,10 @@ const openCalibratorWithPhoto = (photo) => {
               : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
           ]"
         >
-          <AppIcon name="sensors" :size="18" :class="activeTab === 'live' ? 'text-blue-400' : ''" />
-          <span>Monitor en Vivo del Daemon</span>
-          <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-950/80 text-emerald-400 border border-emerald-500/30">
-            <span class="live-dot-pulse"></span>
+          <AppIcon name="videocam" :size="18" :class="activeTab === 'live' ? 'text-red-400' : ''" />
+          <span>Sesión en Vivo en Tiempo Real</span>
+          <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-950/80 text-red-400 border border-red-500/30">
+            <span class="live-dot-pulse-red"></span>
             EN VIVO
           </span>
         </button>

@@ -88,6 +88,16 @@ El repositorio utiliza GitHub Actions con filtros por ruta (`paths:`):
 
 ---
 
+### 7. Cero Coexistencia de Paradigmas: Reemplazo Radical, Nunca Modos Paralelos Duplicados
+> [!IMPORTANT]
+> **PROHIBIDO CONSTRUIR DOS FORMAS DE HACER LAS COSAS A MENOS QUE EL USUARIO LO PIDA EXPLÍCITAMENTE**.
+> Cuando la arquitectura del sistema evoluciona o migra hacia un nuevo estándar (por ejemplo: de capturas periódicas por intervalos de 15 min hacia streaming y seguimiento en tiempo real):
+> 1. **Reemplazo Radical y Definitivo**: El nuevo paradigma reemplaza por completo al anterior. Queda terminantemente prohibido mantener "dos formas paralelas", switchers de alternancia innecesarios ("Modo A vs Modo B") o vistas intermedias redundantes por miedo a romper lo anterior.
+> 2. **Depuración de Elementos Obsoletos**: Todo componente que pierda sentido con la nueva arquitectura debe eliminarse de raíz (por ejemplo: el contador/cron regresivo de 15 minutos, las barras de espera de captura y las fases antiguas del ciclo).
+> 3. **Fuente Única de Verdad (Single Source of Truth)**: La interfaz y el backend deben ofrecer una experiencia limpia, unificada y coherente con el nuevo paradigma, presentando directamente la sesión en vivo y la analítica en tiempo real.
+
+---
+
 ## 🛠️ Resumen de Componentes Técnicos
 
 1. **Captura P2P (Neolink)**:

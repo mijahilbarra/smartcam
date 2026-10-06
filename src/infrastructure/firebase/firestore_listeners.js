@@ -3,7 +3,7 @@
  * Escucha cambios de configuración (prompt/intervalos), comandos manuales de captura y calibración de cuadrantes.
  */
 
-import { setCustomQuadrants, getDefaultQuadrantsArray } from "../../detector.js";
+import { setCustomQuadrants } from "../../detector.js";
 
 /**
  * Inicializa y carga la configuración inicial de cámara_catcher/prompt
@@ -112,19 +112,10 @@ export function registerFirestoreListeners({ db, scheduler, onManualCapture }) {
 
   // 3. Listener de cuadrantes dinámicos
   console.log(`[Quadrants] Escuchando configuración de cuadrantes en tiempo real: camera_catcher/quadrants...`);
-  db.doc("camera_catcher/quadrants").onSnapshot(async (snapshot) => {
+  db.doc("camera_catcher/quadrants").onSnapshot((snapshot) => {
     if (!snapshot.exists) {
-      console.log(`[Quadrants] camera_catcher/quadrants no existe. Creando con valores por defecto...`);
-      try {
-        await db.doc("camera_catcher/quadrants").set({
-          updatedAt: new Date().toISOString(),
-          updatedBy: "system_init",
-          quadrants: getDefaultQuadrantsArray()
-        });
-        console.log(`[Quadrants] Valores iniciales de cuadrantes guardados en Firestore.`);
-      } catch (e) {
-        console.warn(`[Quadrants] No se pudo autoinicializar camera_catcher/quadrants:`, e.message);
-      }
+      console.log(`[Quadrants] No hay cuadrantes configurados en Firestore (camera_catcher/quadrants). Se requiere calibración inicial desde el Calibrador Visual.`);
+      setCustomQuadrants([]);
       return;
     }
 
@@ -163,9 +154,14 @@ export async function prefetchQuadrants(db) {
         quads = data.zones;
       }
       setCustomQuadrants(quads);
-      console.log(`[Quadrants] Cuadrantes dinámicos precargados exitosamente de Firestore (${quads.length} zonas).`);
+      if (quads.length === 0) {
+        console.log(`[Quadrants] camera_catcher/quadrants existe pero tiene 0 zonas configuradas. Se requiere calibración inicial desde el Calibrador Visual.`);
+      } else {
+        console.log(`[Quadrants] Cuadrantes dinámicos precargados exitosamente de Firestore (${quads.length} zonas).`);
+      }
     } else {
-      console.log(`[Quadrants] camera_catcher/quadrants no existe aún en Firestore.`);
+      console.log(`[Quadrants] No hay cuadrantes configurados en Firestore (camera_catcher/quadrants). Se requiere calibración inicial desde el Calibrador Visual.`);
+      setCustomQuadrants([]);
     }
   } catch (err) {
     console.warn(`[Quadrants] No se pudieron precargar cuadrantes al iniciar:`, err.message);

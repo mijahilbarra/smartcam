@@ -1,9 +1,11 @@
 /**
  * daemon_reporter.js
- * Gestiona y transmite la telemetría en tiempo real de cada paso del Daemon a Firestore: camera_catcher/daemon_state
+ * Gestiona y transmite la telemetría en tiempo real de cada paso del Daemon
+ * DIRECTAMENTE al frontend vía SSE (sin intermediar Firestore).
  */
 
 import { toPointObject, sanitizeForFirestore } from "./detector.js";
+import { telemetryStream } from "./infrastructure/streaming/telemetry_stream.js";
 
 const MAX_EVENT_LOG_SIZE = 30;
 
@@ -78,10 +80,11 @@ class DaemonReporter {
   }
 
   /**
-   * Envía el estado acumulado a Firestore de manera asíncrona sin bloquear la ejecución del daemon
+   * Transmite el estado acumulado DIRECTAMENTE al frontend por SSE (/api/yolo/stream, evento "daemon_state").
+   * El estado del daemon es telemetría efímera: NO se persiste en Firestore.
+   * (Firestore solo guarda clientes sentados, visitas y configuración del Setup.)
    */
   async _syncToFirestore() {
-    if (!this.db) return;
     try {
       this.currentState.updatedAt = new Date().toISOString();
       if (this.currentState.countdown) {
@@ -92,10 +95,9 @@ class DaemonReporter {
           this.currentState.intervalMinutes = this.currentState.countdown.intervalMinutes;
         }
       }
-      const sanitizedPayload = sanitizeForFirestore(this.currentState);
-      await this.db.doc("camera_catcher/daemon_state").set(sanitizedPayload, { merge: true });
+      telemetryStream.broadcastDaemonState(this.currentState);
     } catch (err) {
-      console.warn("[DaemonReporter] Error sincronizando estado a Firestore:", err.message);
+      console.warn("[DaemonReporter] Error transmitiendo estado por SSE:", err.message);
     }
   }
 
@@ -193,14 +195,10 @@ class DaemonReporter {
    */
   async reportQuadrantsActive(quadrants) {
     const list = Array.isArray(quadrants) ? quadrants : [];
-    // Filtrar únicamente los cuadrantes físicos configurados (excluyendo sub-detecciones secundarias y personas sin zona)
+    // Filtrar únicamente los cuadrantes físicos configurados (usando isConfiguredZone o descartando sub-detecciones)
     const physicalZones = list.filter(q => 
-      !q.zoneId && 
-      !q.id.startsWith("persona_sin_zona_") && 
-      !q.id.startsWith("cliente_sentado_") && 
-      !q.id.startsWith("barbero_") && 
-      !q.id.startsWith("transito_") &&
-      !q.id.startsWith("cliente_espera_")
+      q.isConfiguredZone === true || 
+      (q.isConfiguredZone !== false && !q.zoneId && q.category !== "cliente" && q.category !== "otro" && !q.id?.startsWith("persona_sin_zona"))
     );
 
     this.currentState.step = "quadrants_active";
@@ -347,6 +345,80 @@ class DaemonReporter {
       `✅ Ciclo finalizado exitosamente. Documento registrado: ${docId}. Reiniciando contador regresivo.`,
       "success"
     );
+
+    await this._syncToFirestore();
+  }
+
+  /**
+   * Actualización atómica en tiempo real para el modo Streaming / Sesión en Vivo
+   */
+  async reportRealtimeTick({
+    docId,
+    quadrants = [],
+    mlResult = {},
+    identifiedPeople = [],
+    activeTracks = [],
+    occupancy = {}
+  }) {
+    this.currentState.step = "realtime_active";
+    this.currentState.stepIndex = 1;
+    this.currentState.stepTitle = "Sesión en Vivo en Tiempo Real";
+    this.currentState.stepDescription = "Seguimiento espacial, análisis de sillas y biometría continua activa";
+
+    const rawDetections = mlResult.rawDetections || [];
+    const personDetections = rawDetections.filter(d => d.class === "person");
+
+    this.currentState.humans = {
+      hasHumans: personDetections.length > 0,
+      count: personDetections.length,
+      inferenceMs: mlResult.inferenceMs || 0,
+      detections: personDetections.map(d => ({
+        box: d.box,
+        confidence: d.confidence,
+        class: d.class
+      }))
+    };
+
+    const physicalZones = (Array.isArray(quadrants) ? quadrants : []).filter(q =>
+      q.isConfiguredZone === true ||
+      (q.isConfiguredZone !== false && !q.zoneId && q.category !== "cliente" && q.category !== "otro" && !q.id?.startsWith("persona_sin_zona"))
+    );
+
+    this.currentState.quadrants = physicalZones.map(q => ({
+      id: q.id,
+      label: q.label || q.name || q.id,
+      category: q.category || "general",
+      type: q.type || "zone",
+      status: q.status || "disponible",
+      color: q.color || "#007BFF",
+      box: q.box,
+      polygonNorm: Array.isArray(q.polygonNorm)
+        ? q.polygonNorm.map(toPointObject)
+        : undefined
+    }));
+
+    this.currentState.people = identifiedPeople.map(p => ({
+      name: p.name || "Persona",
+      isStaff: p.isStaff === true,
+      isFrequent: p.isFrequent === true,
+      visitCount: p.visitCount || 1,
+      confidence: p.confidence || 0,
+      status: p.isStaff ? "Personal / Barbero" : (p.isFrequent ? "Cliente Frecuente" : "Nuevo Cliente"),
+      box: p.box
+    }));
+
+    this.currentState.tracks = activeTracks.map(t => ({
+      trackId: t.trackId,
+      box: t.box,
+      quadrant: t.currentQuadrant?.label || null,
+      quadrantId: t.currentQuadrant?.id || null,
+      identity: t.identity?.name || null,
+      isStaff: t.identity?.isStaff || false,
+      isFrequent: t.identity?.isFrequent || false
+    }));
+
+    this.currentState.occupancy = occupancy;
+    this.currentState.updatedAt = new Date().toISOString();
 
     await this._syncToFirestore();
   }

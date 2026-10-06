@@ -14,6 +14,15 @@ export default defineConfig({
     }
   },
   root: 'web',
+  server: {
+    port: 5173,
+    proxy: {
+      '/api': {
+        target: 'http://localhost:8085',
+        changeOrigin: true
+      }
+    }
+  },
   build: {
     outDir: 'dist',
     emptyOutDir: true

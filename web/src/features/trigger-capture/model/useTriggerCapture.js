@@ -17,7 +17,7 @@ export function useTriggerCapture() {
 
     if (addLogCallback) {
       addLogCallback({
-        title: '⚡ Disparo de Captura Solicitado',
+        title: 'Disparo de Captura Solicitado',
         desc: `Entorno: ${envInfo.environmentLabel}. Destino: ${envInfo.dispatchTarget}`,
         type: 'action'
       });
@@ -78,8 +78,8 @@ export function useTriggerCapture() {
         const isWarning = statusType.value === 'warning';
         addLogCallback({
           title: dispatchedViaHttp
-            ? (isWarning ? '⚠️ Captura en curso (HTTP)' : '✓ Ciclo activado (HTTP)')
-            : '✓ Ciclo enviado a Firestore',
+            ? (isWarning ? 'Captura en curso (HTTP)' : 'Ciclo activado (HTTP)')
+            : 'Ciclo enviado a Firestore',
           desc: dispatchedViaHttp
             ? (isWarning ? (statusMessage.value || 'Captura en curso.') : 'Orden ejecutada vía HTTP directo (Simulador E2 localhost:8085).')
             : `Orden enviada vía Firestore [${envInfo.databaseId}].`,

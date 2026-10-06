@@ -81,6 +81,38 @@ export function polygonNormToBoundingBoxNorm(polygon) {
  *   polygonNorm: [{x, y}, ...] (0..1)
  * }
  */
+/**
+ * Infiere el tipo semántico de una zona según sus metadatos o nombre
+ * @param {Object} zone
+ * @returns {string}
+ */
+export function inferZoneType(zone) {
+  if (!zone) return 'custom_zone';
+  if (zone.type && zone.type !== 'custom_zone') return zone.type;
+  const name = (zone.name || zone.label || zone.id || '').toLowerCase();
+  if (/transito|tránsito|pasillo|puerta|entrada|walking|corredor|hallway/.test(name)) {
+    return 'walking_zone';
+  }
+  if (/espera|waiting/.test(name)) {
+    return 'waiting_chair';
+  }
+  if (/silla|chair|corte|puesto_corte|sillon|sillón/.test(name)) {
+    return 'barber_chair';
+  }
+  if (/barbero|barber|workstation|puesto/.test(name)) {
+    return 'barber_workstation';
+  }
+  return 'custom_zone';
+}
+
+/**
+ * Normaliza cualquier formato recibido de Firestore o del editor a la estructura interna estándar:
+ * {
+ *   id, name, badge, color, type,
+ *   boxNorm: [ymin, xmin, ymax, xmax] (0..1),
+ *   polygonNorm: [{x, y}, ...] (0..1)
+ * }
+ */
 export function normalizeQuadrants(quads) {
   if (!quads) return [];
   let list = [];
@@ -102,12 +134,13 @@ export function normalizeQuadrants(quads) {
     }
 
     const boxNorm = polygonNormToBoundingBoxNorm(polygonNorm);
+    const resolvedType = q.type && q.type !== 'custom_zone' ? q.type : inferZoneType(q);
 
     return {
       id: q.id || `quad_${idx + 1}`,
       name: q.name || `Zona ${idx + 1}`,
       badge: q.badge || q.name || `Z${idx + 1}`,
-      type: q.type || 'custom_zone',
+      type: resolvedType,
       color: q.color || '#3b82f6',
       polygonNorm,
       boxNorm
@@ -133,12 +166,13 @@ export function serializeQuadrantsForFirestore(quads) {
     });
 
     const boxNorm = polygonNormToBoundingBoxNorm(polygonNorm);
+    const resolvedType = q.type && q.type !== 'custom_zone' ? q.type : inferZoneType(q);
 
     return {
       id: q.id,
       name: q.name || q.id,
       badge: q.badge || q.name || q.id,
-      type: q.type || 'custom_zone',
+      type: resolvedType,
       color: q.color || '#3b82f6',
       boxNorm,
       polygonNorm
