@@ -50,7 +50,8 @@ src/
 │       └── logger.js                    # Redirección de console.log/error a daemon.log y /tmp
 │
 ├── services/                            # ⚙️ Casos de uso y orquestación
-│   ├── capture_orchestrator.js          # Orquesta: Neolink -> ONNX -> Crops -> Face -> Storage -> Firestore -> Telemetría
+│   ├── processes.js                     # Pipeline funcional: acquireFrame -> detectScene -> trackEntities -> matchIdentities -> updateVisits -> computeOccupancy -> broadcastTelemetry -> persistCycleData
+│   ├── capture_orchestrator.js          # Controlador con estado (tracker, visitService, mutex) que delega en runProcessCycle
 │   ├── people_service.js                # Biometría: reconciliación con staff y perfiles en Firestore
 │   └── visit_session_service.js         # Ciclo de vida de visitas, auditoría de sillas y persistencia
 │
