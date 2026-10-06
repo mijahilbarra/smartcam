@@ -35,3 +35,20 @@ Google Cloud no expone una API REST directa para consultar la factura en tiempo 
 3. **Sincronización con Firestore / Panel Web**:
    - Guardar el resultado agregado diariamente en un documento `camera_catcher/billing_actual`.
    - Mostrar en el panel web una columna comparativa: **"Facturado Oficial Google"** vs **"Proyección Preventiva"**.
+
+---
+
+### 2. Decisión pendiente: Capturas manuales en Firestore / Storage
+* **Prioridad**: Media / Requiere decisión del usuario
+* **Área**: Persistencia & Costos Firebase
+* **Objetivo**: Definir si las capturas manuales (y la de arranque) deben dejar de persistirse, para que Firestore quede **solo** con clientes sentados (`camera_catcher_people`, `camera_catcher_visits`) y configuración del Setup (`camera_catcher/quadrants`, `camera_catcher/prompt`).
+
+#### Contexto Técnico:
+- Hoy, una captura manual escribe un documento en `camera_catcher/photos/photos/<docId>` y sube la imagen original + recortes a Storage (`camera_catcher/photos/*.jpg`).
+- Código: `src/services/capture_orchestrator.js` (subida a Storage cuando `isManual`, y `docRef.set(...)` del registro de foto).
+- La **galería de fotos** del frontend (`web/src/entities/photo/model/usePhotos.js`) depende de esos documentos.
+- El bucle en tiempo real ya NO escribe nada en Firestore (telemetría por SSE directo).
+
+#### Opciones:
+1. **Eliminar** la persistencia de capturas manuales y retirar la galería (o convertirla en vista efímera del último fotograma vía `/api/stream`).
+2. **Mantener** la persistencia solo para diagnóstico manual (estado actual).
