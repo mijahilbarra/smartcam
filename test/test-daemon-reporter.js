@@ -15,22 +15,14 @@ async function runTest() {
 
   daemonReporter.init(mockDb);
 
-  // 1. Contador
-  console.log("\n[1] Probando setCountdown...");
-  const targetDate = new Date(Date.now() + 15 * 60 * 1000);
-  await daemonReporter.setCountdown(targetDate, 15, { isWithinWorkingHours: true, workStart: "11:00", workEnd: "23:00", timezone: "America/Lima" });
+  // 1. Estado inicial
+  console.log("\n[1] Verificando estado inicial...");
   console.log("-> Step:", daemonReporter.currentState.step, "| Title:", daemonReporter.currentState.stepTitle);
-  console.log("-> Countdown remaining seconds:", daemonReporter.currentState.countdown.remainingSeconds);
-  if (!daemonReporter.currentState.nextCaptureAtIso) {
-    throw new Error("FAIL: nextCaptureAtIso debe existir en el nivel superior de currentState");
-  }
-  if (daemonReporter.currentState.intervalMinutes !== 15) {
-    throw new Error("FAIL: intervalMinutes debe ser 15 en el nivel superior de currentState");
-  }
+  console.log("-> WorkingHours:", daemonReporter.currentState.workingHours);
 
   // 2. Consulta a la cámara
   console.log("\n[2] Probando reportCameraQuery...");
-  await daemonReporter.reportCameraQuery("scheduled");
+  await daemonReporter.reportCameraQuery("manual");
   console.log("-> Step:", daemonReporter.currentState.step, "| Desc:", daemonReporter.currentState.stepDescription);
 
   // 3. Imagen recibida
@@ -77,19 +69,13 @@ async function runTest() {
 
   // 7. Ciclo completado
   console.log("\n[7] Probando reportCycleCompleted...");
-  const nextCycle = new Date(Date.now() + 15 * 60 * 1000);
   await daemonReporter.reportCycleCompleted({
     docId: "photo_test_123",
-    summary: "ML Local: 2 personas detectadas",
-    nextCaptureDate: nextCycle,
-    intervalMinutes: 15
+    summary: "ML Local: 2 personas detectadas"
   });
   console.log("-> Step:", daemonReporter.currentState.step, "| Summary:", daemonReporter.currentState.summary);
-  if (!daemonReporter.currentState.nextCaptureAtIso) {
-    throw new Error("FAIL: nextCaptureAtIso debe actualizarse en reportCycleCompleted");
-  }
-  if (daemonReporter.currentState.intervalMinutes !== 15) {
-    throw new Error("FAIL: intervalMinutes debe ser 15 en reportCycleCompleted");
+  if (daemonReporter.currentState.lastDocId !== "photo_test_123") {
+    throw new Error("FAIL: lastDocId debe coincidir con docId en reportCycleCompleted");
   }
 
   console.log("\nTotal de sincronizaciones a Firestore:", emittedStates.length);

@@ -28,17 +28,17 @@ flowchart TB
         subgraph VM ["🖥️ Compute Engine e2-micro (us-central1-a) - Free Tier ($0)"]
             DAEMON["⚙️ Node.js Daemon (camera-catcher.service)<br/>Systemd 24/7"]
             DOCKER["🐳 Neolink Docker Engine<br/>quantumentangledandy/neolink:latest"]
-            SCHEDULER["⏱️ Dynamic Cron Scheduler<br/>(Intervalo Firestore)"]
+            REALTIME["⚡ Continuous Realtime Loop<br/>(2.5s) + Working Hours Gate"]
             LISTENER["📡 Real-time Firestore Listener<br/>(camera_catcher/commands)"]
 
-            SCHEDULER -->|Tick de captura| DOCKER
+            REALTIME -->|Frame en memoria RAM / ML| DOCKER
             LISTENER -->|Disparo manual| DOCKER
             DOCKER <-->|P2P Baichuan UDP Relay| CGNAT
         end
 
         subgraph FirebaseServices ["🔥 Servicios Firebase & Google APIs"]
             FS_CMD["📄 Firestore: camera_catcher/commands"]
-            FS_CFG["⚙️ Firestore: camera_catcher/prompt<br/>(prompt + intervalMinutes)"]
+            FS_CFG["⚙️ Firestore: camera_catcher/prompt<br/>(prompt + workingHours)"]
             FS_PHOTOS["🗄️ Firestore: camera_catcher/photos/photos/<doc>"]
             STORAGE["📦 Firebase Storage<br/>(skip-bigotes.firebasestorage.app)"]
             GEMINI["🧠 Gemini Vision API<br/>(gemini-flash-latest)"]
@@ -47,7 +47,7 @@ flowchart TB
 
         DAEMON -->|Sube imagen JPEG| STORAGE
         DAEMON -->|Lee prompt dinámico| FS_CFG
-        FS_CFG -->|Sincroniza intervalo en vivo| SCHEDULER
+        FS_CFG -->|Sincroniza horario laboral| REALTIME
         DAEMON -->|Envía Base64| GEMINI
         GEMINI -->|Retorna descripción| DAEMON
         DAEMON -->|Guarda metadata y análisis| FS_PHOTOS
@@ -56,7 +56,7 @@ flowchart TB
 
     subgraph Clients ["👥 Clientes / Usuarios"]
         BROWSER["💻 Panel Web Dashboard<br/>(Cualquier dispositivo)"]
-        BROWSER <-->|Lee y actualiza prompt/intervalo| FS_CFG
+        BROWSER <-->|Lee y actualiza prompt y horario| FS_CFG
         BROWSER -->|Dispara 'Capturar Ahora'| FS_CMD
         FS_PHOTOS -->|onSnapshot en tiempo real| BROWSER
         STORAGE -->|getDownloadURL / CDN| BROWSER
@@ -81,9 +81,9 @@ sequenceDiagram
 
     rect rgb(240, 248, 255)
         note over Usuario,Firestore: Flujo A: Configuración en Vivo
-        Usuario->>Firestore: Guarda nuevo prompt e intervalo (ej: 0.5 min) en camera_catcher/prompt
-        Firestore-->>VM: Evento onSnapshot (cambio de intervalo)
-        VM->>VM: Reinicia temporizador local a 30 segundos inmediatamente
+        Usuario->>Firestore: Guarda prompt y horario laboral en camera_catcher/prompt
+        Firestore-->>VM: Evento onSnapshot (actualización de horario)
+        VM->>VM: Actualiza WorkingHoursManager en memoria inmediatamente
     end
 
     rect rgb(255, 250, 240)

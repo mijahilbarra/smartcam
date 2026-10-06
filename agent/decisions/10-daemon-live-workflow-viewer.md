@@ -20,15 +20,15 @@ El usuario requería una vista completamente descriptiva que notificara cada pro
 
 ## Decisión de Arquitectura
 1. **Módulo Centralizado de Telemetría (`src/daemon_reporter.js`)**:
-   - Implementa una máquina de estados con 7 fases claramente identificadas:
-     - `countdown`: Contador de minutos y evaluación de horario de apertura/cierre.
-     - `querying_camera`: Activación de consulta P2P Reolink (Neolink/Baichuan).
+   - Implementa una máquina de estados para el pipeline de visión:
+     - `idle`: Estado base con evaluación de horario laboral activo (`workingHours`).
+     - `querying_camera`: Activación de consulta P2P Reolink o frame en memoria.
      - `image_received`: Entrega inmediata de metadatos de fotograma base al Canvas.
      - `quadrants_active`: Activación y dibujo de zonas ROI (sillas, puestos, entrada).
      - `detecting_humans`: Inferencia YOLOv8: resultado explícito de si hay humanos o no con cajas delimitadoras.
      - `identifying_people`: Inferencia biométrica ArcFace: clasificación de Barbero, Clientes frecuentes y Nuevos.
-     - `completed`: Persistencia del documento `photo_<id>` y reinicio del contador.
-   - Sincroniza de forma asíncrona hacia Firestore `camera_catcher/daemon_state`.
+     - `completed`: Persistencia del documento de foto (modo manual) o reporte en tiempo real.
+   - Transmite efímeramente hacia el frontend vía SSE directo (`/api/yolo/stream`, evento `daemon_state`).
    - Mantiene un buffer circular con los últimos 30 eventos para la terminal descriptiva.
 
 2. **Renderizado en Canvas HTML5 Dinámico (`DaemonCanvasRenderer`)**:

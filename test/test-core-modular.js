@@ -9,7 +9,7 @@ import {
   applyNMS
 } from "../src/core/geometry.js";
 import { doesDetectionOverlapZone } from "../src/core/barbershop_rules.js";
-import { SchedulerService } from "../src/services/scheduler_service.js";
+import { WorkingHoursManager } from "../src/core/working_hours.js";
 
 console.log("=== Test de Módulos Core y Servicios Refactorizados ===");
 
@@ -62,21 +62,21 @@ const personFarAway = [100, 100, 200, 200];
 assert.strictEqual(doesDetectionOverlapZone(personFarAway, chairZone, 1024, 576), false);
 console.log("✓ Reglas de barbería y solapamiento de cuadrantes validadas exitosamente");
 
-// 3. SchedulerService
-const scheduler = new SchedulerService({
-  defaultIntervalMinutes: 5,
+// 3. WorkingHoursManager
+const workingHours = new WorkingHoursManager({
   defaultStart: "08:00",
   defaultEnd: "20:00",
   defaultTz: "America/Lima"
 });
-assert.strictEqual(scheduler.currentIntervalMinutes, 5);
-scheduler.updateWorkingHours("09:00", "22:00", "America/Lima");
-assert.strictEqual(scheduler.workStart, "09:00");
-assert.strictEqual(scheduler.workEnd, "22:00");
-const state = scheduler.getState();
+assert.strictEqual(workingHours.workStart, "08:00");
+workingHours.updateWorkingHours("09:00", "22:00", "America/Lima");
+assert.strictEqual(workingHours.workStart, "09:00");
+assert.strictEqual(workingHours.workEnd, "22:00");
+const state = workingHours.getState();
 assert.strictEqual(state.workStart, "09:00");
-assert.strictEqual(state.currentIntervalMinutes, 5);
-console.log("✓ SchedulerService inicializado y gestionado correctamente");
+assert.strictEqual(state.workEnd, "22:00");
+assert.strictEqual(state.timezone, "America/Lima");
+console.log("✓ WorkingHoursManager inicializado y gestionado correctamente");
 
 console.log("\n🎉 ¡Todos los tests de los nuevos módulos modulares pasaron exitosamente!");
 process.exit(0);

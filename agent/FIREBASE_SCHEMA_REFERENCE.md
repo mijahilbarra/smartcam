@@ -16,8 +16,8 @@ Toda la estructura del proyecto está organizada bajo el prefijo raíz `camera_c
 
 | Campo | Tipo | Ejemplo / Default | Descripción |
 | :--- | :--- | :--- | :--- |
-| `default` | `string` | `"Describe what do you see in the image"` | Prompt enviado a Gemini Vision API en cada captura periódica. |
-| `intervalMinutes` | `number` | `15` | Intervalo en minutos entre cada captura automática (ej. `15`, `1`, `0.5`). |
+| `default` | `string` | `"Describe what do you see in the image"` | Prompt enviado a Gemini Vision API en capturas manuales/diagnóstico. |
+| `intervalMinutes` | `number` | *(Obsoleto / Retirado)* | *(Histórico)* Antiguo intervalo en minutos del scheduler periódico de 15 min. Retirado en favor del bucle continuo de 2.5s. |
 | `workStartTime` | `string` | `"11:00"` | Hora de inicio de jornada laboral de la barbería (formato 24h `HH:mm` o `11am`). |
 | `workEndTime` | `string` | `"23:00"` | Hora de fin de jornada laboral de la barbería (formato 24h `HH:mm` o `11pm`). |
 | `configuredTimeZone` | `string` | `"America/Lima"` | Zona horaria para evaluar el horario de operación (`Intl.DateTimeFormat`). |
@@ -54,7 +54,7 @@ Toda la estructura del proyecto está organizada bajo el prefijo raíz `camera_c
 | `lastCaptureError` | `string` \| `null` | `null` | Mensaje de error si la última captura falló. |
 | `lastCaptureDocId` | `string` | `"photo_1772635959958"` | ID del documento generado en Firestore. |
 | `lastInferenceMs` | `number` | `104` | Tiempo en milisegundos que tomó la inferencia con YOLOv8. |
-| `activeIntervalMinutes` | `number` | `15` | Intervalo activo actualmente aplicado en el scheduler. |
+| `activeIntervalMinutes` | `number` | *(Obsoleto)* | *(Histórico)* Intervalo antiguo del scheduler periódico. |
 | `activeWorkHours` | `string` | `"11:00 - 23:00 (America/Lima)"` | Horario de atención vigente. |
 | `serverUptimeSeconds` | `number` | `86400` | Segundos transcurridos desde que inició el proceso en la VM. |
 | `memoryRssMb` | `number` | `185` | Consumo real de memoria RAM (RSS) del proceso Node.js. |
@@ -63,21 +63,19 @@ Toda la estructura del proyecto está organizada bajo el prefijo raíz `camera_c
 ---
 
 ### D) `camera_catcher/daemon_state`
-* **Tipo:** Documento individual
-* **Rol:** Telemetría de flujo y pipeline en tiempo real del Daemon para la vista descriptiva con Canvas, contador y etapas.
-* **Leído por:** Frontend Web (`web/app.js`) vía `onSnapshot` para renderizado reactivo del Canvas, stepper y terminal de eventos.
+* **Tipo:** Documento individual (efímero / telemetría directa SSE)
+* **Rol:** Telemetría de flujo y pipeline en tiempo real del Daemon (transmitido vía SSE `/api/yolo/stream`, evento `daemon_state`).
+* **Leído por:** Frontend Web (`web/app.js` / Vue `useDaemonState`) vía SSE directo.
 * **Escrito por:** Backend Daemon (`src/daemon_reporter.js` / `src/index.js`) en cada micro-etapa de su ciclo de vida.
 
 | Campo | Tipo | Ejemplo | Descripción |
 | :--- | :--- | :--- | :--- |
-| `step` | `string` | `"detecting_humans"` | Clave de etapa actual: `countdown`, `querying_camera`, `image_received`, `quadrants_active`, `detecting_humans`, `identifying_people`, `completed`, `error`. |
+| `step` | `string` | `"detecting_humans"` | Clave de etapa actual: `querying_camera`, `image_received`, `quadrants_active`, `detecting_humans`, `identifying_people`, `completed`, `error`. (Etapa `countdown` retirada). |
 | `stepIndex` | `number` | `4` | Índice numérico de etapa para el pipeline visual (0 a 6). |
 | `stepTitle` | `string` | `"Detección de Humanos (YOLOv8)"` | Título legible de la fase en ejecución. |
 | `stepDescription` | `string` | `"Se detectan 2 humanos en escena..."` | Descripción detallada del proceso en curso. |
-| `countdown` | `object` | Ver detalle | Información del temporizador y jornada laboral. |
-| `countdown.nextCaptureAt` | `string` | `"2026-10-03T18:15:00.000Z"` | Timestamp objetivo de la siguiente captura. |
-| `countdown.intervalMinutes` | `number` | `15` | Intervalo activo configurado. |
-| `countdown.isWithinWorkingHours` | `boolean` | `true` | Indica si el ciclo está habilitado por horario. |
+| `workingHours` | `object` | `{ start, end, timezone, isWithinWorkingHours }` | Estado de horario laboral y gating de ejecución. |
+| `countdown` | `object` | *(Obsoleto / Retirado)* | *(Histórico)* Retirado en favor de la transmisión continua. |
 | `image` | `object` | `{ storagePath, width, height, sizeBytes, docId }` | Metadatos de la imagen base recibida para el Canvas. |
 | `quadrants` | `array<object>` | `[{ id, label, status, color, box, polygonNorm }]` | Cuadrantes activos proyectados sobre el Canvas. |
 | `humans` | `object` | `{ hasHumans: true, count: 2, detections: [...] }` | Detecciones humanas de YOLOv8 con cajas delimitadoras. |

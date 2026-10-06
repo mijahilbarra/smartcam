@@ -4,7 +4,6 @@ import { db } from '@/shared/api/firebase';
 
 export function useSettings() {
   const prompt = ref('');
-  const intervalMinutes = ref(3);
   const workingHours = ref({ start: '11:00', end: '23:00' });
   const loading = ref(true);
   const saving = ref(false);
@@ -19,7 +18,6 @@ export function useSettings() {
       if (snap.exists()) {
         const data = snap.data();
         if (data.prompt) prompt.value = data.prompt;
-        if (data.intervalMinutes) intervalMinutes.value = Number(data.intervalMinutes);
         if (data.workingHours) {
           workingHours.value = {
             start: data.workingHours.start || '11:00',
@@ -43,7 +41,6 @@ export function useSettings() {
       const docRef = doc(db, 'camera_catcher', 'prompt');
       await setDoc(docRef, {
         prompt: prompt.value,
-        intervalMinutes: parseFloat(intervalMinutes.value) || 3,
         workingHours: {
           start: workingHours.value.start || '11:00',
           end: workingHours.value.end || '23:00'
@@ -70,7 +67,6 @@ export function useSettings() {
 
   return {
     prompt,
-    intervalMinutes,
     workingHours,
     loading,
     saving,

@@ -106,11 +106,11 @@ El repositorio utiliza GitHub Actions con filtros por ruta (`paths:`):
    - Servicio systemd 24/7 (`camera-catcher.service`) que coordina Neolink, captura de fotogramas e integración con APIs de Google.
 3. **Firestore**:
    - `camera_catcher/commands`: Bus de comandos en tiempo real para disparos manuales (`action: "capture"`).
-   - `camera_catcher/prompt`: Configuración viva de intervalo de captura y prompt para Gemini.
+   - `camera_catcher/prompt`: Configuración viva de horario laboral (workStartTime, workEndTime, timezone) y prompt para Gemini.
    - `camera_catcher/photos/photos/<id>`: Metadatos y descripciones analíticas de cada foto.
 4. **Firebase Storage**:
    - Bucket que almacena los fotogramas JPEG (`camera_catcher/photos/<id>.jpg`).
 5. **Gemini Vision AI (`gemini-flash-latest`)**:
    - Inferencia multimodal sobre el fotograma capturado según el prompt dinámico configurado.
 6. **Frontend Web Dashboard (`web/`)**:
-   - Vanilla JavaScript y Firebase SDK para monitoreo y control en tiempo real desde navegadores.
+   - Vue 3 + Tailwind CSS + Vite y Firebase SDK para monitoreo y control en tiempo real desde navegadores.

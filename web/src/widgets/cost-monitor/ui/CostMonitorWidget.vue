@@ -11,10 +11,6 @@ const props = defineProps({
   totalPhotosCount: {
     type: Number,
     default: 0
-  },
-  currentIntervalMinutes: {
-    type: Number,
-    default: 15
   }
 });
 
@@ -33,13 +29,9 @@ const {
   geminiEstimatedCalls,
   geminiProgressPercent,
   simulateInterval
-} = useCostQuotas(props.totalPhotosCount, props.currentIntervalMinutes);
+} = useCostQuotas(props.totalPhotosCount);
 
 const simResult = computed(() => simulateInterval(simInterval.value));
-
-const syncWithCurrentInterval = () => {
-  simInterval.value = props.currentIntervalMinutes || 15;
-};
 </script>
 
 <template>
@@ -233,14 +225,9 @@ const syncWithCurrentInterval = () => {
 
       <!-- Simulator Section -->
       <div class="bg-slate-950/60 border border-slate-800 rounded-xl p-4 sm:p-5 flex flex-col gap-4">
-        <div class="flex items-center justify-between">
-          <div class="flex items-center gap-2 text-sm font-semibold text-white">
-            <AppIcon name="tune" :size="20" class="text-blue-400" />
-            <h3>Simulador Interactivo de Consumos según Intervalo</h3>
-          </div>
-          <AppButton size="sm" variant="secondary" icon="sync" @click="syncWithCurrentInterval">
-            Sincronizar con intervalo actual
-          </AppButton>
+        <div class="flex items-center gap-2 text-sm font-semibold text-white">
+          <AppIcon name="tune" :size="20" class="text-blue-400" />
+          <h3>Simulador Interactivo de Consumos según Intervalo</h3>
         </div>
 
         <!-- Slider -->

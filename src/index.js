@@ -8,7 +8,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 // Re-exports de compatibilidad para suites de prueba y clientes externos
-export { parseTimeToMinutes, isWithinWorkingHours } from "./core/working_hours.js";
+export { parseTimeToMinutes, isWithinWorkingHours, WorkingHoursManager } from "./core/working_hours.js";
 
 import { initLogger } from "./infrastructure/logging/logger.js";
 import { initFirebaseAdmin } from "./infrastructure/firebase/firebase_admin.js";
@@ -19,7 +19,7 @@ import {
   registerFirestoreListeners,
   prefetchQuadrants
 } from "./infrastructure/firebase/firestore_listeners.js";
-import { SchedulerService } from "./services/scheduler_service.js";
+import { WorkingHoursManager } from "./core/working_hours.js";
 import { CaptureOrchestrator } from "./services/capture_orchestrator.js";
 import { StreamServer } from "./infrastructure/streaming/stream_server.js";
 import { telemetryStream } from "./infrastructure/streaming/telemetry_stream.js";
@@ -39,8 +39,7 @@ const { db, bucket } = initFirebaseAdmin();
 daemonReporter.init(db);
 
 // 3. Inicializar Servicios de Dominio y Orquestación
-const scheduler = new SchedulerService({
-  defaultIntervalMinutes: 15,
+const workingHours = new WorkingHoursManager({
   defaultStart: "11:00",
   defaultEnd: "23:00",
   defaultTz: "America/Lima"
@@ -55,16 +54,13 @@ const orchestrator = new CaptureOrchestrator({
   db,
   bucket,
   tomlPath: TOML_PATH,
-  scheduler,
   streamServer
 });
-
-scheduler.onTick = (triggerSource) => orchestrator.execute(triggerSource);
 
 /**
  * Función expuesta para disparar la captura manualmente o desde tests
  */
-export async function executeCaptureProcess(triggerSource = "scheduled") {
+export async function executeCaptureProcess(triggerSource = "manual") {
   return orchestrator.execute(triggerSource);
 }
 
@@ -84,7 +80,7 @@ app.get("/", (req, res) => {
     status: "ok",
     service: "iot-camera-catcher",
     vm: "gcp-e2-micro",
-    scheduler: scheduler.getState(),
+    workingHours: workingHours.getState(),
     timestamp: new Date().toISOString()
   });
 });
@@ -150,7 +146,7 @@ const server = app.listen(PORT, () => {
 // 5. Registrar Listeners en Tiempo Real de Firestore
 registerFirestoreListeners({
   db,
-  scheduler,
+  workingHours,
   onManualCapture: (src) => orchestrator.execute(src)
 });
 
@@ -163,7 +159,7 @@ export function startRealtimeLoop(intervalMs = 2500) {
 
   if (realtimeLoopInterval) clearInterval(realtimeLoopInterval);
   realtimeLoopInterval = setInterval(async () => {
-    if (!scheduler.isWorkingNow()) return;
+    if (!workingHours.isWorkingNow()) return;
     if (orchestrator.isCapturing) return;
 
     try {
@@ -190,7 +186,7 @@ await prefetchQuadrants(db);
 try {
   const cfg = await getDynamicConfig(db);
   console.log(`[Startup] Configuración cargada: Horario ${cfg.workStartTime} a ${cfg.workEndTime} (${cfg.timezone}).`);
-  scheduler.updateWorkingHours(cfg.workStartTime, cfg.workEndTime, cfg.timezone);
+  workingHours.updateWorkingHours(cfg.workStartTime, cfg.workEndTime, cfg.timezone);
 } catch (_) {}
 
 await cleanupZombies();
@@ -199,7 +195,7 @@ console.log("[Startup] Limpieza y daemon RTSP Neolink completado. Sistema listo.
 
 // Iniciar bucle continuo de visión y seguimiento en tiempo real
 setTimeout(() => {
-  if (!scheduler.isWorkingNow()) {
+  if (!workingHours.isWorkingNow()) {
     console.log(`[Startup] Fuera de horario laboral. Bucle de visión en espera.`);
     return;
   }
@@ -207,4 +203,4 @@ setTimeout(() => {
   startRealtimeLoop(2500);
 }, 3000);
 
-export { app, scheduler, orchestrator, db, bucket, server };
+export { app, workingHours, orchestrator, db, bucket, server };

@@ -5,7 +5,6 @@ import ModalHeader from '@/shared/ui/molecules/ModalHeader.vue';
 import AppIcon from '@/shared/ui/atoms/AppIcon.vue';
 import AppButton from '@/shared/ui/atoms/AppButton.vue';
 import AppBadge from '@/shared/ui/atoms/AppBadge.vue';
-import AppInput from '@/shared/ui/atoms/AppInput.vue';
 import AppTextarea from '@/shared/ui/atoms/AppTextarea.vue';
 import TimeRangeField from '@/shared/ui/molecules/TimeRangeField.vue';
 import { useSettings } from '@/features/configure-settings/model/useSettings';
@@ -25,7 +24,6 @@ const emit = defineEmits(['close']);
 
 const {
   prompt,
-  intervalMinutes,
   workingHours,
   loading,
   saving,
@@ -72,26 +70,8 @@ const onSave = async () => {
           placeholder="Escribe el prompt analítico de visión..."
         />
         <small class="text-[11px] text-slate-400">
-          Instrucción analítica enviada al modelo de visión en cada captura periódica.
+          Instrucción analítica enviada al modelo de visión en cada análisis.
         </small>
-      </div>
-
-      <!-- Capture Interval -->
-      <div class="flex flex-col gap-1.5">
-        <label class="text-xs text-slate-300 font-semibold flex items-center gap-1.5">
-          <AppIcon name="timer" :size="16" class="text-blue-400" />
-          Intervalo entre capturas (en minutos):
-        </label>
-        <div class="flex items-center gap-2">
-          <AppInput
-            type="number"
-            min="0.1"
-            step="0.1"
-            v-model="intervalMinutes"
-            class="max-w-[140px]"
-          />
-          <span class="text-xs text-slate-400">minutos (ej: 3 = cada 3 min, 0.5 = cada 30 seg)</span>
-        </div>
       </div>
 
       <!-- Working Hours -->

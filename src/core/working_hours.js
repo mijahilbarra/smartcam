@@ -60,3 +60,49 @@ export function isWithinWorkingHours(date = new Date(), start = "11:00", end = "
     return true; // En caso de fallo con la zona horaria, permitir para no bloquear
   }
 }
+
+/**
+ * Gestor de Horarios Laborales
+ * Mantiene el estado activo del horario laboral y evalúa si el daemon debe operar en tiempo real.
+ */
+export class WorkingHoursManager {
+  constructor({ defaultStart = "11:00", defaultEnd = "23:00", defaultTz = "America/Lima" } = {}) {
+    this.workStart = defaultStart;
+    this.workEnd = defaultEnd;
+    this.configuredTimeZone = defaultTz;
+  }
+
+  isWorkingNow() {
+    return isWithinWorkingHours(new Date(), this.workStart, this.workEnd, this.configuredTimeZone);
+  }
+
+  updateWorkingHours(start, end, tz) {
+    let changed = false;
+    if (start && String(start) !== String(this.workStart)) {
+      this.workStart = String(start);
+      changed = true;
+    }
+    if (end && String(end) !== String(this.workEnd)) {
+      this.workEnd = String(end);
+      changed = true;
+    }
+    if (tz && tz !== this.configuredTimeZone) {
+      this.configuredTimeZone = tz;
+      changed = true;
+    }
+    if (changed) {
+      console.log(`[WorkingHours] Horario actualizado: ${this.workStart} a ${this.workEnd} (${this.configuredTimeZone}). ¿Dentro de horario?: ${this.isWorkingNow() ? "SÍ" : "NO"}`);
+    }
+    return changed;
+  }
+
+  getState() {
+    return {
+      workStart: this.workStart,
+      workEnd: this.workEnd,
+      timezone: this.configuredTimeZone,
+      isWithinWorkingHours: this.isWorkingNow()
+    };
+  }
+}
+

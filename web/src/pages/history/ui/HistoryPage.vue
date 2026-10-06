@@ -27,10 +27,6 @@ defineProps({
   totalPhotos: {
     type: Number,
     default: 0
-  },
-  currentIntervalMinutes: {
-    type: Number,
-    default: 15
   }
 });
 
@@ -47,7 +43,6 @@ const emit = defineEmits([
     <!-- 1. Google Cloud Cost & Quotas Monitor -->
     <CostMonitorWidget
       :total-photos-count="totalPhotos"
-      :current-interval-minutes="currentIntervalMinutes"
     />
 
     <!-- 2. People & Frequent Customers Directory -->

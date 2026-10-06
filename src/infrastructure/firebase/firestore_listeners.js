@@ -19,7 +19,6 @@ export async function getDynamicConfig(db, defaultPrompt = "Describe what do you
       console.log("[Config] camera_catcher/prompt no existe. Creando con configuración por defecto (11am a 11pm)...");
       const initialConfig = {
         default: defaultPrompt,
-        intervalMinutes: 15,
         workStartTime: "11:00",
         workEndTime: "23:00",
         timezone: "America/Lima",
@@ -41,14 +40,13 @@ export async function getDynamicConfig(db, defaultPrompt = "Describe what do you
 
     return {
       prompt: data?.default || defaultPrompt,
-      intervalMinutes: data?.intervalMinutes !== undefined ? Number(data.intervalMinutes) : 3,
       workStartTime: String(data?.workStartTime || data?.workStart || "11:00"),
       workEndTime: String(data?.workEndTime || data?.workEnd || "23:00"),
       timezone: data?.timezone || "America/Lima"
     };
   } catch (err) {
     console.warn("[Config] Error leyendo configuración de Firestore, usando defaults:", err.message);
-    return { prompt: defaultPrompt, intervalMinutes: 3, workStartTime: "11:00", workEndTime: "23:00", timezone: "America/Lima" };
+    return { prompt: defaultPrompt, workStartTime: "11:00", workEndTime: "23:00", timezone: "America/Lima" };
   }
 }
 
@@ -56,28 +54,22 @@ export async function getDynamicConfig(db, defaultPrompt = "Describe what do you
  * Registra todos los listeners en tiempo real de Firestore
  * @param {Object} options
  * @param {Object} options.db
- * @param {Object} options.scheduler
+ * @param {Object} options.workingHours
  * @param {Function} options.onManualCapture
  */
-export function registerFirestoreListeners({ db, scheduler, onManualCapture }) {
-  // 1. Listener de configuración (intervalo y horario laboral)
+export function registerFirestoreListeners({ db, workingHours, onManualCapture }) {
+  // 1. Listener de configuración (horario laboral y prompt)
   db.doc("camera_catcher/prompt").onSnapshot(async (snapshot) => {
     const data = snapshot.data();
     if (!data) return;
-
-    if (data.intervalMinutes !== undefined) {
-      const newInterval = Number(data.intervalMinutes);
-      if (!isNaN(newInterval) && newInterval !== scheduler.currentIntervalMinutes) {
-        console.log(`[Config] Actualización de intervalo detectada en Firestore: ${newInterval} minutos.`);
-        scheduler.setupTimer(newInterval);
-      }
-    }
 
     const newStart = data.workStartTime || data.workStart || data.startHour || "11:00";
     const newEnd = data.workEndTime || data.workEnd || data.endHour || "23:00";
     const newTz = data.timezone || "America/Lima";
 
-    scheduler.updateWorkingHours(newStart, newEnd, newTz);
+    if (workingHours?.updateWorkingHours) {
+      workingHours.updateWorkingHours(newStart, newEnd, newTz);
+    }
 
     const missingDefaults = {};
     if (!data.workStartTime && !data.workStart) missingDefaults.workStartTime = "11:00";

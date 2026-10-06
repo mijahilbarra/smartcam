@@ -19,20 +19,11 @@ class DaemonReporter {
       stepDescription: "Esperando inicio del primer ciclo...",
       timestamp: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      nextCaptureAtIso: null,
-      intervalMinutes: 3,
       workingHours: {
         start: "11:00",
         end: "23:00",
         timezone: "America/Lima",
         isWithinWorkingHours: true
-      },
-      countdown: {
-        nextCaptureAt: null,
-        intervalMinutes: 3,
-        remainingSeconds: 0,
-        isWithinWorkingHours: true,
-        workHours: "11:00 - 23:00 (America/Lima)"
       },
       image: null,
       quadrants: [],
@@ -87,14 +78,6 @@ class DaemonReporter {
   async _syncToFirestore() {
     try {
       this.currentState.updatedAt = new Date().toISOString();
-      if (this.currentState.countdown) {
-        if (!this.currentState.nextCaptureAtIso && this.currentState.countdown.nextCaptureAt) {
-          this.currentState.nextCaptureAtIso = this.currentState.countdown.nextCaptureAt;
-        }
-        if (!this.currentState.intervalMinutes && this.currentState.countdown.intervalMinutes) {
-          this.currentState.intervalMinutes = this.currentState.countdown.intervalMinutes;
-        }
-      }
       telemetryStream.broadcastDaemonState(this.currentState);
     } catch (err) {
       console.warn("[DaemonReporter] Error transmitiendo estado por SSE:", err.message);
@@ -102,54 +85,9 @@ class DaemonReporter {
   }
 
   /**
-   * Fase 0: Actualiza el contador de minutos/segundos hacia la siguiente consulta
-   */
-  async setCountdown(nextCaptureDate, intervalMinutes, workInfo = {}) {
-    const nextIso = nextCaptureDate ? nextCaptureDate.toISOString() : null;
-    const remainingSec = nextCaptureDate ? Math.max(0, Math.round((nextCaptureDate.getTime() - Date.now()) / 1000)) : 0;
-    const remainingMin = (remainingSec / 60).toFixed(1);
-    const intMin = Number(intervalMinutes) || 3;
-
-    this.currentState.step = "countdown";
-    this.currentState.stepIndex = 0;
-    this.currentState.stepTitle = "Contador de Ciclo Activo";
-    this.currentState.stepDescription = workInfo.isWithinWorkingHours === false
-      ? `Fuera de horario laboral (${workInfo.workStart || "11:00"} a ${workInfo.workEnd || "23:00"}). Capturas programadas en pausa.`
-      : `Contador activo: Próxima consulta a la cámara de seguridad en ~${remainingMin} minutos (${intMin} min intervalo).`;
-
-    // Campos aplanados para máxima compatibilidad con el frontend
-    this.currentState.nextCaptureAtIso = nextIso;
-    this.currentState.intervalMinutes = intMin;
-
-    this.currentState.countdown = {
-      nextCaptureAt: nextIso,
-      intervalMinutes: intMin,
-      remainingSeconds: remainingSec,
-      isWithinWorkingHours: workInfo.isWithinWorkingHours !== false,
-      workHours: `${workInfo.workStart || "11:00"} - ${workInfo.workEnd || "23:00"} (${workInfo.timezone || "America/Lima"})`
-    };
-
-    if (workInfo.workStart && workInfo.workEnd) {
-      this.currentState.workingHours = {
-        start: workInfo.workStart,
-        end: workInfo.workEnd,
-        timezone: workInfo.timezone || "America/Lima",
-        isWithinWorkingHours: workInfo.isWithinWorkingHours !== false
-      };
-    }
-
-    this._addHistoryEntry(
-      `⏱️ Contador programado: Próxima captura en ~${remainingMin} min (${intMin} min). Horario: ${this.currentState.countdown.workHours}.`,
-      "countdown"
-    );
-
-    await this._syncToFirestore();
-  }
-
-  /**
    * Fase 1: Se activa la consulta a la cámara de seguridad
    */
-  async reportCameraQuery(triggerType = "scheduled") {
+  async reportCameraQuery(triggerType = "manual") {
     this.currentState.step = "querying_camera";
     this.currentState.stepIndex = 1;
     this.currentState.stepTitle = "Consulta a Cámara de Seguridad";
@@ -317,32 +255,17 @@ class DaemonReporter {
   /**
    * Fase 6: Ciclo completado y documento persistido
    */
-  async reportCycleCompleted({ docId, summary, nextCaptureDate, intervalMinutes }) {
-    const nextIso = nextCaptureDate ? nextCaptureDate.toISOString() : null;
-    const remainingSec = nextCaptureDate ? Math.max(0, Math.round((nextCaptureDate.getTime() - Date.now()) / 1000)) : 0;
-
+  async reportCycleCompleted({ docId, summary }) {
     this.currentState.step = "completed";
     this.currentState.stepIndex = 6;
     this.currentState.stepTitle = "Ciclo Completado Exitosamente";
-    this.currentState.stepDescription = `Proceso finalizado. Fotograma guardado en Firestore (${docId}). Reiniciando contador para próxima captura...`;
+    this.currentState.stepDescription = `Proceso finalizado. Fotograma guardado en Firestore (${docId}).`;
     this.currentState.lastDocId = docId;
     this.currentState.completedAt = new Date().toISOString();
     this.currentState.summary = summary;
 
-    if (nextCaptureDate) {
-      const intMin = Number(intervalMinutes) || this.currentState.intervalMinutes || 3;
-      this.currentState.nextCaptureAtIso = nextIso;
-      this.currentState.intervalMinutes = intMin;
-      this.currentState.countdown = {
-        ...this.currentState.countdown,
-        nextCaptureAt: nextIso,
-        remainingSeconds: remainingSec,
-        intervalMinutes: intMin
-      };
-    }
-
     this._addHistoryEntry(
-      `✅ Ciclo finalizado exitosamente. Documento registrado: ${docId}. Reiniciando contador regresivo.`,
+      `✅ Ciclo finalizado exitosamente. Documento registrado: ${docId}.`,
       "success"
     );
 

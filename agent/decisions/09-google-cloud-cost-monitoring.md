@@ -52,9 +52,8 @@ Se diseñó e implementó un **Monitor Reactivo de Costos y Cuotas de Google Clo
    - Consumo diario y tasa de cuota de **Google Gemini Vision API** (sobre la cuota gratuita de 1,500 llamadas/día en Google AI Studio y costo por llamada Pay-as-you-go).
 
 3. **Simulador Interactivo de Intervalos**:
-   - Control deslizante y botones de preajuste rápido (`30s`, `1m`, `5m`, `15m`, `1h`).
+   - Control deslizante para probar escenarios hipotéticos de captura periódica.
    - Proyección matemática en tiempo real de capturas al día/mes, consumo de espacio proyectado en GB, operaciones de Storage y costo estimado resultante.
-   - Botón de sincronización instantánea con el intervalo actualmente activo en Firestore.
 
 4. **Recomendaciones de Mitigación y Buenas Prácticas**:
    - **Regla de Ciclo de Vida (GCS Lifecycle Policy)**: Recomendación documentada para configurar la auto-eliminación de objetos mayores a 30 días en el bucket, garantizando que el almacenamiento nunca supere los 5 GB sin importar el tiempo de funcionamiento.

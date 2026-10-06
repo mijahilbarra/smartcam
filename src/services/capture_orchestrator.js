@@ -13,11 +13,10 @@ import { calculateIoU } from "../core/geometry.js";
 import { isServiceChair, isTransitZone } from "../core/barbershop_rules.js";
 
 export class CaptureOrchestrator {
-  constructor({ db, bucket, tomlPath, scheduler, streamServer }) {
+  constructor({ db, bucket, tomlPath, streamServer } = {}) {
     this.db = db;
     this.bucket = bucket;
     this.tomlPath = tomlPath;
-    this.scheduler = scheduler;
     this.streamServer = streamServer;
     this.isCapturing = false;
     this.tracker = new PersonTracker();
@@ -26,10 +25,10 @@ export class CaptureOrchestrator {
 
   /**
    * Ejecuta el ciclo integral de captura y análisis
-   * @param {string} triggerSource - "scheduled" | "manual" | "startup" | "realtime"
+   * @param {string} triggerSource - "manual" | "startup" | "realtime"
    * @returns {Promise<Object>}
    */
-  async execute(triggerSource = "scheduled") {
+  async execute(triggerSource = "manual") {
     if (this.isCapturing) {
       console.log("[Capture] Ya hay una captura en curso. Omitiendo ejecución concurrente.");
       return { status: "already_running" };
@@ -305,14 +304,10 @@ export class CaptureOrchestrator {
       console.log(`[5/5] [Firestore] Documento guardado exitosamente en camera_catcher/photos/photos/${docId}`);
       console.log(`========================================\n`);
 
-      // 10. Notificar Fase 6: Ciclo completado y programar siguiente contador
-      const intervalMinutes = this.scheduler?.currentIntervalMinutes || 15;
-      const nextCaptureDate = new Date(Date.now() + Math.round(intervalMinutes * 60 * 1000));
+      // 10. Notificar Fase 6: Ciclo completado
       await daemonReporter.reportCycleCompleted({
         docId,
-        summary: summaryText,
-        nextCaptureDate,
-        intervalMinutes
+        summary: summaryText
       });
 
       return record;

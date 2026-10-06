@@ -34,7 +34,7 @@ Se rediseña la arquitectura del directorio `src/` aplicando una **Arquitectura 
 ```text
 src/
 ├── core/                                # 🧠 Lógica pura de dominio (cero dependencias de I/O)
-│   ├── working_hours.js                 # parseTimeToMinutes, isWithinWorkingHours
+│   ├── working_hours.js                 # parseTimeToMinutes, isWithinWorkingHours, WorkingHoursManager
 │   ├── geometry.js                      # pointInPolygon, boxIntersectionArea, toPointObject, boxNormToPolygonNorm, calculateIoU, applyNMS
 │   └── barbershop_rules.js              # Heurísticas de barbería: clasificación de cuadrantes y solapamiento
 │
@@ -52,11 +52,11 @@ src/
 ├── services/                            # ⚙️ Casos de uso y orquestación
 │   ├── capture_orchestrator.js          # Orquesta: Neolink -> ONNX -> Crops -> Face -> Storage -> Firestore -> Telemetría
 │   ├── people_service.js                # Biometría: reconciliación con staff y perfiles en Firestore
-│   └── scheduler_service.js             # Cron dinámico, temporizadores y countdown
+│   └── visit_session_service.js         # Ciclo de vida de visitas, auditoría de sillas y persistencia
 │
 ├── models/                              # 📦 Pesos binarios ONNX (yolov8n, w600k_mbf, etc.)
 ├── detector.js                          # Fachada / Facade hacia core/ + ONNX (retrocompatible al 100%)
-└── index.js                             # 🚀 Entrypoint limpio (< 110 líneas): arranque, Express, DI y listeners
+└── index.js                             # 🚀 Entrypoint limpio (< 110 líneas): arranque, Express, DI, loop continuo y listeners
 ```
 
 ### Principios Clave Implementados:
@@ -76,5 +76,5 @@ src/
 ### Positivas:
 - **Reducción de tamaño del Entrypoint**: `src/index.js` pasa de 737 líneas a ~105 líneas limpias y legibles.
 - **Testeabilidad Aislada**: Las pruebas unitarias de horarios laborales y geometría corren en menos de 5 ms sin inicializar bases de datos ni sockets.
-- **Resiliencia en GCP `e2-micro`**: Las fallas en Neolink o Docker quedan acotadas a `neolink_client.js` sin corromper el estado del scheduler ni los listeners.
+- **Resiliencia en GCP `e2-micro`**: Las fallas en Neolink o Docker quedan acotadas a `neolink_client.js` sin corromper el estado del daemon ni los listeners.
 - **Compatibilidad 100% Verificada**: Todas las suites de pruebas (`npm test`) se ejecutan con éxito inmediato.

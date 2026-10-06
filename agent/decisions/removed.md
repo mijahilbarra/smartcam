@@ -100,3 +100,23 @@ Se adoptó **ONNX Runtime para Node.js (`onnxruntime-node`) con YOLOv8** (ADR 08
 * Inferencia en **96 a 110 ms** (50 veces más veloz).
 * Consumo de memoria controlado de **~180-230 MB** (seguro para 1 GB de RAM).
 * Mapeo de cuadrantes geométricos (CCTV ROI) con alta sensibilidad para personas, sillas y clientes.
+
+---
+
+## 6. Programador Periódico por Intervalos y Contador Regresivo (SchedulerService / 15-Minute Cron & Countdown)
+
+### ¿Qué se intentó?
+Ejecutar capturas fotográficas periódicas mediante un temporizador cron dinámico (`SchedulerService` en `src/services/scheduler_service.js`) configurado cada 15 minutos (o según el campo `intervalMinutes` de Firestore `camera_catcher/prompt`), reportando una cuenta regresiva (`countdown`, `nextCaptureAtIso`) hacia el frontend para sincronizar el próximo ciclo de captura.
+
+### ¿Por qué se retiró?
+1. **Evolución Arquitectónica hacia Streaming y Tiempo Real (Agent.md Regla 7)**:
+   * El sistema migró de un modelo batch de capturas discretas cada 15 minutos a un **bucle continuo de visión en tiempo real (cada 2.5 segundos)** alimentado directamente desde el fotograma en memoria RAM (`StreamServer` a 0 ms) y transmitido vía SSE directo (`/api/yolo/stream`).
+   * Mantener el programador periódico junto al bucle continuo violaba la Regla 7 de Agent.md (*"Cero Coexistencia de Paradigmas: Reemplazo Radical, Nunca Modos Paralelos Duplicados"*).
+2. **Obsolescencia del Contador y Estados de Espera**:
+   * Al ejecutarse la analítica y el tracking de clientes de forma continua cada 2.5s, las barras de espera de captura, los contadores regresivos de 15 minutos y los campos `nextCaptureAtIso`/`countdown` carecen por completo de propósito en la experiencia de usuario y en el backend.
+3. **Desacoplamiento Limpio de Horarios Laborales**:
+   * La evaluación de horario laboral (`isWithinWorkingHours`, `workStartTime`, `workEndTime`, `timezone`) se desacopló del cron y se encapsuló limpiamente en `WorkingHoursManager` (`src/core/working_hours.js`), permitiendo al bucle continuo suspenderse automáticamente fuera de jornada laboral sin requerir temporizadores de captura periódica.
+
+### Reemplazo adoptado:
+* **Bucle Continuo en Tiempo Real**: Ejecución cada 2.5s (`startRealtimeLoop` en `src/index.js`), con gating de jornada laboral mediante `WorkingHoursManager` en `src/core/working_hours.js`.
+* **Depuración Total**: Eliminación radical del archivo `src/services/scheduler_service.js`, pruebas de ticker regresivo obsoletas (`test/test-countdown-ticker.js`), campos `countdown`/`intervalMinutes` de `daemonReporter` y controles del intervalo periódico en el frontend web.
