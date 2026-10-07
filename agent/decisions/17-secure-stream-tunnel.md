@@ -85,12 +85,13 @@ En [`web/src/widgets/daemon-monitor/ui/DaemonLiveMonitor.vue`](file:///Users/jav
 - Cuando la aplicación se encuentra en producción y no se ha definido un túnel HTTPS, el visor de video reemplaza la pantalla en negro por una tarjeta informativa con el icono `videocam_off`.
 - Ofrece el botón interactivo **"Abrir Ajustes"**, permitiendo al usuario configurar el túnel directamente sin fricción.
 
-### 6. Automatización de Instalación en la VM (`setup-cloudflare-tunnel.sh`)
+### 6. Automatización de Instalación en la VM (`setup-cloudflare-tunnel.sh`) y Servicio de Producción
 En [`scripts/setup-cloudflare-tunnel.sh`](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/scripts/setup-cloudflare-tunnel.sh):
 - Script Bash automatizado para Debian/Ubuntu amd64 en la VM `e2-micro`.
 - Descarga e instala el binario oficial de `cloudflared`.
-- Configura el servicio systemd persistente `/etc/systemd/system/camera-tunnel.service` con reinicio automático (`Restart=always`) y políticas de aislamiento seguro.
-- Soporta tanto túneles permanentes de Cloudflare Zero Trust (con token) como túneles efímeros de prueba rápida (`cloudflared tunnel --url http://localhost:8085`).
+- Configura el servicio systemd persistente `/etc/systemd/system/cloudflared.service` con reinicio automático (`Restart=always`) y políticas de aislamiento seguro.
+- **Protocolo de Red en GCP (Crítico)**: Cloudflare Tunnel utiliza por defecto QUIC (UDP 7844). En entornos de VPC de Google Cloud Platform sin enrutamiento UDP específico, QUIC sufre caídas y tiempos de espera (`i/o timeout`). Por ello, se configura obligatoriamente `--protocol http2` (TCP puerto 443 saliente) en el comando de ejecución (`cloudflared tunnel --protocol http2 run --token-file /etc/cloudflared/token`).
+- **Dominio y Endpoint en Producción**: El túnel está vinculado al hostname público oficial **`https://stream.perrosuelto.com`** en Cloudflare Zero Trust, enrutando todo el tráfico hacia el servicio local `http://localhost:8085` del daemon.
 
 ---
 
@@ -102,3 +103,5 @@ En [`scripts/setup-cloudflare-tunnel.sh`](file:///Users/javierli/Documents/elmuk
 - **Seguridad Perimetral Sin Puertos Abiertos**: El tráfico hacia la VM GCP es exclusivamente saliente mediante túneles seguros; no se abren puertos TCP en la VPC ni en el firewall.
 - **Sincronización Multi-Dispositivo**: Al almacenarse la URL en `camera_catcher/prompt`, todos los navegadores y dispositivos que abran el dashboard reciben la URL del túnel en vivo sin configuración manual repetida.
 - **Experiencia de Usuario Transparente**: Indicadores visuales claros en la interfaz cuando el túnel no está configurado, guiando al administrador directamente a la solución.
+- **Resiliencia de Conexión en GCP**: La imposición de `--protocol http2` garantiza estabilidad ininterrumpida contra los datacenters Anycast de Cloudflare evitando descartes por firewall UDP.
+

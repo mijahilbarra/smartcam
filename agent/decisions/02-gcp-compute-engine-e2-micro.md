@@ -25,9 +25,10 @@ Se aprovisionó una máquina virtual en **Google Compute Engine** configurada ri
 | **Zona / Región** | `us-central1-a` (Iowa) | Región cubierta por la cuota Always Free de GCP. |
 | **Tipo de Instancia** | `e2-micro` (2 vCPUs compartidas, 1 GB RAM) | Google cubre 744 horas mensuales ($0.00). Un mes de 31 días tiene exactamente 744 horas. |
 | **Disco de Arranque** | 20 GB `pd-standard` (Standard Persistent Disk) | La cuota gratuita cubre hasta 30 GB de `pd-standard`. Evitamos discos `pd-balanced` o `pd-ssd` para asegurar costo cero. |
+| **Memoria Swap** | 2 GB Swapfile (`/swapfile` en disco) | Previene Out-Of-Memory (OOM) en la instancia de 1 GB RAM física. Esencial para compilación nativa de C++ (`better-sqlite3`, `node-gyp`) y estabilidad del runtime. |
 | **Sistema Operativo** | Ubuntu 22.04 LTS x86_64 | Ligero, altamente compatible con Docker y Node.js. |
 | **Gestión de Proceso** | `systemd` (`camera-catcher.service`) | Daemon persistente con reinicio automático (`Restart=always`) ante caídas o reinicios de la máquina. |
-| **Seguridad de Red** | 0 puertos de entrada abiertos | La VM no expone ningún puerto hacia internet; todas las instrucciones se reciben por conexiones salientes WebSocket a Firestore. |
+| **Seguridad de Red** | 0 puertos de entrada abiertos | La VM no expone ningún puerto hacia internet; todas las instrucciones se reciben por conexiones salientes WebSocket a Firestore y túnel Cloudflare. |
 
 ---
 
@@ -38,6 +39,8 @@ Se aprovisionó una máquina virtual en **Google Compute Engine** configurada ri
 * **Stack de Red UDP Completo**: La VM cuenta con una tarjeta de red virtual estándar que gestiona el *hole-punching* UDP sin que ningún proxy o NAT serverless descarte los paquetes.
 * **Autonomía 24/7/365**: El sistema sigue funcionando independientemente del estado de la computadora del usuario.
 * **Tiempos de respuesta inmediatos**: Al estar siempre encendida, responde en ~10-15 segundos cuando el usuario pulsa "Capturar Ahora" desde el panel web.
+* **Estabilidad de Memoria con 2 GB Swap**: La adición del archivo swap de 2 GB en disco permite que operaciones de compilación nativa de librerías C++ (como `better-sqlite3` vía `node-gyp`) y picos de inferencia se ejecuten sin riesgo de activación del OOM Killer de Linux, manteniendo `vm.swappiness=10` para priorizar el uso de RAM física.
 
 ### Negativas / Restricciones:
 * La instancia `e2-micro` tiene 1 GB de memoria RAM y CPU burstable con cuotas de uso compartido. Para evitar throttling, las capturas se ejecutan de manera secuencial (con un semáforo booleano `isCapturing`), evitando ejecuciones concurrentes pesadas.
+
