@@ -39,6 +39,15 @@ export function parseCommandLineDatabaseId() {
 }
 
 /**
+ * Parsea el parámetro opcional --clean o --fresh
+ * @returns {boolean}
+ */
+export function parseCommandLineClean() {
+  const args = process.argv.slice(2);
+  return args.includes("--clean") || args.includes("--fresh");
+}
+
+/**
  * Normaliza y extrae los embeddings de un documento de Firestore
  * Soporta arrays directos [0.1, ...], subobjetos { vector: [...], sharpnessScore: ... }
  * y extrae la nitidez correspondiente desde fotos o metadatos del cliente.
@@ -105,8 +114,9 @@ export function extractAndNormalizeEmbeddings(data, fallbackScore = 0, photos = 
  *   fileSizeBytes: number
  * }>}
  */
-export async function migrateFirestoreToSqlite(targetDatabaseId) {
+export async function migrateFirestoreToSqlite(targetDatabaseId, options = {}) {
   const databaseId = targetDatabaseId || parseCommandLineDatabaseId();
+  const clean = options.clean !== undefined ? options.clean : parseCommandLineClean();
   const startTime = performance.now();
 
   console.log(`\n============================================================`);
@@ -207,6 +217,11 @@ export async function migrateFirestoreToSqlite(targetDatabaseId) {
   let embeddingsSaved = 0;
 
   const migrationTx = sqliteClient.db.transaction(() => {
+    if (clean) {
+      console.log(`[SQLite] Limpiando tablas previas antes de migración (--clean activado)...`);
+      sqliteClient.db.exec("DELETE FROM customer_embeddings; DELETE FROM customers;");
+    }
+
     // Migrar personas
     for (const item of preparedPeople) {
       sqliteClient.upsertCustomer(item.customer);

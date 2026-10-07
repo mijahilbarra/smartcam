@@ -319,10 +319,16 @@ export class CustomerService {
     };
 
     if (Array.isArray(customer.embeddings) && customer.embeddings.length > 0) {
-      firestoreData.embeddings = customer.embeddings;
+      firestoreData.embeddings = customer.embeddings.map(e => {
+        if (Array.isArray(e)) return { vector: e };
+        if (e && typeof e === "object" && Array.isArray(e.vector)) return e;
+        return null;
+      }).filter(Boolean);
     }
     if (Array.isArray(customer.embedding)) {
       firestoreData.embedding = customer.embedding;
+    } else if (firestoreData.embeddings?.[0]?.vector) {
+      firestoreData.embedding = firestoreData.embeddings[0].vector;
     }
 
     const docRef = db.doc(`camera_catcher_people/${customer.id}`);
