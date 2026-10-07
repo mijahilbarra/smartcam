@@ -17,10 +17,8 @@ import { isChairZone, isTransitZone } from "../core/barbershop_rules.js";
  * @returns {Array} Array de fotos resultante (máx 6)
  */
 export function enrichPersonPhotos(person, thumbnailBase64, sharpnessScore = 0) {
-  let existingPhotos = [];
-  if (Array.isArray(person?.photos) && person.photos.length > 0) {
-    existingPhotos = [...person.photos];
-  } else if (person?.thumbnailBase64) {
+  let existingPhotos = Array.isArray(person?.photos) ? [...person.photos] : [];
+  if (existingPhotos.length === 0 && person?.thumbnailBase64) {
     existingPhotos = [{
       thumbnailBase64: person.thumbnailBase64,
       sharpnessScore: person.bestFaceScore || 0,
@@ -58,10 +56,8 @@ export function enrichPersonAngles(person, { embedding, faceThumbnailBase64, sha
     ? [...person.embeddings]
     : (Array.isArray(person?.embedding) ? [person.embedding] : []);
 
-  let existingPhotos = [];
-  if (Array.isArray(person?.photos) && person.photos.length > 0) {
-    existingPhotos = [...person.photos];
-  } else if (person?.thumbnailBase64) {
+  let existingPhotos = Array.isArray(person?.photos) ? [...person.photos] : [];
+  if (existingPhotos.length === 0 && person?.thumbnailBase64) {
     existingPhotos = [{
       thumbnailBase64: person.thumbnailBase64,
       sharpnessScore: person.bestFaceScore || 0,
@@ -275,9 +271,7 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
 
         const isNovelAngle = sim >= 0.50 && sim <= 0.88;
         const hasHigherSharpness = quality.sharpnessScore > (p.bestFaceScore || 0);
-        const pPhotosCount = Array.isArray(p.photos) && p.photos.length > 0
-          ? p.photos.length
-          : (p.thumbnailBase64 ? 1 : 0);
+        const pPhotosCount = Array.isArray(p.photos) ? p.photos.length : 0;
         const pEmbeddingsCount = currentGallery.length;
         const hasMissingPhotos = pPhotosCount < pEmbeddingsCount && pPhotosCount < 6;
 
@@ -297,7 +291,7 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
           lastSeen: new Date().toISOString()
         };
 
-        if (hasHigherSharpness || !p.thumbnailBase64) {
+        if (hasHigherSharpness || !p.photos?.length) {
           updateData.bestFaceScore = quality.sharpnessScore;
           updateData.thumbnailBase64 = faceThumbnailBase64;
           p.bestFaceScore = quality.sharpnessScore;
@@ -332,7 +326,7 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
           confidence: crop.confidence,
           faceBuffer: quality.faceBuffer,
           faceBoxNorm: quality.faceBoxNorm,
-          thumbnailBase64: faceThumbnailBase64 || p.thumbnailBase64,
+          thumbnailBase64: faceThumbnailBase64 || p.photos?.[0]?.thumbnailBase64 || p.thumbnailBase64,
           sharpnessScore: quality.sharpnessScore,
           sessionGoverned: true,
           photos: p.photos || []
@@ -353,7 +347,7 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
           const updateData = {
             lastSeen: new Date().toISOString()
           };
-          if (quality.sharpnessScore > (p.bestFaceScore || 0) || !p.thumbnailBase64) {
+          if (quality.sharpnessScore > (p.bestFaceScore || 0) || !p.photos?.length) {
             updateData.bestFaceScore = quality.sharpnessScore;
             updateData.thumbnailBase64 = faceThumbnailBase64;
           }
@@ -370,7 +364,7 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
             confidence: crop.confidence,
             faceBuffer: quality.faceBuffer,
             faceBoxNorm: quality.faceBoxNorm,
-            thumbnailBase64: faceThumbnailBase64 || p.thumbnailBase64,
+            thumbnailBase64: faceThumbnailBase64 || p.photos?.[0]?.thumbnailBase64 || p.thumbnailBase64,
             sharpnessScore: quality.sharpnessScore
           });
         } else {
@@ -389,9 +383,7 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
 
           const isNovelAngle = result.similarity >= 0.50 && result.similarity <= 0.88;
           const hasHigherSharpness = quality.sharpnessScore > (p.bestFaceScore || 0);
-          const pPhotosCount = Array.isArray(p.photos) && p.photos.length > 0
-            ? p.photos.length
-            : (p.thumbnailBase64 ? 1 : 0);
+          const pPhotosCount = Array.isArray(p.photos) ? p.photos.length : 0;
           const pEmbeddingsCount = currentGallery.length;
           const hasMissingPhotos = pPhotosCount < pEmbeddingsCount && pPhotosCount < 6;
 
@@ -407,7 +399,7 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
             console.log(`[FaceRecognition] Rostro complementario añadido a cliente "${p.name}" (NovelAngle: ${isNovelAngle}, MayorNitidez: ${hasHigherSharpness}, FaltanFotos: ${hasMissingPhotos}, Total embeddings: ${currentGallery.length}/6, Total fotos: ${p.photos.length}/6).`);
           }
 
-          if (hasHigherSharpness || !p.thumbnailBase64) {
+          if (hasHigherSharpness || !p.photos?.length) {
             updateData.bestFaceScore = quality.sharpnessScore;
             updateData.thumbnailBase64 = faceThumbnailBase64;
             p.bestFaceScore = quality.sharpnessScore;
@@ -438,7 +430,7 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
             confidence: crop.confidence,
             faceBuffer: quality.faceBuffer,
             faceBoxNorm: quality.faceBoxNorm,
-            thumbnailBase64: faceThumbnailBase64 || p.thumbnailBase64,
+            thumbnailBase64: faceThumbnailBase64 || p.photos?.[0]?.thumbnailBase64 || p.thumbnailBase64,
             sharpnessScore: quality.sharpnessScore,
             photos: p.photos || []
           });
@@ -475,7 +467,7 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
           candidate.count += 1;
           candidate.lastSeen = Date.now();
           if (!candidate.embeddings) candidate.embeddings = [candidate.embedding];
-          if (!candidate.photos) {
+          if (!Array.isArray(candidate.photos) || candidate.photos.length === 0) {
             candidate.photos = [{
               thumbnailBase64: candidate.faceThumbnailBase64 || faceThumbnailBase64,
               sharpnessScore: candidate.bestFaceScore || quality?.sharpnessScore || 0,

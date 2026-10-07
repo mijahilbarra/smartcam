@@ -44,19 +44,11 @@ const formatTimeSafe = (val) => {
   return formatDateTime(val);
 };
 
-// Galería de fotos con soporte de fallback si person.photos no existe o está vacío
+// Galería de fotos del cliente (fuente canónica: person.photos)
 const photosList = computed(() => {
   if (!props.person) return [];
-  if (Array.isArray(props.person.photos) && props.person.photos.length > 0) {
+  if (Array.isArray(props.person.photos)) {
     return props.person.photos;
-  }
-  if (props.person.thumbnailBase64) {
-    return [{
-      thumbnailBase64: props.person.thumbnailBase64,
-      sharpnessScore: props.person.bestFaceScore || 0,
-      capturedAt: props.person.firstSeen || props.person.lastSeen || null,
-      isFallback: true
-    }];
   }
   return [];
 });

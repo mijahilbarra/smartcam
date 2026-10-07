@@ -20,6 +20,7 @@ export function usePeople() {
       const list = [];
       snap.forEach((docSnap) => {
         const data = docSnap.data();
+        const photos = Array.isArray(data.photos) ? data.photos : [];
         list.push({
           id: docSnap.id,
           name: data.name || 'Cliente sin nombre',
@@ -27,10 +28,12 @@ export function usePeople() {
           role: data.role || (data.isStaff ? 'barber' : 'client'),
           visitCount: data.visitCount ?? data.visitsCount ?? 1,
           bestFaceScore: data.bestFaceScore ?? 0,
-          thumbnailBase64: data.thumbnailBase64 || null,
+          thumbnailBase64: photos[0]?.thumbnailBase64 || data.thumbnailBase64 || null,
           thumbnailPath: data.thumbnailPath || data.lastThumbnailPath || null,
-          photos: Array.isArray(data.photos) ? data.photos : [],
-          embeddings: Array.isArray(data.embeddings) ? data.embeddings : (data.embedding ? [data.embedding] : []),
+          photos,
+          embeddings: Array.isArray(data.embeddings)
+            ? data.embeddings.map(e => (e && typeof e === 'object' && Array.isArray(e.vector) ? e.vector : e))
+            : (data.embedding ? [data.embedding] : []),
           firstSeen: data.firstSeen || null,
           lastSeen: data.lastSeen || null
         });
