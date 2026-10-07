@@ -821,29 +821,31 @@ const confirmMerge = async () => {
           <!-- Selector de Perfil Base de Destino -->
           <div class="pt-2 border-t border-slate-800/80">
             <span class="block text-[11px] text-slate-400 mb-1.5">Perfil base que conservará el ID de Firestore:</span>
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              <button
-                v-for="p in selectedProfiles"
-                :key="p.id"
-                type="button"
-                @click="mergeTargetId = p.id; mergeTargetName = p.name || ''"
-                :class="[
-                  'p-2 rounded-lg border text-left flex items-center gap-2 transition cursor-pointer',
-                  mergeTargetId === p.id
-                    ? 'bg-sky-950/70 border-sky-500/80 ring-1 ring-sky-500/50'
-                    : 'bg-slate-900/60 border-slate-800 hover:border-slate-700'
-                ]"
-              >
-                <div class="w-8 h-8 rounded-lg overflow-hidden bg-slate-950 shrink-0 border border-slate-700 flex items-center justify-center text-xs font-bold">
-                  <img v-if="p.thumbnailBase64" :src="p.thumbnailBase64" class="w-full h-full object-cover" />
-                  <span v-else>{{ (p.name || 'C').charAt(0) }}</span>
-                </div>
-                <div class="min-w-0 flex-1">
-                  <div class="text-xs font-bold text-white truncate">{{ p.name }}</div>
-                  <div class="text-[10px] text-slate-500 font-mono truncate">{{ p.id }}</div>
-                </div>
-                <AppIcon v-if="mergeTargetId === p.id" name="check_circle" :size="16" class="text-sky-400" />
-              </button>
+            <div class="max-h-44 sm:max-h-52 overflow-y-auto pr-1">
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <button
+                  v-for="p in selectedProfiles"
+                  :key="p.id"
+                  type="button"
+                  @click="mergeTargetId = p.id; mergeTargetName = p.name || ''"
+                  :class="[
+                    'p-2 rounded-lg border text-left flex items-center gap-2 transition cursor-pointer',
+                    mergeTargetId === p.id
+                      ? 'bg-sky-950/70 border-sky-500/80 ring-1 ring-sky-500/50'
+                      : 'bg-slate-900/60 border-slate-800 hover:border-slate-700'
+                  ]"
+                >
+                  <div class="w-8 h-8 rounded-lg overflow-hidden bg-slate-950 shrink-0 border border-slate-700 flex items-center justify-center text-xs font-bold">
+                    <img v-if="p.thumbnailBase64" :src="p.thumbnailBase64" class="w-full h-full object-cover" />
+                    <span v-else>{{ (p.name || 'C').charAt(0) }}</span>
+                  </div>
+                  <div class="min-w-0 flex-1">
+                    <div class="text-xs font-bold text-white truncate">{{ p.name }}</div>
+                    <div class="text-[10px] text-slate-500 font-mono truncate">{{ p.id }}</div>
+                  </div>
+                  <AppIcon v-if="mergeTargetId === p.id" name="check_circle" :size="16" class="text-sky-400" />
+                </button>
+              </div>
             </div>
           </div>
         </div>

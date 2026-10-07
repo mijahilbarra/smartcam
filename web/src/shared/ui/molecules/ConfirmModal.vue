@@ -67,9 +67,9 @@ const onClose = () => {
 
 <template>
   <ModalTemplate :show="show" :max-width="maxWidth" @close="onClose">
-    <div class="flex flex-col bg-slate-900 border border-slate-800 text-slate-100 overflow-hidden rounded-2xl shadow-2xl">
+    <div class="flex flex-col max-h-[90vh] overflow-hidden bg-slate-900 border border-slate-800 text-slate-100 rounded-2xl shadow-2xl">
       <!-- Modal Header -->
-      <div class="flex items-center justify-between p-4 sm:p-5 border-b border-slate-800/80 bg-slate-950/60">
+      <div class="flex items-center justify-between p-4 sm:p-5 border-b border-slate-800/80 bg-slate-950/60 shrink-0">
         <div class="flex items-center gap-3 min-w-0">
           <div
             v-if="icon"
@@ -95,14 +95,14 @@ const onClose = () => {
       </div>
 
       <!-- Modal Body -->
-      <div class="p-4 sm:p-6 space-y-4 text-sm text-slate-300">
+      <div class="p-4 sm:p-6 space-y-4 text-sm text-slate-300 overflow-y-auto flex-1 min-h-0">
         <slot>
           <p v-if="message" class="text-slate-300 leading-relaxed">{{ message }}</p>
         </slot>
       </div>
 
       <!-- Modal Footer -->
-      <div class="flex items-center justify-end gap-3 p-4 border-t border-slate-800 bg-slate-950/60">
+      <div class="flex items-center justify-end gap-3 p-4 border-t border-slate-800 bg-slate-950/60 shrink-0">
         <AppButton
           variant="secondary"
           size="sm"
