@@ -1,7 +1,7 @@
 import assert from "assert";
 import fs from "fs";
 import sharp from "sharp";
-import { detectFace, computeSharpness, evaluateFaceQuality } from "../src/services/face_quality_service.js";
+import { detectFace, computeSharpness, evaluateFaceQuality, estimateFacePose } from "../src/services/face_quality_service.js";
 
 console.log("=== Test de Detección de Rostros y Score de Nitidez (RFB-320) ===");
 
@@ -51,4 +51,29 @@ const severeQuality = await evaluateFaceQuality(severeBlurred);
 assert.strictEqual(severeQuality.isValid, false);
 assert.strictEqual(severeQuality.reason, "no_face_detected_or_back_of_head");
 
-console.log("\n🎉 ¡Todos los tests de Face Quality y Nitidez pasaron exitosamente!");
+// 5. Probar estimación de orientación / pose facial (estimateFacePose)
+console.log("\n[5] Probando estimación de orientación/pose facial (estimateFacePose)...");
+const validPoses = ['frontal', 'profile_left', 'profile_right', 'semi_left', 'semi_right', 'tilted_down', 'tilted_up'];
+const poseResult = await estimateFacePose({ faceBuffer: barberQuality.faceBuffer });
+console.log("-> Estimación de pose para rostro de barbero:", poseResult);
+assert.ok(validPoses.includes(poseResult.pose), `Pose debe ser una pose canónica válida: ${poseResult.pose}`);
+assert.ok(typeof poseResult.label === "string" && poseResult.label.length > 0, "Debe tener una etiqueta legible en español");
+assert.strictEqual(typeof poseResult.yawScore, "number", "yawScore debe ser un número");
+assert.strictEqual(typeof poseResult.pitchScore, "number", "pitchScore debe ser un número");
+
+// Verificar que evaluateFaceQuality adjuntó pose y poseLabel
+assert.strictEqual(barberQuality.pose, poseResult.pose, "evaluateFaceQuality debe incluir el pose estimado");
+assert.strictEqual(barberQuality.poseLabel, poseResult.label, "evaluateFaceQuality debe incluir la etiqueta de pose");
+
+// Probar estimación geométrica con vector embedding
+const embeddingPose = await estimateFacePose({ embedding: [0.1, 0.8, -0.5, 0.2] });
+console.log("-> Estimación de pose con embedding sintético:", embeddingPose);
+assert.ok(validPoses.includes(embeddingPose.pose));
+assert.strictEqual(typeof embeddingPose.label, "string");
+
+// Probar estimación con bounding box
+const boxPose = await estimateFacePose({ faceBoxNorm: [0.1, 0.2, 0.3, 0.4] });
+console.log("-> Estimación de pose con faceBoxNorm sintético:", boxPose);
+assert.ok(validPoses.includes(boxPose.pose));
+
+console.log("\n🎉 ¡Todos los tests de Face Quality, Nitidez y Estimación de Pose pasaron exitosamente!");

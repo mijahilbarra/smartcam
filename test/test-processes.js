@@ -425,21 +425,18 @@ assert.strictEqual(recognizedSession1[0].name, "Enrique Gómez");
 const updatedClientDoc = firestoreStorage.get("client_enrique");
 assert.ok(Array.isArray(updatedClientDoc.embeddings), "Debe tener galería de embeddings");
 assert.ok(updatedClientDoc.embeddings.length >= 2, "Debe haber anexado el nuevo ángulo a la galería");
-assert.ok(updatedClientDoc.embeddings.length <= 6, "No debe exceder el límite de 6 ángulos");
+assert.ok(updatedClientDoc.embeddings.length <= 20, "No debe exceder el límite de 20 ángulos");
 assert.ok(Array.isArray(updatedClientDoc.photos), "Debe tener galería de photos");
 assert.ok(updatedClientDoc.photos.length >= 1, "Debe haber anexado la foto a la galería de photos");
-assert.ok(updatedClientDoc.photos.length <= 6, "No debe exceder el límite de 6 fotos");
+assert.ok(updatedClientDoc.photos.length <= 20, "No debe exceder el límite de 20 fotos");
 console.log(`-> Sesión activa gobernó detección: asignado a ${updatedClientDoc.name} con ${updatedClientDoc.embeddings.length} ángulos en galería.`);
 
-// Verificación de tope máximo de 6 ángulos en galería
+// Verificación de tope máximo de 20 ángulos en galería
 const currentDoc = firestoreStorage.get("client_enrique");
-currentDoc.embeddings = [
-  createUnitVector(512, 0),
-  createUnitVector(512, 1),
-  createUnitVector(512, 2),
-  createUnitVector(512, 3),
-  createUnitVector(512, 4)
-];
+currentDoc.embeddings = [];
+for (let k = 0; k < 19; k++) {
+  currentDoc.embeddings.push(createUnitVector(512, k));
+}
 currentDoc.bestFaceScore = 10; // score bajo para que la captura con score 67 active incorporación
 customerService.saveOrUpdateCustomer(currentDoc);
 
@@ -449,9 +446,9 @@ await processPeopleRecognition(
   [sampleClientCrop],
   activeSessions
 );
-assert.strictEqual(firestoreStorage.get("client_enrique").embeddings.length, 6, "Debe alcanzar el tope de 6 ángulos");
+assert.strictEqual(firestoreStorage.get("client_enrique").embeddings.length, 20, "Debe alcanzar el tope de 20 ángulos");
 
-// Un nuevo ángulo no debe sobrepasar 6
+// Un nuevo ángulo no debe sobrepasar 20
 firestoreStorage.get("client_enrique").bestFaceScore = 10;
 customerService.saveOrUpdateCustomer(firestoreStorage.get("client_enrique"));
 await processPeopleRecognition(
@@ -460,8 +457,8 @@ await processPeopleRecognition(
   [sampleClientCrop],
   activeSessions
 );
-assert.strictEqual(firestoreStorage.get("client_enrique").embeddings.length, 6, "La galería debe mantenerse estrictamente acotada a máximo 6 ángulos");
-console.log("-> Límite máximo de galería de 6 embeddings verificado exitosamente.");
+assert.strictEqual(firestoreStorage.get("client_enrique").embeddings.length, 20, "La galería debe mantenerse estrictamente acotada a máximo 20 ángulos");
+console.log("-> Límite máximo de galería de 20 embeddings verificado exitosamente.");
 
 // Caso E: Creación de nuevo cliente inicializa embeddings: [candidate.embedding]
 resetPendingCandidates();
@@ -511,25 +508,22 @@ console.log("-> Inicialización de embeddings y photos en creación de nuevo cli
 
 // 11. enrichPersonAngles: Correspondencia 1:1 y sincronización de perfiles legados
 console.log("\n[11] Probando sincronización 1:1 de embeddings y photos en enrichPersonAngles...");
+const legacyEmbeddings = [];
+for (let k = 0; k < 20; k++) {
+  legacyEmbeddings.push(createUnitVector(512, k));
+}
 const legacyPerson = {
   id: "client_legacy_215",
   name: "Cliente #215",
   isStaff: false,
   thumbnailBase64: "data:image/jpeg;base64,initial_legacy_photo",
   bestFaceScore: 45,
-  embeddings: [
-    createUnitVector(512, 0),
-    createUnitVector(512, 1),
-    createUnitVector(512, 2),
-    createUnitVector(512, 3),
-    createUnitVector(512, 4),
-    createUnitVector(512, 5)
-  ]
+  embeddings: legacyEmbeddings
 };
 
-// Agregar fotos 2 a 6 consecutivamente
+// Agregar fotos 2 a 20 consecutivamente
 let currentLegacy = { ...legacyPerson };
-for (let photoNum = 2; photoNum <= 6; photoNum++) {
+for (let photoNum = 2; photoNum <= 20; photoNum++) {
   const newEmb = createUnitVector(512, 10 + photoNum);
   const newThumb = `data:image/jpeg;base64,photo_${photoNum}`;
   const res = enrichPersonAngles(currentLegacy, {
@@ -539,27 +533,27 @@ for (let photoNum = 2; photoNum <= 6; photoNum++) {
   });
 
   assert.strictEqual(res.photos.length, photoNum, `Debe tener ${photoNum} fotos tras la adición`);
-  assert.strictEqual(res.embeddings.length, 6, "Debe mantener 6 embeddings");
+  assert.strictEqual(res.embeddings.length, 20, "Debe mantener 20 embeddings");
   assert.strictEqual(res.photos[photoNum - 1].thumbnailBase64, newThumb, "La miniatura de la foto debe coincidir");
   assert.deepStrictEqual(res.embeddings[photoNum - 1], newEmb, `El embedding en índice ${photoNum - 1} debe corresponder a la foto`);
   currentLegacy.embeddings = res.embeddings;
   currentLegacy.photos = res.photos;
 }
 
-// Ahora con 6 fotos y 6 embeddings, añadir la 7ma foto debe rotar en paralelo
+// Ahora con 20 fotos y 20 embeddings, añadir la 21va foto debe rotar en paralelo
 const rotEmb = createUnitVector(512, 99);
-const rotThumb = "data:image/jpeg;base64,photo_7_rotated";
+const rotThumb = "data:image/jpeg;base64,photo_21_rotated";
 const rotResult = enrichPersonAngles(currentLegacy, {
   embedding: rotEmb,
   faceThumbnailBase64: rotThumb,
   sharpnessScore: 90
 });
-assert.strictEqual(rotResult.photos.length, 6, "Debe mantener máximo 6 fotos");
-assert.strictEqual(rotResult.embeddings.length, 6, "Debe mantener máximo 6 embeddings");
+assert.strictEqual(rotResult.photos.length, 20, "Debe mantener máximo 20 fotos");
+assert.strictEqual(rotResult.embeddings.length, 20, "Debe mantener máximo 20 embeddings");
 assert.strictEqual(rotResult.photos[0].thumbnailBase64, "data:image/jpeg;base64,initial_legacy_photo", "Debe conservar la foto inicial de referencia en índice 0");
 assert.deepStrictEqual(rotResult.embeddings[0], createUnitVector(512, 0), "Debe conservar el embedding inicial de referencia en índice 0");
-assert.strictEqual(rotResult.photos[5].thumbnailBase64, rotThumb, "La última foto debe ser la recién incorporada");
-assert.deepStrictEqual(rotResult.embeddings[5], rotEmb, "El último embedding debe ser el recién incorporado");
+assert.strictEqual(rotResult.photos[19].thumbnailBase64, rotThumb, "La última foto debe ser la recién incorporada");
+assert.deepStrictEqual(rotResult.embeddings[19], rotEmb, "El último embedding debe ser el recién incorporado");
 console.log("-> Correspondencia 1:1 y sincronización progresiva de perfiles legados validada exitosamente.");
 
 console.log("\n🎉 ¡Todos los tests del pipeline funcional de procesos pasaron exitosamente!");

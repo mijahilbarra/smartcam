@@ -172,15 +172,106 @@ export async function computeSharpness(faceBuffer, minAcceptableScore = 40) {
 }
 
 /**
+ * Estima la orientación/pose facial (yaw y pitch) a partir del faceBuffer, faceBoxNorm o embedding.
+ * @param {Object} params
+ * @param {Buffer} [params.faceBuffer] - Buffer de la imagen recortada del rostro
+ * @param {Array<number>} [params.faceBoxNorm] - Bounding box normalizada [x1, y1, x2, y2]
+ * @param {Array<number>} [params.embedding] - Vector biométrico
+ * @returns {Promise<{ pose: string, label: string, yawScore: number, pitchScore: number }>}
+ */
+export async function estimateFacePose({ faceBuffer, faceBoxNorm, embedding } = {}) {
+  let yawScore = 0;
+  let pitchScore = 0;
+
+  if (faceBuffer && Buffer.isBuffer(faceBuffer)) {
+    try {
+      const { data } = await sharp(faceBuffer)
+        .resize(32, 32, { fit: "fill" })
+        .grayscale()
+        .raw()
+        .toBuffer({ resolveWithObject: true });
+
+      let leftLum = 0, rightLum = 0;
+      let topLum = 0, bottomLum = 0;
+      for (let y = 0; y < 32; y++) {
+        for (let x = 0; x < 32; x++) {
+          const val = data[y * 32 + x];
+          if (x < 16) leftLum += val;
+          else rightLum += val;
+          if (y < 16) topLum += val;
+          else bottomLum += val;
+        }
+      }
+      const count = 16 * 32;
+      const leftMean = leftLum / count;
+      const rightMean = rightLum / count;
+      const topMean = topLum / count;
+      const bottomMean = bottomLum / count;
+
+      const avgLumH = (leftMean + rightMean) / 2 || 1;
+      const avgLumV = (topMean + bottomMean) / 2 || 1;
+
+      yawScore = Number(((rightMean - leftMean) / avgLumH).toFixed(3));
+      pitchScore = Number(((bottomMean - topMean) / avgLumV).toFixed(3));
+    } catch (_) {
+      yawScore = 0;
+      pitchScore = 0;
+    }
+  } else if (Array.isArray(embedding) && embedding.length >= 4) {
+    yawScore = Number(((embedding[1] || 0) - (embedding[0] || 0)).toFixed(3));
+    pitchScore = Number(((embedding[2] || 0) - (embedding[3] || 0)).toFixed(3));
+  } else if (Array.isArray(faceBoxNorm) && faceBoxNorm.length === 4) {
+    const cx = (faceBoxNorm[0] + faceBoxNorm[2]) / 2;
+    const cy = (faceBoxNorm[1] + faceBoxNorm[3]) / 2;
+    yawScore = Number(((cx - 0.5) * 2).toFixed(3));
+    pitchScore = Number(((cy - 0.5) * 2).toFixed(3));
+  }
+
+  let pose = "frontal";
+  let label = "Frontal";
+
+  if (yawScore <= -0.35) {
+    pose = "profile_left";
+    label = "Perfil Izquierdo";
+  } else if (yawScore <= -0.12) {
+    pose = "semi_left";
+    label = "Semi-perfil Izquierdo";
+  } else if (yawScore >= 0.35) {
+    pose = "profile_right";
+    label = "Perfil Derecho";
+  } else if (yawScore >= 0.12) {
+    pose = "semi_right";
+    label = "Semi-perfil Derecho";
+  } else if (pitchScore >= 0.18) {
+    pose = "tilted_down";
+    label = "Inclinado Abajo";
+  } else if (pitchScore <= -0.18) {
+    pose = "tilted_up";
+    label = "Inclinado Arriba";
+  } else {
+    pose = "frontal";
+    label = "Frontal";
+  }
+
+  return {
+    pose,
+    label,
+    yawScore,
+    pitchScore
+  };
+}
+
+/**
  * Evalúa un recorte de persona:
  * 1. Verifica si tiene rostro frontal (RFB-320 con umbral >= 0.70).
  * 2. Si no es rostro frontal (nuca/espalda/oreja), retorna isValid = false.
  * 3. Valida la relación de aspecto del rostro (0.65 - 1.35) descartando parches de brazos/codos alargados.
  * 4. Valida tamaño mínimo (mínimo 48x48 píxeles).
  * 5. Si tiene rostro, recorta exactamente la cara con margen y calcula nitidez calibrada.
+ * 6. Estima pose/orientación del rostro (frontal, perfil, semi-perfil, inclinaciones).
  * @param {Buffer} personCropBuffer
  * @param {Object} options
- * @returns {Promise<{ isValid: boolean, faceBuffer?: Buffer, faceBoxNorm?: number[], confidence?: number, sharpnessScore?: number, reason?: string }>}
+ * @returns {Promise<{ isValid: boolean, faceBuffer?: Buffer, faceBoxNorm?: number[], confidence?: number, sharpnessScore?: number, pose?: string, poseLabel?: string, yawScore?: number, pitchScore?: number, reason?: string }>}
  */
 export async function evaluateFaceQuality(personCropBuffer, options = {}) {
   const minConfidence = options.minConfidence || 0.70;
@@ -229,12 +320,21 @@ export async function evaluateFaceQuality(personCropBuffer, options = {}) {
 
   const { sharpnessScore, isSharp } = await computeSharpness(faceBuffer, minSharpness);
 
+  const poseData = await estimateFacePose({
+    faceBuffer,
+    faceBoxNorm: detection.faceBoxNorm
+  });
+
   return {
     isValid: isSharp,
     faceBuffer,
     faceBoxNorm: detection.faceBoxNorm,
     confidence: detection.confidence,
     sharpnessScore,
+    pose: poseData.pose,
+    poseLabel: poseData.label,
+    yawScore: poseData.yawScore,
+    pitchScore: poseData.pitchScore,
     reason: isSharp ? "ok" : "blurry_face"
   };
 }
