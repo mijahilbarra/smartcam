@@ -344,14 +344,19 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
         console.log(`[FaceRecognition] Match biométrico: "${p.name}" (Similitud: ${result.similarity}, Staff: ${p.isStaff ? "SÍ" : "NO"})`);
 
         if (p.isStaff) {
-          const updateData = {
-            lastSeen: new Date().toISOString()
-          };
+          p.lastSeen = new Date().toISOString();
+          let higherSharpness = false;
           if (quality.sharpnessScore > (p.bestFaceScore || 0) || !p.photos?.length) {
-            updateData.bestFaceScore = quality.sharpnessScore;
-            updateData.thumbnailBase64 = faceThumbnailBase64;
+            p.bestFaceScore = quality.sharpnessScore;
+            p.thumbnailBase64 = faceThumbnailBase64;
+            higherSharpness = true;
           }
-          await db.doc(`camera_catcher_people/${p.id}`).update(updateData).catch(() => {});
+          await custService.saveOrUpdateCustomer(p, {
+            db,
+            higherSharpness,
+            faceBuffer: quality.faceBuffer,
+            sharpnessScore: quality.sharpnessScore
+          });
 
           identifiedPeople.push({
             cropId: crop.id || `crop_${i + 1}`,
@@ -370,11 +375,11 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
         } else {
           // Cliente existente: incrementar visitas y actualizar fecha
           const newCount = (p.visitCount || 1) + 1;
-          const updateData = {
-            lastSeen: new Date().toISOString(),
-            lastThumbnailPath: record ? record.storagePath : "",
-            visitCount: newCount
-          };
+          p.visitCount = newCount;
+          p.lastSeen = new Date().toISOString();
+          if (record?.storagePath) {
+            p.thumbnailPath = record.storagePath;
+          }
 
           let currentGallery = Array.isArray(p.embeddings) && p.embeddings.length > 0
             ? [...p.embeddings]
@@ -400,23 +405,23 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
           }
 
           if (hasHigherSharpness || !p.photos?.length) {
-            updateData.bestFaceScore = quality.sharpnessScore;
-            updateData.thumbnailBase64 = faceThumbnailBase64;
             p.bestFaceScore = quality.sharpnessScore;
             p.thumbnailBase64 = faceThumbnailBase64;
             p.embedding = embedding;
-            updateData.embedding = embedding;
           }
 
           if (galleryUpdated) {
-            updateData.embeddings = currentGallery;
             p.embeddings = currentGallery;
-            if (p.photos) {
-              updateData.photos = p.photos;
-            }
           }
 
-          await db.doc(`camera_catcher_people/${p.id}`).set(updateData, { merge: true });
+          await custService.saveOrUpdateCustomer(p, {
+            db,
+            newAngle: isNovelAngle,
+            higherSharpness: hasHigherSharpness,
+            galleryUpdated,
+            faceBuffer: quality.faceBuffer,
+            sharpnessScore: quality.sharpnessScore
+          });
 
           identifiedPeople.push({
             cropId: crop.id || `crop_${i + 1}`,

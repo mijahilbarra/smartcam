@@ -665,7 +665,7 @@ const confirmMerge = async () => {
                   : 'bg-sky-600/20 hover:bg-sky-600/30 text-sky-300 border border-sky-500/40 hover:border-sky-400'
               ]"
             >
-              <AppSpinner v-if="updatingId === person.id" size="xs" />
+              <AppSpinner v-if="updatingId === person.id" size="sm" />
               <template v-else>
                 <AppIcon :name="person.isStaff ? 'person' : 'content_cut'" :size="15" />
                 <span>{{ person.isStaff ? 'Cambiar a Cliente' : 'Pasar a Barbero' }}</span>
