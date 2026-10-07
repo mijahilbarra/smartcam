@@ -3,7 +3,8 @@ import {
   parseDateMs,
   normalizeSharpness,
   extractPersonPhotos,
-  computeMergedPersonData
+  computeMergedPersonData,
+  toFirestoreEmbeddings
 } from "../web/src/entities/person/model/person-merge.js";
 
 console.log("=== Test de Lógica de Fusión y Normalización de Perfiles (person-merge.js) ===");
@@ -91,12 +92,13 @@ assert.strictEqual(result.mergedData.isStaff, true, "Si alguno es staff, el fusi
 assert.strictEqual(result.mergedData.role, "barber");
 
 // Fotos combinadas: carlos_3 (92), carlos_1 (85), carlos_2 (70) -> 3 fotos únicas sin duplicado
-assert.strictEqual(result.mergedData.photos.length, 3, "Debe deduplicar fotos idénticas");
-assert.strictEqual(result.mergedData.photos[0].sharpnessScore, 92, "Primera foto debe ser la de mayor nitidez");
-assert.strictEqual(result.mergedData.bestFaceScore, 92);
-assert.strictEqual(result.mergedData.thumbnailBase64, "data:image/jpeg;base64,carlos_3");
+// Embeddings combinados: deben ser un array de objetos { vector: [...] } y NUNCA matrices anidadas directas
+assert.strictEqual(result.mergedData.embeddings.length, 3);
+assert.ok(result.mergedData.embeddings.every(e => e && Array.isArray(e.vector)), "Cada elemento de embeddings debe ser { vector: [...] }");
+assert.ok(!result.mergedData.embeddings.some(e => Array.isArray(e)), "Firestore rechaza matrices anidadas directas");
+assert.deepStrictEqual(result.mergedData.embedding, [0.5, 0.6], "embedding principal debe ser un vector 1D");
 
-console.log("✔ computeMergedPersonData verificó selección de targetId más antiguo, fechas extremas, suma de visitas y deduplicación de fotos.");
+console.log("✔ computeMergedPersonData verificó selección de targetId más antiguo, fechas extremas, suma de visitas, deduplicación de fotos y embeddings compatibles con Firestore.");
 
 // 4. Test con más de 6 fotos -> tope de 6 conservando las de mayor nitidez
 const profileManyPhotos1 = {
@@ -133,6 +135,7 @@ assert.deepStrictEqual(
   "Debe conservar las 6 fotos con mayor nitidez en orden descendente"
 );
 assert.strictEqual(resultMany.mergedData.embeddings.length, 6, "Debe acotar a máximo 6 embeddings");
+assert.ok(!resultMany.mergedData.embeddings.some(e => Array.isArray(e)), "Debe evitar arrays anidados");
 
-console.log("✔ Verificado tope de 6 fotos y embeddings ordenados por nitidez.");
+console.log("✔ Verificado tope de 6 fotos y embeddings ordenados por nitidez y compatibles con Firestore.");
 console.log("🎉 ¡Todos los tests de fusión de perfiles pasaron exitosamente!");

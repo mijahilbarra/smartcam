@@ -55,6 +55,22 @@ export function extractPersonPhotos(person) {
 }
 
 /**
+ * Sanitiza y encapsula una lista de embeddings para almacenamiento seguro en Firestore.
+ * Firestore rechaza matrices anidadas directas (Array<Array<number>>).
+ * Encapsula cada vector en un objeto { vector: [...] } compatible con Firestore Web SDK y Node Admin SDK.
+ * @param {Array} embeddings
+ * @returns {Array<{ vector: Array<number> }>}
+ */
+export function toFirestoreEmbeddings(embeddings) {
+  if (!Array.isArray(embeddings)) return [];
+  return embeddings.map(e => {
+    if (Array.isArray(e)) return { vector: e };
+    if (e && typeof e === 'object' && Array.isArray(e.vector)) return e;
+    return null;
+  }).filter(Boolean);
+}
+
+/**
  * Computa la combinación de datos para fusionar varios perfiles en uno solo.
  * 
  * - Combina fotos en un único array (hasta 6 máx), priorizando mayor nitidez y eliminando duplicados.
@@ -162,6 +178,10 @@ export function computeMergedPersonData(profiles, options = {}) {
     }
   }
 
+  // Sanitizar embeddings para compatibilidad estricta con Firestore (evitar 'Nested arrays are not supported')
+  const firestoreEmbeddings = toFirestoreEmbeddings(mergedEmbeddings);
+  const primaryEmbedding = firestoreEmbeddings[0]?.vector || null;
+
   // 6. Mejor nitidez facial y miniatura principal
   const bestFaceScore = mergedPhotos.length > 0
     ? Math.max(...mergedPhotos.map(p => p.sharpnessScore || 0))
@@ -182,7 +202,8 @@ export function computeMergedPersonData(profiles, options = {}) {
       bestFaceScore,
       thumbnailBase64,
       photos: mergedPhotos,
-      embeddings: mergedEmbeddings,
+      embeddings: firestoreEmbeddings,
+      ...(primaryEmbedding ? { embedding: primaryEmbedding } : {}),
       isStaff,
       role,
       updatedAt: new Date().toISOString()

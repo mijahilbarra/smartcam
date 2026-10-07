@@ -1,7 +1,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { collection, doc, onSnapshot, updateDoc, deleteDoc, writeBatch } from 'firebase/firestore';
 import { db } from '@/shared/api/firebase';
-import { computeMergedPersonData, extractPersonPhotos } from './person-merge';
+import { computeMergedPersonData, extractPersonPhotos, toFirestoreEmbeddings } from './person-merge';
 
 export function usePeople() {
   const people = ref([]);
@@ -206,9 +206,11 @@ export function usePeople() {
 
     try {
       const docRef = doc(db, 'camera_catcher_people', personId);
+      const firestoreEmbeddings = toFirestoreEmbeddings(updatedEmbeddings);
       await updateDoc(docRef, {
         photos: updatedPhotos,
-        embeddings: updatedEmbeddings,
+        embeddings: firestoreEmbeddings,
+        ...(firestoreEmbeddings[0]?.vector ? { embedding: firestoreEmbeddings[0].vector } : {}),
         thumbnailBase64,
         bestFaceScore,
         updatedAt: new Date().toISOString()
