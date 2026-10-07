@@ -187,5 +187,35 @@ assert.strictEqual(customerService.profilesCache.size, 0);
 assert.strictEqual(memoryDb.getAllComparisonProfiles().length, 0);
 console.log("-> reset limpió RAM y SQLite por completo.");
 
+// 10. Configuración dinámica de entorno con initForDatabase
+console.log("\n[9] Probando cambio y configuración dinámica con initForDatabase...");
+const dynamicService = new CustomerService();
+
+// Inicializar explícitamente para "test" en memoria
+const testClient = dynamicService.initForDatabase("test", { dbPath: ":memory:" });
+assert.strictEqual(dynamicService.databaseId, "test");
+assert.strictEqual(dynamicService.sqliteClient, testClient);
+assert.strictEqual(dynamicService.profilesCache.size, 0);
+
+// Guardar cliente en base de datos "test"
+await dynamicService.saveOrUpdateCustomer({
+  id: "test_user_1",
+  name: "Usuario de Pruebas",
+  isStaff: false
+});
+assert.strictEqual(dynamicService.hasProfile("test_user_1"), true);
+assert.ok(testClient.getCustomerById("test_user_1"));
+
+// Cambiar a entorno "(default)" en memoria
+const defaultClient = dynamicService.initForDatabase("(default)", { dbPath: ":memory:" });
+assert.strictEqual(dynamicService.databaseId, "(default)");
+assert.strictEqual(dynamicService.sqliteClient, defaultClient);
+assert.strictEqual(dynamicService.profilesCache.size, 0, "Al cambiar de entorno debe limpiar la caché en RAM");
+assert.strictEqual(defaultClient.getCustomerById("test_user_1"), null, "La base de datos (default) debe estar separada de test");
+
+testClient.close();
+defaultClient.close();
+console.log("-> initForDatabase y separación de entornos SQLite validados exitosamente.");
+
 memoryDb.close();
 console.log("\n🎉 ¡Todos los tests de CustomerService pasaron exitosamente!");

@@ -7,6 +7,76 @@
 import Database from "better-sqlite3";
 import fs from "fs";
 import path from "path";
+import { getResolvedDatabaseId } from "../firebase/firebase_admin.js";
+
+const DATA_DIR = process.env.SQLITE_DATA_DIR || path.join(process.cwd(), "data");
+
+/**
+ * Resuelve la ruta del archivo SQLite según el databaseId y opciones
+ * Garantiza paridad con los entornos de Firestore ('(default)' y 'test'):
+ * - Si se define process.env.SQLITE_DB_PATH o options.dbPath, usar ese path.
+ * - Si databaseId === "(default)": resolver a path.join(DATA_DIR, "barberia.db").
+ * - Si databaseId === "test": resolver a path.join(DATA_DIR, "barberia_test.db").
+ * - Para cualquier otro databaseId: resolver a path.join(DATA_DIR, `barberia_${databaseId}.db`).
+ * @param {string} [databaseId]
+ * @param {Object} [options]
+ * @returns {string}
+ */
+export function getResolvedSqlitePath(databaseId, options = {}) {
+  if (options.dbPath) {
+    return options.dbPath;
+  }
+  if (process.env.SQLITE_DB_PATH) {
+    return process.env.SQLITE_DB_PATH;
+  }
+  if (databaseId === ":memory:") {
+    return ":memory:";
+  }
+
+  const dataDir = options.dataDir || DATA_DIR;
+  const targetId = databaseId || getResolvedDatabaseId(options);
+
+  if (targetId === "(default)") {
+    return path.join(dataDir, "barberia.db");
+  }
+  if (targetId === "test") {
+    return path.join(dataDir, "barberia_test.db");
+  }
+  return path.join(dataDir, `barberia_${targetId}.db`);
+}
+
+// Caché de instancias singleton por databaseId/ruta
+const clientInstances = new Map();
+
+/**
+ * Obtiene o crea una instancia singleton de SQLiteClient por databaseId
+ * @param {string} [databaseId]
+ * @param {Object} [options]
+ * @returns {SQLiteClient}
+ */
+export function getSqliteClient(databaseId, options = {}) {
+  const targetId = databaseId || getResolvedDatabaseId(options);
+  const resolvedPath = getResolvedSqlitePath(targetId, options);
+  const cacheKey = options.cacheKey || `${targetId}:${resolvedPath}`;
+
+  if (!clientInstances.has(cacheKey)) {
+    const client = new SQLiteClient(resolvedPath);
+    clientInstances.set(cacheKey, client);
+  }
+  return clientInstances.get(cacheKey);
+}
+
+/**
+ * Limpia y cierra las instancias singleton de SQLiteClient en caché (útil para pruebas)
+ */
+export function resetSqliteClients() {
+  for (const client of clientInstances.values()) {
+    try {
+      client.close();
+    } catch (_) {}
+  }
+  clientInstances.clear();
+}
 
 /**
  * Convierte un vector de características (Array de números o Float32Array) a un Buffer binario BLOB
@@ -38,18 +108,18 @@ export function blobToVector(buffer) {
 export class SQLiteClient {
   /**
    * Inicializa la conexión SQLite y crea las tablas si no existen.
-   * @param {string} dbPath - Ruta al archivo sqlite (por defecto 'data/barberia.db' o ':memory:')
+   * @param {string} [dbPath] - Ruta al archivo sqlite (resuelto por defecto según entorno o ':memory:')
    */
-  constructor(dbPath = "data/barberia.db") {
-    this.dbPath = dbPath;
-    if (dbPath !== ":memory:") {
-      const dir = path.dirname(dbPath);
+  constructor(dbPath) {
+    this.dbPath = dbPath || getResolvedSqlitePath();
+    if (this.dbPath !== ":memory:") {
+      const dir = path.dirname(this.dbPath);
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
       }
     }
 
-    this.db = new Database(dbPath);
+    this.db = new Database(this.dbPath);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
 
@@ -343,5 +413,5 @@ export class SQLiteClient {
   }
 }
 
-// Instancia singleton por defecto
-export const sqliteClient = new SQLiteClient();
+// Instancia singleton por defecto según el entorno activo
+export const sqliteClient = getSqliteClient();

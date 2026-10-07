@@ -1,5 +1,12 @@
 import assert from "assert";
-import { SQLiteClient, vectorToBlob, blobToVector } from "../src/infrastructure/storage/sqlite_client.js";
+import {
+  SQLiteClient,
+  vectorToBlob,
+  blobToVector,
+  getResolvedSqlitePath,
+  getSqliteClient,
+  resetSqliteClients
+} from "../src/infrastructure/storage/sqlite_client.js";
 
 console.log("=== Test de SQLite Client para Almacenamiento Biométrico Local ===");
 
@@ -109,4 +116,39 @@ assert.strictEqual(remainingEmbeddings.length, 0, "Las claves foráneas ON DELET
 console.log("-> Eliminación en cascada validada exitosamente.");
 
 client.close();
+
+// 8. Paridad de entornos de base de datos SQLite con Firestore ('(default)' y 'test')
+console.log("\n[8] Probando paridad de entornos de base de datos SQLite (getResolvedSqlitePath / getSqliteClient)...");
+
+// 8.1 Resolución de rutas
+const pathDefault = getResolvedSqlitePath("(default)");
+assert.ok(pathDefault.endsWith("data/barberia.db") || pathDefault.endsWith("data\\barberia.db"), "Debe resolver a data/barberia.db para (default)");
+
+const pathTest = getResolvedSqlitePath("test");
+assert.ok(pathTest.endsWith("data/barberia_test.db") || pathTest.endsWith("data\\barberia_test.db"), "Debe resolver a data/barberia_test.db para test");
+
+const pathCustom = getResolvedSqlitePath("sucursal_sur");
+assert.ok(pathCustom.endsWith("data/barberia_sucursal_sur.db") || pathCustom.endsWith("data\\barberia_sucursal_sur.db"), "Debe resolver a data/barberia_sucursal_sur.db");
+
+const pathMemory = getResolvedSqlitePath(":memory:");
+assert.strictEqual(pathMemory, ":memory:", "Debe respetar :memory:");
+
+const pathExplicit = getResolvedSqlitePath("test", { dbPath: "/tmp/custom_test.db" });
+assert.strictEqual(pathExplicit, "/tmp/custom_test.db", "Debe respetar options.dbPath");
+
+// 8.2 Singleton y caché por databaseId
+const clientDef1 = getSqliteClient("(default)", { dbPath: ":memory:", cacheKey: "default_test" });
+const clientDef2 = getSqliteClient("(default)", { dbPath: ":memory:", cacheKey: "default_test" });
+assert.strictEqual(clientDef1, clientDef2, "Debe devolver la misma instancia en caché");
+
+const clientTest1 = getSqliteClient("test", { dbPath: ":memory:", cacheKey: "test_isolated" });
+assert.notStrictEqual(clientDef1, clientTest1, "Instancias para distintos entornos deben ser independientes");
+
+// 8.3 Resolución automática por entorno activo
+const resolvedAutoPath = getResolvedSqlitePath();
+assert.ok(resolvedAutoPath.endsWith("barberia_test.db"), "En entorno de test local debe resolver por defecto a barberia_test.db");
+
+resetSqliteClients();
+console.log("-> Paridad de entornos y resolución de SQLite validada exitosamente.");
+
 console.log("\n🎉 ¡Todos los tests de SQLiteClient pasaron exitosamente!");

@@ -10,6 +10,7 @@
     "preview:web": "vite preview",
     "test": "node test/test-firestore-sanitizer.js && node test/test-daemon-reporter.js && node test/test-detector.js && node test/test-working-hours.js && node test/test-core-modular.js && node test/test-face-quality.js && node test/test-person-tracker.js && node test/test-visit-session.js && node test/test-processes.js && node test/test-people-merge.js && node test/test-sqlite-client.js && node test/test-customer-service.js",
     "test:e2": "docker compose -f docker-compose.e2-sim.yml run --rm e2-simulator npm test",
+    "migrate:sqlite": "node scripts/migrate-to-sqlite.js",
     "start": "node src/index.js"
   },
   "dependencies": {

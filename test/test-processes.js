@@ -18,6 +18,9 @@ import { customerService } from "../src/services/customer_service.js";
 
 console.log("=== Test de Pipeline Funcional de Procesos (processes.js) ===");
 
+// Configurar SQLite en memoria para pruebas para proteger data/barberia.db
+customerService.initForDatabase("test", { dbPath: ":memory:" });
+
 // 1. computeOccupancy (función pura)
 console.log("\n[1] Probando cálculo puro de ocupación (computeOccupancy)...");
 const sampleQuadrants = [

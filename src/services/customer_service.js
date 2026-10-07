@@ -6,18 +6,50 @@
  * - Reflejo asíncrono a Firebase (Firestore y Storage) cuando hay cambios significativos
  */
 
-import { sqliteClient as defaultSqliteClient } from "../infrastructure/storage/sqlite_client.js";
+import { sqliteClient as defaultSqliteClient, getSqliteClient } from "../infrastructure/storage/sqlite_client.js";
+import { getResolvedDatabaseId } from "../infrastructure/firebase/firebase_admin.js";
 import { uploadFaceCrop } from "../infrastructure/firebase/storage_client.js";
+
+/**
+ * Extrae el databaseId configurado en una instancia de Firestore si está disponible
+ * @param {Object} db
+ * @returns {string|null}
+ */
+export function extractDatabaseIdFromFirestore(db) {
+  if (!db) return null;
+  if (typeof db.databaseId === "string") return db.databaseId;
+  if (typeof db._databaseId === "string") return db._databaseId;
+  if (db._settings && typeof db._settings.databaseId === "string") return db._settings.databaseId;
+  return null;
+}
 
 export class CustomerService {
   /**
    * @param {Object} [options]
    * @param {import('../infrastructure/storage/sqlite_client.js').SQLiteClient} [options.sqliteClient]
+   * @param {string} [options.databaseId]
    */
   constructor(options = {}) {
-    this.sqliteClient = options.sqliteClient || defaultSqliteClient;
+    this.databaseId = options.databaseId || null;
+    this.customClientProvided = Boolean(options.sqliteClient);
+    this.sqliteClient = options.sqliteClient || (this.databaseId ? getSqliteClient(this.databaseId) : defaultSqliteClient);
     this.profilesCache = new Map();
     this.isLoaded = false;
+  }
+
+  /**
+   * Configura o cambia la base de datos SQLite activa asociada al databaseId ('(default)', 'test', etc.)
+   * @param {string} [databaseId]
+   * @param {Object} [options]
+   * @returns {import('../infrastructure/storage/sqlite_client.js').SQLiteClient}
+   */
+  initForDatabase(databaseId, options = {}) {
+    const resolvedId = databaseId || getResolvedDatabaseId(options);
+    this.databaseId = resolvedId;
+    this.sqliteClient = options.sqliteClient || getSqliteClient(resolvedId, options);
+    this.customClientProvided = Boolean(options.sqliteClient);
+    this.clearMemoryCache();
+    return this.sqliteClient;
   }
 
   /**
@@ -29,6 +61,11 @@ export class CustomerService {
    * @returns {Promise<Array<Object>>} Lista de perfiles cargados
    */
   async loadProfilesIntoMemory(options = {}) {
+    const firestoreDbId = options.databaseId || extractDatabaseIdFromFirestore(options.db);
+    if (firestoreDbId && !this.customClientProvided && firestoreDbId !== this.databaseId) {
+      this.initForDatabase(firestoreDbId, options);
+    }
+
     const profiles = this.sqliteClient.getAllComparisonProfiles();
     this.profilesCache.clear();
     for (const p of profiles) {
@@ -80,6 +117,10 @@ export class CustomerService {
    */
   async loadProfilesFromFirestore(db) {
     if (!db || typeof db.collection !== "function") return [];
+    const firestoreDbId = extractDatabaseIdFromFirestore(db);
+    if (firestoreDbId && !this.customClientProvided && firestoreDbId !== this.databaseId) {
+      this.initForDatabase(firestoreDbId);
+    }
     try {
       const snap = await db.collection("camera_catcher_people").get();
       const loaded = [];
@@ -199,6 +240,11 @@ export class CustomerService {
       throw new Error("El cliente debe contener al menos un id válido.");
     }
 
+    const firestoreDbId = options.databaseId || extractDatabaseIdFromFirestore(options.db);
+    if (firestoreDbId && !this.customClientProvided && firestoreDbId !== this.databaseId) {
+      this.initForDatabase(firestoreDbId, options);
+    }
+
     // 1. Persistir en SQLite local
     this.sqliteClient.upsertCustomer(customerData);
 
@@ -295,6 +341,11 @@ export class CustomerService {
    * @param {Object} [options]
    */
   async deleteCustomer(id, options = {}) {
+    const firestoreDbId = options.databaseId || extractDatabaseIdFromFirestore(options.db);
+    if (firestoreDbId && !this.customClientProvided && firestoreDbId !== this.databaseId) {
+      this.initForDatabase(firestoreDbId, options);
+    }
+
     this.profilesCache.delete(id);
     this.sqliteClient.deleteCustomer(id);
 

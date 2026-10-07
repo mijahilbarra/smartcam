@@ -9,6 +9,11 @@
  *     - Storage Bucket: "skip-bigotes.firebasestorage.app"
  */
 
+import net from "node:net";
+if (net.setDefaultAutoSelectFamily) {
+  net.setDefaultAutoSelectFamily(false);
+}
+
 import admin from "firebase-admin";
 import { getFirestore } from "firebase-admin/firestore";
 

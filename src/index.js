@@ -13,6 +13,7 @@ export { parseTimeToMinutes, isWithinWorkingHours, WorkingHoursManager } from ".
 import { initLogger } from "./infrastructure/logging/logger.js";
 import { initFirebaseAdmin } from "./infrastructure/firebase/firebase_admin.js";
 import { daemonReporter } from "./daemon_reporter.js";
+import { customerService } from "./services/customer_service.js";
 import { cleanupZombies, startNeolinkDaemon } from "./infrastructure/camera/neolink_client.js";
 import {
   getDynamicConfig,
@@ -35,8 +36,10 @@ const TMP_LOG_FILE = "/tmp/camera-catcher.log";
 initLogger(DAEMON_LOG_FILE, TMP_LOG_FILE);
 
 // 2. Inicializar Firebase Admin SDK (con Application Default Credentials en GCP)
-const { db, bucket } = initFirebaseAdmin();
+const { db, bucket, databaseId } = initFirebaseAdmin();
 daemonReporter.init(db);
+customerService.initForDatabase(databaseId);
+console.log(`[Storage] SQLite configurado en paridad con Firestore [Database: ${databaseId}] -> ${customerService.sqliteClient.dbPath}`);
 
 // 3. Inicializar Servicios de Dominio y Orquestación
 const workingHours = new WorkingHoursManager({
@@ -205,4 +208,4 @@ setTimeout(() => {
   startRealtimeLoop(2500);
 }, 3000);
 
-export { app, workingHours, orchestrator, db, bucket, server };
+export { app, workingHours, orchestrator, db, bucket, server, customerService };

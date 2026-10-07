@@ -37,12 +37,20 @@ flowchart TD
 * [`src/services/customer_service.js`](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/src/services/customer_service.js) mantiene en memoria un `Map` indexado por ID de cliente con todos los perfiles biométricos activos.
 * La función `getComparisonProfiles()` entrega la galería completa para `identifyFace` en menos de **0.001 ms** (sub-microsegundo), eliminando la latencia de red y disco por completo.
 
-### 2. Nivel 2: SQLite Local con Modo WAL y Blobs Binarios (`SQLiteClient`)
-* [`src/infrastructure/storage/sqlite_client.js`](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/src/infrastructure/storage/sqlite_client.js) administra la base de datos local `data/barberia.db` utilizando `better-sqlite3`.
+### 2. Nivel 2: SQLite Local con Paridad de Entornos y Modo WAL (`SQLiteClient`)
+* [`src/infrastructure/storage/sqlite_client.js`](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/src/infrastructure/storage/sqlite_client.js) administra la base de datos local utilizando `better-sqlite3`, manteniendo **paridad 1:1 con las bases de datos de Firestore**:
+  * **Producción** (`databaseId === "(default)"`): Resuelve a `data/barberia.db`.
+  * **Desarrollo / Local / Pruebas** (`databaseId === "test"`): Resuelve a `data/barberia_test.db`.
+  * **Cualquier otro entorno** (`databaseId` personalizado): Resuelve a `data/barberia_${databaseId}.db`.
+  * **Pruebas unitarias**: Soporte nativo para `:memory:`.
+* Funciones de fábrica y resolución:
+  * `getResolvedSqlitePath(databaseId, options)`: Determina la ruta física según el ID de Firestore o variables (`SQLITE_DB_PATH`).
+  * `getSqliteClient(databaseId, options)`: Fábrica singleton que reutiliza conexiones abiertas por entorno de datos.
+  * `customerService.initForDatabase(databaseId)`: Conmuta dinámicamente la base de datos activa y resetea la caché en RAM para evitar fuga de estados entre entornos.
 * Modo WAL (`journal_mode = WAL`) y claves foráneas activadas (`foreign_keys = ON`).
 * Tablas relacionales con integridad referencial:
   * `customers`: Metadatos del cliente (nombre, visitas, nitidez récord, fechas, miniatura).
-  * `customer_embeddings`: Galería de hasta 6 vectores por cliente con clave foránea `ON DELETE CASCADE`.
+  * `customer_embeddings`: Galería de hasta 20 vectores por cliente con clave foránea `ON DELETE CASCADE`.
 * Serialización binaria: Los vectores de características (512 floats) se almacenan directamente como **BLOB binarios de 2048 bytes** (`Float32Array` <-> `Buffer`), evitando el sobrecosto de parseo JSON.
 
 ### 3. Nivel 3: Reflejo Asíncrono Selectivo a Firebase
