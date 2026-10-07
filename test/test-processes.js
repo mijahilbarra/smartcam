@@ -14,6 +14,7 @@ import { CaptureOrchestrator } from "../src/services/capture_orchestrator.js";
 import { PersonTracker } from "../src/core/person_tracker.js";
 import { identifyFace } from "../src/face_recognizer.js";
 import { processPeopleRecognition, resetPendingCandidates, enrichPersonAngles } from "../src/services/people_service.js";
+import { customerService } from "../src/services/customer_service.js";
 
 console.log("=== Test de Pipeline Funcional de Procesos (processes.js) ===");
 
@@ -437,6 +438,7 @@ currentDoc.embeddings = [
   createUnitVector(512, 4)
 ];
 currentDoc.bestFaceScore = 10; // score bajo para que la captura con score 67 active incorporación
+customerService.saveOrUpdateCustomer(currentDoc);
 
 await processPeopleRecognition(
   mockDb,
@@ -448,6 +450,7 @@ assert.strictEqual(firestoreStorage.get("client_enrique").embeddings.length, 6, 
 
 // Un nuevo ángulo no debe sobrepasar 6
 firestoreStorage.get("client_enrique").bestFaceScore = 10;
+customerService.saveOrUpdateCustomer(firestoreStorage.get("client_enrique"));
 await processPeopleRecognition(
   mockDb,
   [{ id: "crop_silla_1", storagePath: null }],

@@ -17,7 +17,7 @@ import { isServiceChair, isTransitZone } from "../core/barbershop_rules.js";
 export async function acquireClearFrame({
   localOutputPath,
   rtspUrl = "rtsp://127.0.0.1:8554/barberia/main",
-  timeoutMs = 8000
+  timeoutMs = 1500
 } = {}) {
   const outputPath = localOutputPath || `/tmp/snap_clear_${Date.now()}.jpeg`;
   try {
@@ -438,6 +438,21 @@ export async function runProcessCycle(context = {}, options = {}) {
 
   // 4. Seguimiento temporal y espacial de entidades (PersonTracker)
   const activeTracks = trackEntities(tracker, mlResult);
+
+  // 4a. Emisión de telemetría de ultra baja latencia desacoplada (SSE)
+  // Permite que la interfaz web visualice cajas de tracking y cuadrantes en <50ms sin bloquearse en biometría o ClearStream.
+  const immediateOccupancy = computeOccupancy({
+    quadrants: mlResult.quadrants,
+    identifiedPeople: [],
+    rawDetections: mlResult.rawDetections
+  });
+  broadcastTelemetry({
+    docId,
+    mlResult,
+    activeTracks,
+    identifiedPeople: [],
+    occupancy: immediateOccupancy
+  });
 
   // 4b. Adquisición reactiva de fotograma en alta resolución (Stream Clear) bajo demanda
   const acquireClearFn = options.acquireClearFrame || context.acquireClearFrame || acquireClearFrame;

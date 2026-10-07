@@ -8,6 +8,7 @@ import sharp from "sharp";
 import { extractFaceEmbedding, identifyFace, computeCosineSimilarity } from "../face_recognizer.js";
 import { evaluateFaceQuality } from "./face_quality_service.js";
 import { isChairZone, isTransitZone } from "../core/barbershop_rules.js";
+import { customerService } from "./customer_service.js";
 
 /**
  * Añade una foto a la galería de fotos del cliente garantizando compatibilidad hacia atrás y tope de 6 fotos.
@@ -100,6 +101,7 @@ const pendingNewClients = new Map();
  */
 export function resetPendingCandidates() {
   pendingNewClients.clear();
+  customerService.reset();
 }
 
 /**
@@ -142,26 +144,18 @@ export async function cleanupFakeProfiles(db) {
  * @param {Array} activeSessions - Lista de sesiones de visita activas
  * @returns {Promise<Array>}
  */
-export async function processPeopleRecognition(db, clientRecords, clientCrops, activeSessions = []) {
+export async function processPeopleRecognition(db, clientRecords, clientCrops, activeSessions = [], options = {}) {
   if (!db || !clientCrops || clientCrops.length === 0) return [];
   const identifiedPeople = [];
+  const custService = options.customerService || customerService;
 
   try {
-    // 1. Obtener perfiles conocidos y staff desde Firestore
-    const profilesSnap = await db.collection("camera_catcher_people").get();
-    const knownProfiles = [];
-    profilesSnap.forEach(docSnap => {
-      knownProfiles.push({ id: docSnap.id, ...docSnap.data() });
-    });
+    // 1. Obtener perfiles para comparación biométrica rápida desde customerService (RAM cache / SQLite)
+    if (!custService.isLoaded) {
+      await custService.loadProfilesIntoMemory({ db });
+    }
 
-    const staffDoc = await db.doc("camera_catcher/staff").get();
-    const staffMembers = staffDoc.exists ? (staffDoc.data().members || []) : [];
-
-    // Combinar staff con perfiles generales
-    const allKnown = [
-      ...staffMembers.map(s => ({ ...s, isStaff: true })),
-      ...knownProfiles
-    ];
+    const allKnown = custService.getComparisonProfiles();
 
     for (let i = 0; i < clientCrops.length; i++) {
       const crop = clientCrops[i];
@@ -226,7 +220,7 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
       );
 
       if (activeSession && activeSession.personId && !activeSession.isStaff) {
-        let p = knownProfiles.find(kp => kp.id === activeSession.personId);
+        let p = custService.getCustomerData(activeSession.personId) || allKnown.find(kp => kp.id === activeSession.personId);
         if (!p) {
           const initialPhoto = {
             thumbnailBase64: faceThumbnailBase64,
@@ -244,7 +238,6 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
             photos: [initialPhoto],
             thumbnailBase64: faceThumbnailBase64
           };
-          knownProfiles.push(p);
           allKnown.push(p);
         }
 
@@ -287,30 +280,26 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
           console.log(`[FaceRecognition] Rostro añadido a galería de "${p.name}" (NovelAngle: ${isNovelAngle}, MayorNitidez: ${hasHigherSharpness}, FaltanFotos: ${hasMissingPhotos}, Total embeddings: ${currentGallery.length}/6, Total fotos: ${p.photos.length}/6).`);
         }
 
-        const updateData = {
-          lastSeen: new Date().toISOString()
-        };
-
         if (hasHigherSharpness || !p.photos?.length) {
-          updateData.bestFaceScore = quality.sharpnessScore;
-          updateData.thumbnailBase64 = faceThumbnailBase64;
           p.bestFaceScore = quality.sharpnessScore;
           p.thumbnailBase64 = faceThumbnailBase64;
           p.embedding = embedding;
-          updateData.embedding = embedding;
         }
 
         if (galleryUpdated) {
-          updateData.embeddings = currentGallery;
           p.embeddings = currentGallery;
-          if (p.photos) {
-            updateData.photos = p.photos;
-          }
         }
 
-        if (db && p.id) {
-          await db.doc(`camera_catcher_people/${p.id}`).set(updateData, { merge: true });
-        }
+        p.lastSeen = new Date().toISOString();
+
+        await custService.saveOrUpdateCustomer(p, {
+          db,
+          newAngle: isNovelAngle,
+          higherSharpness: hasHigherSharpness,
+          galleryUpdated,
+          faceBuffer: quality.faceBuffer,
+          sharpnessScore: quality.sharpnessScore
+        });
 
         console.log(`[FaceRecognition] Rostro gobernado por sesión activa en ${crop.zoneId || 'silla'} -> Cliente: "${p.name}" (${p.id}).`);
 
@@ -495,8 +484,8 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
           }
 
           if (candidate.count >= 3) {
-            // Confirmado por 3 ciclos: Crear perfil definitivo en Firestore
-            const totalProfiles = knownProfiles.length + 1;
+            // Confirmado por 3 ciclos: Crear perfil definitivo en SQLite / Firestore
+            const totalProfiles = (custService.profilesCache?.size || allKnown.length) + 1;
             const newPersonId = candidate.tempId || `person_${Date.now()}_${i + 1}`;
             const newName = `Cliente #${totalProfiles}`;
             const clientEmbeddings = candidate.embeddings && candidate.embeddings.length > 0
@@ -527,11 +516,15 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
               bestFaceScore: candidate.bestFaceScore || quality?.sharpnessScore || 0
             };
 
-            await db.doc(`camera_catcher_people/${newPersonId}`).set(newProfile);
-            console.log(`[FaceRecognition] ✅ Cliente confirmado tras 3 ciclos y registrado en Firestore con ${initialPhotos.length} fotos: "${newName}" (${newPersonId})`);
+            await custService.saveOrUpdateCustomer(newProfile, {
+              db,
+              isNew: true,
+              faceBuffer: quality.faceBuffer,
+              sharpnessScore: quality.sharpnessScore
+            });
+            console.log(`[FaceRecognition] ✅ Cliente confirmado tras 3 ciclos y registrado en SQLite/Firestore con ${initialPhotos.length} fotos: "${newName}" (${newPersonId})`);
 
             pendingNewClients.delete(matchedCandidateKey);
-            knownProfiles.push(newProfile);
             allKnown.push(newProfile);
 
             identifiedPeople.push({
