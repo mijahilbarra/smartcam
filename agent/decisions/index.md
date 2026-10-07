@@ -128,6 +128,7 @@ sequenceDiagram
 | **Arquitectura Daemon Modular (Hexagonal)** | Node.js Core + Services + Infra | Desacoplamiento modular del daemon en capas de Dominio, Infraestructura y Orquestación | [13-modular-daemon-architecture.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/13-modular-daemon-architecture.md) |
 | **Simulador Local GCP e2-micro** | Docker Compose + cgroups (1GB RAM) | Simulación local de límites de hardware de la VM de GCP y enrutamiento inteligente en frontend | [14-e2-micro-docker-simulator.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/14-e2-micro-docker-simulator.md) |
 | **Galería Multi-Ángulo & Sesión Temporal** | ArcFace MobileFaceNet + Sesión Temporal | Fusión de poses faciales por silla/visita y galería multi-embedding (tope 6) sin duplicación | [15-multi-angle-biometric-session-gallery.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/15-multi-angle-biometric-session-gallery.md) |
+| **Almacenamiento Biométrico Dual** | SQLite WAL + RAM Cache + Firebase Asíncrono | Almacenamiento local de ultra-baja latencia (<1ms), caché en RAM y reflejo selectivo a la nube ($0 cuotas) | [16-sqlite-local-biometric-storage.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/16-sqlite-local-biometric-storage.md) |
 
 ---
 
