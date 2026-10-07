@@ -114,3 +114,5 @@ El repositorio utiliza GitHub Actions con filtros por ruta (`paths:`):
    - Inferencia multimodal sobre el fotograma capturado según el prompt dinámico configurado.
 6. **Frontend Web Dashboard (`web/`)**:
    - Vue 3 + Tailwind CSS + Vite y Firebase SDK para monitoreo y control en tiempo real desde navegadores.
+7. **Pipeline Funcional Core (`src/services/processes.js` & `agent/PROCESSES.md`)**:
+   - **Pipeline Core del Sistema**: Descomposición funcional lineal en 10 etapas puras y declarativas para adquisición de fotogramas (0ms RAM en tiempo real o Stream Clear 2560x1440 reactivo), inferencia local YOLOv8, seguimiento continuo de personas (`PersonTracker`), biometría gobernada por sesión temporal con galería multi-ángulo (`VisitSessionService` + ArcFace MobileFaceNet), cálculo funcional de ocupación y emisión SSE de telemetría. Especificación canónica y guía de extensión detalladas en [`agent/PROCESSES.md`](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/PROCESSES.md).

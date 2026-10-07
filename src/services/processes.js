@@ -154,12 +154,18 @@ export async function extractClientCrops({ bucket, clientCrops = [], docId, isMa
 }
 
 /**
- * 5b. Reconocimiento y Re-identificación Facial (filtrado de calidad y nitidez).
+ * 5b. Reconocimiento y Re-identificación Facial (filtrado de calidad, nitidez y gobernanza por sesión temporal).
+ * @param {Object} params
+ * @param {Object} params.db - Instancia de Firestore
+ * @param {Array} params.clientRecords - Metadatos de recortes
+ * @param {Array} params.clientCrops - Recortes en memoria
+ * @param {Array} [params.activeSessions] - Sesiones de visita activas
+ * @returns {Promise<Array>} Personas identificadas
  */
-export async function reidentifyPeople({ db, clientRecords = [], clientCrops = [] }) {
+export async function reidentifyPeople({ db, clientRecords = [], clientCrops = [], activeSessions = [] }) {
   if (!clientCrops || clientCrops.length === 0) return [];
   console.log(`[FaceRecognition] Evaluando biometría de personas detectadas...`);
-  return await processPeopleRecognition(db, clientRecords, clientCrops);
+  return await processPeopleRecognition(db, clientRecords, clientCrops, activeSessions);
 }
 
 /**
@@ -552,9 +558,15 @@ export async function runProcessCycle(context = {}, options = {}) {
     }
   }
 
-  // 5. Recortes y re-identificación biométrica facial
+  // 5. Recortes y re-identificación biométrica facial gobernada por sesión
+  const activeSessions = visitService?.getActiveSessions?.() || [];
   const clientRecords = await extractClientCrops({ bucket, clientCrops: mlResult.clientCrops, docId, isManual });
-  const identifiedPeople = await reidentifyPeople({ db, clientRecords, clientCrops: mlResult.clientCrops });
+  const identifiedPeople = await reidentifyPeople({
+    db,
+    clientRecords,
+    clientCrops: mlResult.clientCrops,
+    activeSessions
+  });
 
   // 6. Asociación de identidades y caras nítidas a tracks vía IoU
   matchIdentitiesToTracks({ tracker, activeTracks, identifiedPeople });

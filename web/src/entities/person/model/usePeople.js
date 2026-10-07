@@ -33,18 +33,27 @@ export function usePeople() {
         });
       });
 
-      // Ordenar: Staff/Barberos primero, luego por cantidad de visitas desc, luego por última presencia
-      list.sort((a, b) => {
-        if (a.isStaff !== b.isStaff) {
-          return a.isStaff ? -1 : 1;
-        }
-        if (b.visitCount !== a.visitCount) {
-          return b.visitCount - a.visitCount;
-        }
-        const timeA = a.lastSeen ? new Date(a.lastSeen).getTime() : 0;
-        const timeB = b.lastSeen ? new Date(b.lastSeen).getTime() : 0;
-        return timeB - timeA;
-      });
+        const parseDateMs = (val) => {
+          if (!val) return 0;
+          if (typeof val === 'number') return val;
+          if (typeof val.toDate === 'function') return val.toDate().getTime();
+          if (typeof val.seconds === 'number') return val.seconds * 1000;
+          const d = new Date(val).getTime();
+          return isNaN(d) ? 0 : d;
+        };
+
+        // Ordenar: Staff/Barberos primero, luego por fecha de última vez desc (más reciente primero), luego por cantidad de visitas desc
+        list.sort((a, b) => {
+          if (a.isStaff !== b.isStaff) {
+            return a.isStaff ? -1 : 1;
+          }
+          const timeA = parseDateMs(a.lastSeen);
+          const timeB = parseDateMs(b.lastSeen);
+          if (timeB !== timeA) {
+            return timeB - timeA;
+          }
+          return (b.visitCount || 1) - (a.visitCount || 1);
+        });
 
       people.value = list;
       loading.value = false;

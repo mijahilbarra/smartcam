@@ -1325,14 +1325,16 @@ function initPeopleListener() {
       return;
     }
 
-    // Sort: Staff first, then most visits, then most recent
+    // Sort: Staff first, then most recent (lastSeen desc), then visits
     people.sort((a, b) => {
       if (a.isStaff && !b.isStaff) return -1;
       if (!a.isStaff && b.isStaff) return 1;
+      const timeA = a.lastSeen ? new Date(a.lastSeen).getTime() : 0;
+      const timeB = b.lastSeen ? new Date(b.lastSeen).getTime() : 0;
+      if (timeB !== timeA) return timeB - timeA;
       const visitsA = a.visitCount || 1;
       const visitsB = b.visitCount || 1;
-      if (visitsB !== visitsA) return visitsB - visitsA;
-      return new Date(b.lastSeen || 0) - new Date(a.lastSeen || 0);
+      return visitsB - visitsA;
     });
 
     peopleListGrid.innerHTML = people.map((p, idx) => {

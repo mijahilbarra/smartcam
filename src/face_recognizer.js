@@ -104,12 +104,13 @@ export async function extractFaceEmbedding(imageBuffer) {
 
 /**
  * Identify a face embedding against a gallery of known profiles
+ * Supports multi-angle galleries (profile.embeddings) and fallback to single embedding (profile.embedding)
  * @param {number[]} embedding - 512-dim query embedding
- * @param {Array<{ id: string, name: string, isStaff: boolean, embedding: number[] }>} knownProfiles 
- * @param {number} threshold - Match threshold (default 0.65)
+ * @param {Array<{ id: string, name: string, isStaff: boolean, embedding?: number[], embeddings?: Array<number[]|{ vector: number[] }> }>} knownProfiles 
+ * @param {number} threshold - Match threshold (default 0.50)
  * @returns {{ matched: boolean, profile: object|null, similarity: number }}
  */
-export function identifyFace(embedding, knownProfiles = [], threshold = 0.65) {
+export function identifyFace(embedding, knownProfiles = [], threshold = 0.50) {
   if (!embedding || !knownProfiles || knownProfiles.length === 0) {
     return { matched: false, profile: null, similarity: 0 };
   }
@@ -118,8 +119,23 @@ export function identifyFace(embedding, knownProfiles = [], threshold = 0.65) {
   let maxSim = -1;
 
   for (const profile of knownProfiles) {
-    if (!profile.embedding) continue;
-    const sim = computeCosineSimilarity(embedding, profile.embedding);
+    const candidateVectors = [];
+    if (Array.isArray(profile.embeddings) && profile.embeddings.length > 0) {
+      for (const item of profile.embeddings) {
+        if (Array.isArray(item)) {
+          candidateVectors.push(item);
+        } else if (item && Array.isArray(item.vector)) {
+          candidateVectors.push(item.vector);
+        }
+      }
+    }
+    if (candidateVectors.length === 0 && Array.isArray(profile.embedding)) {
+      candidateVectors.push(profile.embedding);
+    }
+
+    if (candidateVectors.length === 0) continue;
+
+    const sim = Math.max(...candidateVectors.map(v => computeCosineSimilarity(embedding, v)));
     if (sim > maxSim) {
       maxSim = sim;
       bestMatch = profile;

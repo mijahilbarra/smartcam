@@ -57,9 +57,10 @@ export async function cleanupFakeProfiles(db) {
  * @param {Object} db - Instancia de Firestore
  * @param {Array} clientRecords
  * @param {Array} clientCrops
+ * @param {Array} activeSessions - Lista de sesiones de visita activas
  * @returns {Promise<Array>}
  */
-export async function processPeopleRecognition(db, clientRecords, clientCrops) {
+export async function processPeopleRecognition(db, clientRecords, clientCrops, activeSessions = []) {
   if (!db || !clientCrops || clientCrops.length === 0) return [];
   const identifiedPeople = [];
 
@@ -132,8 +133,112 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops) {
         faceThumbnailBase64 = `data:image/jpeg;base64,${faceBuffer.toString("base64")}`;
       }
 
-      // Umbral biométrico estándar para ArcFace / MobileFaceNet (0.65)
-      const result = identifyFace(embedding, allKnown, 0.65);
+      // GOBERNANZA TEMPORAL DE SESIÓN:
+      // Si el rostro detectado se ubica en la zona/silla de una sesión activa que ya tiene un cliente identificado:
+      // - NUNCA crear un nuevo cliente ni candidato en debounce.
+      // - Asociar directamente la detección a ese cliente existente.
+      // - Si el nuevo embedding ofrece un ángulo complementario (similitud 0.50 a 0.88) o mayor nitidez, incorporarlo a su galería (hasta 6).
+      const activeSession = activeSessions.find(s =>
+        (s.chairId && crop.zoneId && s.chairId === crop.zoneId) ||
+        (s.chairName && crop.zoneId && s.chairName === crop.zoneId)
+      );
+
+      if (activeSession && activeSession.personId && !activeSession.isStaff) {
+        let p = knownProfiles.find(kp => kp.id === activeSession.personId);
+        if (!p) {
+          p = {
+            id: activeSession.personId,
+            name: activeSession.personName || "Cliente",
+            isStaff: false,
+            visitCount: activeSession.visitCount || 1,
+            bestFaceScore: activeSession.bestFaceScore || 0,
+            embeddings: []
+          };
+          knownProfiles.push(p);
+          allKnown.push(p);
+        }
+
+        // Extraer vectores del perfil para calcular similitud contra su galería actual
+        const pVectors = [];
+        if (Array.isArray(p.embeddings) && p.embeddings.length > 0) {
+          for (const item of p.embeddings) {
+            if (Array.isArray(item)) pVectors.push(item);
+            else if (item && Array.isArray(item.vector)) pVectors.push(item.vector);
+          }
+        }
+        if (pVectors.length === 0 && Array.isArray(p.embedding)) {
+          pVectors.push(p.embedding);
+        }
+
+        const sim = pVectors.length > 0
+          ? Math.max(...pVectors.map(v => computeCosineSimilarity(embedding, v)))
+          : 1.0;
+
+        let currentGallery = Array.isArray(p.embeddings) && p.embeddings.length > 0
+          ? [...p.embeddings]
+          : (Array.isArray(p.embedding) ? [p.embedding] : []);
+        let galleryUpdated = false;
+
+        const isNovelAngle = sim >= 0.50 && sim <= 0.88;
+        const hasHigherSharpness = quality.sharpnessScore > (p.bestFaceScore || 0);
+
+        if (isNovelAngle || hasHigherSharpness) {
+          if (currentGallery.length < 6) {
+            currentGallery.push(embedding);
+          } else {
+            currentGallery = [currentGallery[0], ...currentGallery.slice(2), embedding];
+          }
+          galleryUpdated = true;
+          console.log(`[FaceRecognition] Rostro añadido a galería de "${p.name}" (NovelAngle: ${isNovelAngle}, MayorNitidez: ${hasHigherSharpness}, Total: ${currentGallery.length}/6).`);
+        }
+
+        const updateData = {
+          lastSeen: new Date().toISOString()
+        };
+
+        if (hasHigherSharpness || !p.thumbnailBase64) {
+          updateData.bestFaceScore = quality.sharpnessScore;
+          updateData.thumbnailBase64 = faceThumbnailBase64;
+          p.bestFaceScore = quality.sharpnessScore;
+          p.thumbnailBase64 = faceThumbnailBase64;
+          p.embedding = embedding;
+          updateData.embedding = embedding;
+        }
+
+        if (galleryUpdated) {
+          updateData.embeddings = currentGallery;
+          p.embeddings = currentGallery;
+        }
+
+        if (db && p.id) {
+          await db.doc(`camera_catcher_people/${p.id}`).set(updateData, { merge: true });
+        }
+
+        console.log(`[FaceRecognition] Rostro gobernado por sesión activa en ${crop.zoneId || 'silla'} -> Cliente: "${p.name}" (${p.id}).`);
+
+        identifiedPeople.push({
+          cropId: crop.id || `crop_${i + 1}`,
+          box: crop.box,
+          personId: p.id,
+          name: p.name,
+          isStaff: false,
+          isFrequent: (p.visitCount || 1) > 1,
+          visitCount: p.visitCount || 1,
+          similarity: sim,
+          confidence: crop.confidence,
+          faceBuffer: quality.faceBuffer,
+          faceBoxNorm: quality.faceBoxNorm,
+          thumbnailBase64: faceThumbnailBase64 || p.thumbnailBase64,
+          sharpnessScore: quality.sharpnessScore,
+          sessionGoverned: true
+        });
+
+        // Omitir debounce y búsqueda: la identidad está fijada por la sesión activa
+        continue;
+      }
+
+      // Umbral biométrico calibrado con soporte de galería multi-ángulo (0.50)
+      const result = identifyFace(embedding, allKnown, 0.50);
 
       if (result.matched && result.profile) {
         const p = result.profile;
@@ -171,11 +276,40 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops) {
             lastThumbnailPath: record ? record.storagePath : "",
             visitCount: newCount
           };
-          if (quality.sharpnessScore > (p.bestFaceScore || 0) || !p.thumbnailBase64) {
+
+          let currentGallery = Array.isArray(p.embeddings) && p.embeddings.length > 0
+            ? [...p.embeddings]
+            : (Array.isArray(p.embedding) ? [p.embedding] : []);
+          let galleryUpdated = false;
+
+          const isNovelAngle = result.similarity >= 0.50 && result.similarity <= 0.88;
+          const hasHigherSharpness = quality.sharpnessScore > (p.bestFaceScore || 0);
+
+          if (isNovelAngle || hasHigherSharpness) {
+            if (currentGallery.length < 6) {
+              currentGallery.push(embedding);
+            } else {
+              currentGallery = [currentGallery[0], ...currentGallery.slice(2), embedding];
+            }
+            galleryUpdated = true;
+            console.log(`[FaceRecognition] Rostro complementario añadido a cliente "${p.name}" (NovelAngle: ${isNovelAngle}, MayorNitidez: ${hasHigherSharpness}, Total: ${currentGallery.length}/6).`);
+          }
+
+          if (hasHigherSharpness || !p.thumbnailBase64) {
             updateData.bestFaceScore = quality.sharpnessScore;
             updateData.thumbnailBase64 = faceThumbnailBase64;
+            p.bestFaceScore = quality.sharpnessScore;
+            p.thumbnailBase64 = faceThumbnailBase64;
+            p.embedding = embedding;
+            updateData.embedding = embedding;
           }
-          await db.doc(`camera_catcher_people/${p.id}`).update(updateData);
+
+          if (galleryUpdated) {
+            updateData.embeddings = currentGallery;
+            p.embeddings = currentGallery;
+          }
+
+          await db.doc(`camera_catcher_people/${p.id}`).set(updateData, { merge: true });
 
           identifiedPeople.push({
             cropId: crop.id || `crop_${i + 1}`,
@@ -199,6 +333,7 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops) {
         // sentado en la silla de barbero antes de crear un nuevo perfil en Firestore.
         let matchedCandidateKey = null;
         let candidate = null;
+        let candidateSim = 0;
 
         for (const [key, cand] of pendingNewClients.entries()) {
           // Expirar candidatos inactivos > 120 seg
@@ -206,10 +341,16 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops) {
             pendingNewClients.delete(key);
             continue;
           }
-          const sim = computeCosineSimilarity(embedding, cand.embedding);
-          if (sim >= 0.60 || (crop.zoneId && cand.zoneId === crop.zoneId)) {
+          const candVectors = Array.isArray(cand.embeddings) && cand.embeddings.length > 0
+            ? cand.embeddings
+            : (Array.isArray(cand.embedding) ? [cand.embedding] : []);
+          const sim = candVectors.length > 0
+            ? Math.max(...candVectors.map(v => computeCosineSimilarity(embedding, v)))
+            : 0;
+          if (sim >= 0.50 || (crop.zoneId && cand.zoneId === crop.zoneId)) {
             matchedCandidateKey = key;
             candidate = cand;
+            candidateSim = sim;
             break;
           }
         }
@@ -217,6 +358,10 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops) {
         if (candidate) {
           candidate.count += 1;
           candidate.lastSeen = Date.now();
+          if (!candidate.embeddings) candidate.embeddings = [candidate.embedding];
+          if (candidate.embeddings.length < 6 && (quality.sharpnessScore > (candidate.bestFaceScore || 0) || (candidateSim >= 0.50 && candidateSim <= 0.88))) {
+            candidate.embeddings.push(embedding);
+          }
           if (quality.sharpnessScore > (candidate.bestFaceScore || 0)) {
             candidate.embedding = embedding;
             candidate.faceThumbnailBase64 = faceThumbnailBase64;
@@ -228,6 +373,9 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops) {
             const totalProfiles = knownProfiles.length + 1;
             const newPersonId = candidate.tempId || `person_${Date.now()}_${i + 1}`;
             const newName = `Cliente #${totalProfiles}`;
+            const clientEmbeddings = candidate.embeddings && candidate.embeddings.length > 0
+              ? candidate.embeddings
+              : [candidate.embedding];
 
             const newProfile = {
               id: newPersonId,
@@ -238,6 +386,7 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops) {
               isStaff: false,
               role: "client",
               embedding: candidate.embedding,
+              embeddings: clientEmbeddings,
               thumbnailBase64: candidate.faceThumbnailBase64 || faceThumbnailBase64,
               thumbnailPath: record ? record.storagePath : "",
               bestFaceScore: candidate.bestFaceScore
@@ -295,6 +444,7 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops) {
             firstSeen: Date.now(),
             lastSeen: Date.now(),
             embedding,
+            embeddings: [embedding],
             faceThumbnailBase64,
             bestFaceScore: quality.sharpnessScore,
             storagePath: record ? record.storagePath : ""

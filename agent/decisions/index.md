@@ -127,6 +127,7 @@ sequenceDiagram
 | **Arquitectura Frontend FSD + Atomic** | Vue 3 + Tailwind CSS + Vite | Arquitectura Feature-Sliced Design integrada con Atomic Design (Átomos, Moléculas, Organismos, Templates, Vistas) | [12-fsd-atomic-design-vue-tailwind.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/12-fsd-atomic-design-vue-tailwind.md) |
 | **Arquitectura Daemon Modular (Hexagonal)** | Node.js Core + Services + Infra | Desacoplamiento modular del daemon en capas de Dominio, Infraestructura y Orquestación | [13-modular-daemon-architecture.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/13-modular-daemon-architecture.md) |
 | **Simulador Local GCP e2-micro** | Docker Compose + cgroups (1GB RAM) | Simulación local de límites de hardware de la VM de GCP y enrutamiento inteligente en frontend | [14-e2-micro-docker-simulator.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/14-e2-micro-docker-simulator.md) |
+| **Galería Multi-Ángulo & Sesión Temporal** | ArcFace MobileFaceNet + Sesión Temporal | Fusión de poses faciales por silla/visita y galería multi-embedding (tope 6) sin duplicación | [15-multi-angle-biometric-session-gallery.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/15-multi-angle-biometric-session-gallery.md) |
 
 ---
 

@@ -10,6 +10,7 @@ import { formatDateTime } from '@/shared/lib/date-utils';
 const isCollapsed = ref(false);
 const searchQuery = ref('');
 const activeFilter = ref('all'); // 'all' | 'barbers' | 'clients'
+const sortBy = ref('lastSeen'); // 'lastSeen' | 'visits' | 'name'
 
 // Estado de edición de nombre
 const editingId = ref(null);
@@ -29,9 +30,18 @@ const {
   deletePerson
 } = usePeople();
 
-// Filtrado reactivo de personas
+const parseDateMs = (val) => {
+  if (!val) return 0;
+  if (typeof val === 'number') return val;
+  if (typeof val.toDate === 'function') return val.toDate().getTime();
+  if (typeof val.seconds === 'number') return val.seconds * 1000;
+  const d = new Date(val).getTime();
+  return isNaN(d) ? 0 : d;
+};
+
+// Filtrado y ordenación reactiva de personas
 const filteredPeople = computed(() => {
-  let list = people.value;
+  let list = [...people.value];
 
   if (activeFilter.value === 'barbers') {
     list = list.filter(p => p.isStaff);
@@ -46,6 +56,32 @@ const filteredPeople = computed(() => {
       p.id?.toLowerCase().includes(q)
     );
   }
+
+  list.sort((a, b) => {
+    // Si estamos en la pestaña 'Todos', mantener a barberos arriba
+    if (activeFilter.value === 'all' && a.isStaff !== b.isStaff) {
+      return a.isStaff ? -1 : 1;
+    }
+
+    if (sortBy.value === 'lastSeen') {
+      const timeA = parseDateMs(a.lastSeen);
+      const timeB = parseDateMs(b.lastSeen);
+      if (timeB !== timeA) return timeB - timeA;
+      return (b.visitCount || 1) - (a.visitCount || 1);
+    }
+
+    if (sortBy.value === 'visits') {
+      const diffVisits = (b.visitCount || 1) - (a.visitCount || 1);
+      if (diffVisits !== 0) return diffVisits;
+      return parseDateMs(b.lastSeen) - parseDateMs(a.lastSeen);
+    }
+
+    if (sortBy.value === 'name') {
+      return (a.name || '').localeCompare(b.name || '');
+    }
+
+    return 0;
+  });
 
   return list;
 });
@@ -147,8 +183,8 @@ const onDeletePerson = async (person) => {
 
     <!-- Body Controls & Content -->
     <div v-show="!isCollapsed" class="p-4 sm:p-6 flex flex-col gap-5">
-      <!-- Toolbar: Search and Filter Tabs -->
-      <div class="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-slate-950/50 p-3 rounded-xl border border-slate-800">
+      <!-- Toolbar: Search, Sort and Filter Tabs -->
+      <div class="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3 bg-slate-950/50 p-3 rounded-xl border border-slate-800">
         <!-- Search bar -->
         <div class="relative flex-1 max-w-md">
           <AppIcon name="search" :size="18" class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -167,46 +203,62 @@ const onDeletePerson = async (person) => {
           </button>
         </div>
 
-        <!-- Filter tabs -->
-        <div class="flex items-center gap-1.5 select-none overflow-x-auto pb-1 sm:pb-0">
-          <button
-            type="button"
-            @click="activeFilter = 'all'"
-            :class="[
-              'px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer',
-              activeFilter === 'all'
-                ? 'bg-slate-700 text-white shadow-sm'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
-            ]"
-          >
-            Todos ({{ people.length }})
-          </button>
-          <button
-            type="button"
-            @click="activeFilter = 'barbers'"
-            :class="[
-              'px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-1.5',
-              activeFilter === 'barbers'
-                ? 'bg-sky-600 text-white shadow-sm'
-                : 'text-sky-400 hover:text-sky-200 hover:bg-sky-950/40'
-            ]"
-          >
-            <AppIcon name="content_cut" :size="14" />
-            <span>Barberos ({{ barbersCount }})</span>
-          </button>
-          <button
-            type="button"
-            @click="activeFilter = 'clients'"
-            :class="[
-              'px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-1.5',
-              activeFilter === 'clients'
-                ? 'bg-slate-700 text-white shadow-sm'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
-            ]"
-          >
-            <AppIcon name="person" :size="14" />
-            <span>Clientes ({{ people.length - barbersCount }})</span>
-          </button>
+        <div class="flex items-center gap-3 flex-wrap">
+          <!-- Sort dropdown -->
+          <div class="flex items-center gap-1.5 text-xs text-slate-400">
+            <AppIcon name="sort" :size="15" class="text-slate-400" />
+            <span class="hidden sm:inline">Ordenar:</span>
+            <select
+              v-model="sortBy"
+              class="bg-slate-900 border border-slate-700/80 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-sky-500 cursor-pointer"
+            >
+              <option value="lastSeen">Última vez (más reciente)</option>
+              <option value="visits">Más visitas</option>
+              <option value="name">Nombre (A-Z)</option>
+            </select>
+          </div>
+
+          <!-- Filter tabs -->
+          <div class="flex items-center gap-1.5 select-none overflow-x-auto pb-1 lg:pb-0">
+            <button
+              type="button"
+              @click="activeFilter = 'all'"
+              :class="[
+                'px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer',
+                activeFilter === 'all'
+                  ? 'bg-slate-700 text-white shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+              ]"
+            >
+              Todos ({{ people.length }})
+            </button>
+            <button
+              type="button"
+              @click="activeFilter = 'barbers'"
+              :class="[
+                'px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-1.5',
+                activeFilter === 'barbers'
+                  ? 'bg-sky-600 text-white shadow-sm'
+                  : 'text-sky-400 hover:text-sky-200 hover:bg-sky-950/40'
+              ]"
+            >
+              <AppIcon name="content_cut" :size="14" />
+              <span>Barberos ({{ barbersCount }})</span>
+            </button>
+            <button
+              type="button"
+              @click="activeFilter = 'clients'"
+              :class="[
+                'px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-1.5',
+                activeFilter === 'clients'
+                  ? 'bg-slate-700 text-white shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+              ]"
+            >
+              <AppIcon name="person" :size="14" />
+              <span>Clientes ({{ people.length - barbersCount }})</span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -361,9 +413,13 @@ const onDeletePerson = async (person) => {
               </span>
             </div>
 
-            <div v-if="person.lastSeen" class="flex items-center justify-between pt-1 border-t border-slate-800/50 text-[10px] text-slate-500">
-              <span>Última vez:</span>
-              <span class="font-mono">{{ formatDateTime(person.lastSeen) }}</span>
+            <div class="flex items-center justify-between pt-1 border-t border-slate-800/50 text-[10px] text-slate-500">
+              <span class="flex items-center gap-1">
+                <AppIcon name="schedule" :size="13" class="text-slate-500" />
+                <span>Última vez:</span>
+              </span>
+              <span v-if="person.lastSeen" class="font-mono text-slate-300">{{ formatDateTime(person.lastSeen) }}</span>
+              <span v-else class="text-slate-600 italic">Sin registro</span>
             </div>
           </div>
 

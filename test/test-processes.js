@@ -1,4 +1,5 @@
 import assert from "assert";
+import fs from "fs";
 import sharp from "sharp";
 import {
   computeOccupancy,
@@ -6,10 +7,13 @@ import {
   updateVisits,
   extractClientCrops,
   runProcessCycle,
-  acquireClearFrame
+  acquireClearFrame,
+  reidentifyPeople
 } from "../src/services/processes.js";
 import { CaptureOrchestrator } from "../src/services/capture_orchestrator.js";
 import { PersonTracker } from "../src/core/person_tracker.js";
+import { identifyFace } from "../src/face_recognizer.js";
+import { processPeopleRecognition, resetPendingCandidates } from "../src/services/people_service.js";
 
 console.log("=== Test de Pipeline Funcional de Procesos (processes.js) ===");
 
@@ -260,4 +264,237 @@ try {
 assert.strictEqual(fallbackWorked, true, "Fallo en frame Clear debe degradar transparentemente sin error");
 console.log("-> Fallback transparente a frame ligero validado exitosamente.");
 
+// 9. identifyFace: Galería Multi-Ángulo y umbral por defecto 0.50
+console.log("\n[9] Probando comparación multi-ángulo en identifyFace...");
+const createUnitVector = (dim, index) => {
+  const v = new Array(dim).fill(0);
+  v[index] = 1;
+  return v;
+};
+
+const vFrontal = createUnitVector(512, 0);
+const vProfile = createUnitVector(512, 1);
+const vTilted = createUnitVector(512, 2);
+const vOther = createUnitVector(512, 10);
+
+// Perfil con galería de vectores planos
+const profileWithGallery = {
+  id: "client_miguel",
+  name: "Miguel Ángel",
+  isStaff: false,
+  embeddings: [vFrontal, vProfile]
+};
+
+// Perfil con galería de objetos { vector: [...] }
+const profileWithObjects = {
+  id: "client_diego",
+  name: "Diego Rivera",
+  isStaff: false,
+  embeddings: [{ vector: vTilted }]
+};
+
+// Perfil tradicional con vector único embedding
+const profileLegacy = {
+  id: "client_carlos",
+  name: "Carlos Legacy",
+  isStaff: false,
+  embedding: vOther
+};
+
+const knownProfiles = [profileWithGallery, profileWithObjects, profileLegacy];
+
+// Caso A: Consulta coincide con el segundo ángulo de la galería de Miguel (vProfile)
+const matchProfileAngle = identifyFace(vProfile, knownProfiles);
+assert.strictEqual(matchProfileAngle.matched, true, "Debe hacer match con el perfil multi-ángulo");
+assert.strictEqual(matchProfileAngle.profile.id, "client_miguel", "Debe identificar a Miguel vía su segundo vector");
+assert.strictEqual(matchProfileAngle.similarity, 1.0);
+
+// Caso B: Consulta coincide con el perfil empaquetado en objeto { vector }
+const matchObjectAngle = identifyFace(vTilted, knownProfiles);
+assert.strictEqual(matchObjectAngle.matched, true);
+assert.strictEqual(matchObjectAngle.profile.id, "client_diego");
+
+// Caso C: Fallback a perfil con embedding simple tradicional
+const matchLegacy = identifyFace(vOther, knownProfiles);
+assert.strictEqual(matchLegacy.matched, true);
+assert.strictEqual(matchLegacy.profile.id, "client_carlos");
+
+// Caso D: Umbral por defecto es 0.50
+// Vector sintético que comparte producto escalar ~0.55 con vFrontal
+const vPartial = new Array(512).fill(0);
+vPartial[0] = 0.55;
+vPartial[3] = Math.sqrt(1 - 0.55 * 0.55);
+const matchPartial = identifyFace(vPartial, [profileWithGallery]);
+assert.strictEqual(matchPartial.matched, true, "Debe hacer match con umbral por defecto 0.50 (similitud ~0.55)");
+
+const noMatchStrict = identifyFace(vPartial, [profileWithGallery], 0.65);
+assert.strictEqual(noMatchStrict.matched, false, "No debe hacer match si se exige umbral estricto 0.65");
+console.log("-> Identificación de galería multi-ángulo y umbral 0.50 validados exitosamente.");
+
+// 10. processPeopleRecognition: Gobernanza por Sesión Temporal y Acumulación de Galería
+console.log("\n[10] Probando gobernanza temporal de sesión en processPeopleRecognition...");
+resetPendingCandidates();
+
+const barberImgBuffer = fs.readFileSync("test/barber_crop.jpg");
+
+// Mock de Firestore en memoria para personas
+const firestoreStorage = new Map();
+const mockDb = {
+  collection: (name) => ({
+    get: async () => {
+      const docs = [];
+      for (const [id, data] of firestoreStorage.entries()) {
+        docs.push({ id, data: () => data });
+      }
+      return docs;
+    }
+  }),
+  doc: (path) => ({
+    get: async () => {
+      const id = path.replace("camera_catcher_people/", "").replace("camera_catcher/staff", "staff");
+      const data = firestoreStorage.get(id);
+      return { exists: !!data, data: () => data };
+    },
+    set: async (val, opts) => {
+      const id = path.replace("camera_catcher_people/", "");
+      if (opts?.merge && firestoreStorage.has(id)) {
+        firestoreStorage.set(id, { ...firestoreStorage.get(id), ...val });
+      } else {
+        firestoreStorage.set(id, val);
+      }
+    },
+    update: async (val) => {
+      const id = path.replace("camera_catcher_people/", "");
+      const current = firestoreStorage.get(id) || {};
+      firestoreStorage.set(id, { ...current, ...val });
+    }
+  })
+};
+
+// Guardamos cliente existente en Firestore
+const initialClient = {
+  id: "client_enrique",
+  name: "Enrique Gómez",
+  isStaff: false,
+  visitCount: 3,
+  bestFaceScore: 50,
+  embeddings: [createUnitVector(512, 0)]
+};
+firestoreStorage.set("client_enrique", initialClient);
+
+// Sesión activa para la silla de corte 1 asociada a Enrique
+const activeSessions = [{
+  visitId: "visit_session_99",
+  chairId: "silla_corte_1",
+  personId: "client_enrique",
+  personName: "Enrique Gómez",
+  isStaff: false,
+  visitCount: 3,
+  bestFaceScore: 50
+}];
+
+const sampleClientCrop = {
+  id: "crop_silla_1",
+  zoneId: "silla_corte_1",
+  zoneType: "barber_chair",
+  box: [50, 50, 200, 200],
+  confidence: 0.95,
+  status: "en_corte",
+  capturePerson: true,
+  buffer: barberImgBuffer
+};
+
+// Ejecución 1: En sesión activa, el rostro DEBE asociarse directamente a Enrique (cero clientes nuevos)
+const recognizedSession1 = await processPeopleRecognition(
+  mockDb,
+  [{ id: "crop_silla_1", storagePath: null }],
+  [sampleClientCrop],
+  activeSessions
+);
+
+assert.strictEqual(recognizedSession1.length, 1);
+assert.strictEqual(recognizedSession1[0].personId, "client_enrique", "Debe gobernar la identidad de la sesión activa");
+assert.strictEqual(recognizedSession1[0].sessionGoverned, true, "Debe marcar sessionGoverned: true");
+assert.strictEqual(recognizedSession1[0].name, "Enrique Gómez");
+
+// Verificar que se haya acumulado el nuevo ángulo en la galería de Enrique
+const updatedClientDoc = firestoreStorage.get("client_enrique");
+assert.ok(Array.isArray(updatedClientDoc.embeddings), "Debe tener galería de embeddings");
+assert.ok(updatedClientDoc.embeddings.length >= 2, "Debe haber anexado el nuevo ángulo a la galería");
+assert.ok(updatedClientDoc.embeddings.length <= 6, "No debe exceder el límite de 6 ángulos");
+console.log(`-> Sesión activa gobernó detección: asignado a ${updatedClientDoc.name} con ${updatedClientDoc.embeddings.length} ángulos en galería.`);
+
+// Verificación de tope máximo de 6 ángulos en galería
+const currentDoc = firestoreStorage.get("client_enrique");
+currentDoc.embeddings = [
+  createUnitVector(512, 0),
+  createUnitVector(512, 1),
+  createUnitVector(512, 2),
+  createUnitVector(512, 3),
+  createUnitVector(512, 4)
+];
+currentDoc.bestFaceScore = 10; // score bajo para que la captura con score 67 active incorporación
+
+await processPeopleRecognition(
+  mockDb,
+  [{ id: "crop_silla_1", storagePath: null }],
+  [sampleClientCrop],
+  activeSessions
+);
+assert.strictEqual(firestoreStorage.get("client_enrique").embeddings.length, 6, "Debe alcanzar el tope de 6 ángulos");
+
+// Un nuevo ángulo no debe sobrepasar 6
+firestoreStorage.get("client_enrique").bestFaceScore = 10;
+await processPeopleRecognition(
+  mockDb,
+  [{ id: "crop_silla_1", storagePath: null }],
+  [sampleClientCrop],
+  activeSessions
+);
+assert.strictEqual(firestoreStorage.get("client_enrique").embeddings.length, 6, "La galería debe mantenerse estrictamente acotada a máximo 6 ángulos");
+console.log("-> Límite máximo de galería de 6 embeddings verificado exitosamente.");
+
+// Caso E: Creación de nuevo cliente inicializa embeddings: [candidate.embedding]
+resetPendingCandidates();
+const cleanStorage = new Map();
+const cleanDb = {
+  collection: () => ({
+    get: async () => Array.from(cleanStorage.entries()).map(([id, data]) => ({ id, data: () => data }))
+  }),
+  doc: (path) => ({
+    get: async () => ({ exists: false, data: () => null }),
+    set: async (val) => {
+      const id = path.replace("camera_catcher_people/", "");
+      cleanStorage.set(id, val);
+    }
+  })
+};
+
+const newCropInEmptyChair = {
+  id: "crop_silla_2",
+  zoneId: "silla_corte_2",
+  zoneType: "barber_chair",
+  box: [250, 50, 400, 200],
+  confidence: 0.95,
+  status: "en_corte",
+  capturePerson: true,
+  buffer: barberImgBuffer
+};
+
+// 3 ciclos consecutivos de debounce para confirmar nuevo cliente
+await processPeopleRecognition(cleanDb, [], [newCropInEmptyChair], []);
+await processPeopleRecognition(cleanDb, [], [newCropInEmptyChair], []);
+const confirmResult = await processPeopleRecognition(cleanDb, [], [newCropInEmptyChair], []);
+
+assert.strictEqual(confirmResult.length, 1);
+assert.strictEqual(confirmResult[0].isPendingConfirmation, false);
+const createdClientId = confirmResult[0].personId;
+const createdClientDoc = cleanStorage.get(createdClientId);
+assert.ok(createdClientDoc, "Debe existir el nuevo cliente en Firestore");
+assert.ok(Array.isArray(createdClientDoc.embeddings), "El nuevo cliente debe tener array de embeddings");
+assert.strictEqual(createdClientDoc.embeddings.length, 1, "Debe iniciar con 1 embedding en embeddings");
+assert.ok(Array.isArray(createdClientDoc.embedding), "Debe mantener compatibilidad con embedding singular");
+console.log("-> Inicialización de embeddings en creación de nuevo cliente validada exitosamente.");
+
 console.log("\n🎉 ¡Todos los tests del pipeline funcional de procesos pasaron exitosamente!");
+
