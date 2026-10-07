@@ -5,6 +5,7 @@ import ModalHeader from '@/shared/ui/molecules/ModalHeader.vue';
 import AppIcon from '@/shared/ui/atoms/AppIcon.vue';
 import AppButton from '@/shared/ui/atoms/AppButton.vue';
 import AppBadge from '@/shared/ui/atoms/AppBadge.vue';
+import AppInput from '@/shared/ui/atoms/AppInput.vue';
 import AppTextarea from '@/shared/ui/atoms/AppTextarea.vue';
 import TimeRangeField from '@/shared/ui/molecules/TimeRangeField.vue';
 import { useSettings } from '@/features/configure-settings/model/useSettings';
@@ -25,6 +26,7 @@ const emit = defineEmits(['close']);
 const {
   prompt,
   workingHours,
+  streamUrl,
   loading,
   saving,
   statusMessage,
@@ -93,6 +95,30 @@ const onSave = async () => {
             {{ workingHoursStatus.isWithin ? 'Dentro de Horario' : 'Fuera de Horario' }}
           </AppBadge>
         </div>
+      </div>
+
+      <!-- Stream Tunnel URL Setting (HTTPS) -->
+      <div class="flex flex-col gap-1.5 pt-2 border-t border-slate-800">
+        <label class="text-xs text-slate-300 font-semibold flex items-center justify-between">
+          <span class="flex items-center gap-1.5">
+            <AppIcon name="link" :size="16" class="text-blue-400" />
+            URL del Túnel del Stream (HTTPS):
+          </span>
+          <AppBadge v-if="streamUrl" variant="success" class="text-[10px] font-mono">
+            Configurado
+          </AppBadge>
+          <AppBadge v-else variant="default" class="text-[10px] text-slate-400">
+            Opcional (Prod)
+          </AppBadge>
+        </label>
+        <AppInput
+          v-model="streamUrl"
+          type="url"
+          placeholder="https://stream.tudominio.com"
+        />
+        <small class="text-[11px] text-slate-400 leading-relaxed">
+          Para ver el stream en vivo en producción (ej. <code class="text-slate-300">https://stream.tudominio.com</code> o túnel Cloudflare). En desarrollo local se utiliza automáticamente <code class="text-slate-300">http://localhost:8085</code>.
+        </small>
       </div>
 
       <!-- Firestore Database Setting -->

@@ -1,5 +1,6 @@
-import { ref, computed, onMounted, onUnmounted } from 'vue';
-import { db, resolveStorageUrl, IS_LOCAL_ENV, BACKEND_URL } from '@/shared/api/firebase';
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
+import { doc, onSnapshot } from 'firebase/firestore';
+import { db, resolveStorageUrl, IS_LOCAL_ENV, getEnvironmentInfo } from '@/shared/api/firebase';
 
 export function useDaemonState() {
   const daemonState = ref(null);
@@ -9,6 +10,7 @@ export function useDaemonState() {
   const isConnected = ref(false);
   const isYoloStreaming = ref(false);
   const liveOccupancy = ref(null);
+  const firestoreStreamUrl = ref('');
 
   // Latest image & telemetry resolved for canvas overlay
   const canvasImageData = ref({
@@ -23,29 +25,48 @@ export function useDaemonState() {
     inferenceMs: 0
   });
 
+  let unsubscribePrompt = null;
   let unsubscribeDaemon = null;
   let unsubscribeVisits = null;
   let sseEventSource = null;
 
-  // Stream URL: direct MJPEG endpoint from stream server
-  const streamUrl = computed(() => {
-    if (IS_LOCAL_ENV && BACKEND_URL) {
-      return `${BACKEND_URL}/api/stream`;
+  // URL base activa del backend / túnel
+  const activeBackendUrl = computed(() => {
+    // 1. URL configurada dinámicamente en Firestore
+    if (firestoreStreamUrl.value) {
+      const u = firestoreStreamUrl.value.trim();
+      return u.endsWith('/') ? u.slice(0, -1) : u;
     }
-    return '/api/stream';
+    // 2. URL desde localStorage o variable de entorno
+    const env = getEnvironmentInfo();
+    if (env.backendUrl) {
+      const u = env.backendUrl.trim();
+      return u.endsWith('/') ? u.slice(0, -1) : u;
+    }
+    // 3. Si es local, fallback al puerto estándar del daemon local
+    if (IS_LOCAL_ENV) {
+      return 'http://localhost:8085';
+    }
+    // 4. Si es servidor cloud y no hay túnel configurado: null
+    return null;
   });
 
-  // YOLO Telemetry Stream URL (SSE direct from backend)
+  // Stream URL: direct MJPEG endpoint from stream server (null en cloud sin backend)
+  const streamUrl = computed(() => {
+    return activeBackendUrl.value ? `${activeBackendUrl.value}/api/stream` : null;
+  });
+
+  // YOLO Telemetry Stream URL (SSE direct from backend, null en cloud sin backend)
   const yoloStreamUrl = computed(() => {
-    if (IS_LOCAL_ENV && BACKEND_URL) {
-      return `${BACKEND_URL}/api/yolo/stream`;
-    }
-    return '/api/yolo/stream';
+    return activeBackendUrl.value ? `${activeBackendUrl.value}/api/yolo/stream` : null;
   });
 
   const statusLabel = computed(() => {
     if (isConnected.value || isYoloStreaming.value) {
       return IS_LOCAL_ENV ? 'Sesión en Vivo Local Activa' : 'Sesión en Vivo Cloud Activa';
+    }
+    if (!activeBackendUrl.value && !IS_LOCAL_ENV) {
+      return 'Túnel HTTPS no configurado';
     }
     return IS_LOCAL_ENV ? 'Stream Local en Espera' : 'Transmisión Desconectada';
   });
@@ -240,17 +261,30 @@ export function useDaemonState() {
   // Conexión directa SSE al servidor de telemetría YOLO (Latencia < 20ms)
   const connectYoloStream = () => {
     if (typeof window === 'undefined' || !window.EventSource) return;
+    const url = yoloStreamUrl.value;
+
+    // Si no hay URL válida (ej. cloud sin túnel configurado), cerramos SSE y evitamos bucles de reconexión
+    if (!url) {
+      if (sseEventSource) {
+        sseEventSource.close();
+        sseEventSource = null;
+      }
+      isYoloStreaming.value = false;
+      isConnected.value = false;
+      return;
+    }
+
     try {
       if (sseEventSource) {
         sseEventSource.close();
         sseEventSource = null;
       }
-      const url = yoloStreamUrl.value;
       console.log(`[YOLO Stream] Conectando a flujo directo SSE: ${url}`);
       sseEventSource = new EventSource(url);
 
       sseEventSource.onopen = () => {
         isYoloStreaming.value = true;
+        isConnected.value = true;
         console.log('[YOLO Stream] Flujo SSE conectado exitosamente.');
       };
 
@@ -259,6 +293,7 @@ export function useDaemonState() {
           const data = JSON.parse(e.data);
           if (data && data.type === 'yolo_telemetry') {
             isYoloStreaming.value = true;
+            isConnected.value = true;
 
             // Actualizar telemetría de cajas y seguimiento en tiempo real
             canvasImageData.value = {
@@ -295,6 +330,14 @@ export function useDaemonState() {
     }
   };
 
+  // Reconectar automáticamente cuando la URL del stream cambie dinámicamente
+  watch(yoloStreamUrl, (newUrl, oldUrl) => {
+    if (newUrl !== oldUrl) {
+      console.log(`[YOLO Stream] URL de telemetría actualizada: ${newUrl || 'desconectada'}`);
+      connectYoloStream();
+    }
+  });
+
   // Estado del daemon recibido DIRECTAMENTE del backend por SSE (sin Firestore)
   const applyDaemonState = async (data) => {
     if (!data) return;
@@ -326,7 +369,22 @@ export function useDaemonState() {
   };
 
   const subscribe = () => {
-    // Única fuente de telemetría en vivo: conexión directa SSE con el daemon
+    // 1. Escuchar cambios de configuración de streamUrl en Firestore en tiempo real
+    try {
+      const promptDocRef = doc(db, 'camera_catcher', 'prompt');
+      unsubscribePrompt = onSnapshot(promptDocRef, (snap) => {
+        if (snap.exists()) {
+          const data = snap.data();
+          firestoreStreamUrl.value = (data.streamUrl || '').trim();
+        }
+      }, (err) => {
+        console.warn('[useDaemonState] Error escuchando camera_catcher/prompt:', err);
+      });
+    } catch (err) {
+      console.warn('[useDaemonState] Error configurando listener de prompt:', err);
+    }
+
+    // 2. Conexión directa SSE con el daemon
     connectYoloStream();
   };
 
@@ -335,6 +393,7 @@ export function useDaemonState() {
   });
 
   onUnmounted(() => {
+    if (unsubscribePrompt) unsubscribePrompt();
     if (unsubscribeDaemon) unsubscribeDaemon();
     if (sseEventSource) {
       sseEventSource.close();
@@ -348,6 +407,8 @@ export function useDaemonState() {
     isYoloStreaming,
     statusLabel,
     streamUrl,
+    yoloStreamUrl,
+    activeBackendUrl,
     canvasImageData,
     clientsInCut,
     clientsWaiting,

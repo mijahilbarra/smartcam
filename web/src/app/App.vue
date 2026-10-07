@@ -101,6 +101,7 @@ const openCalibratorWithPhoto = (photo) => {
     <LiveMonitorPage
       v-if="activeTab === 'live'"
       @open-calibrator-photo="openCalibratorWithPhoto"
+      @open-settings="showSettings = true"
     />
 
     <HistoryPage

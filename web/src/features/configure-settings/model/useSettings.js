@@ -1,10 +1,11 @@
 import { ref, onMounted } from 'vue';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
-import { db } from '@/shared/api/firebase';
+import { db, setCustomBackendUrl } from '@/shared/api/firebase';
 
 export function useSettings() {
   const prompt = ref('');
   const workingHours = ref({ start: '11:00', end: '23:00' });
+  const streamUrl = ref('');
   const loading = ref(true);
   const saving = ref(false);
   const statusMessage = ref('');
@@ -24,6 +25,10 @@ export function useSettings() {
             end: data.workingHours.end || '23:00'
           };
         }
+        streamUrl.value = data.streamUrl || (typeof localStorage !== 'undefined' ? localStorage.getItem('CAMERA_CATCHER_API_URL') || '' : '');
+      } else {
+        const local = typeof localStorage !== 'undefined' ? localStorage.getItem('CAMERA_CATCHER_API_URL') || '' : '';
+        if (local) streamUrl.value = local;
       }
     } catch (err) {
       console.warn('[Settings] Error cargando configuración:', err);
@@ -39,14 +44,26 @@ export function useSettings() {
 
     try {
       const docRef = doc(db, 'camera_catcher', 'prompt');
+      const trimmedStreamUrl = (streamUrl.value || '').trim();
+
       await setDoc(docRef, {
         prompt: prompt.value,
         workingHours: {
           start: workingHours.value.start || '11:00',
           end: workingHours.value.end || '23:00'
         },
+        streamUrl: trimmedStreamUrl,
         updatedAt: new Date().toISOString()
       }, { merge: true });
+
+      // Actualizar localStorage
+      if (typeof localStorage !== 'undefined') {
+        if (trimmedStreamUrl) {
+          localStorage.setItem('CAMERA_CATCHER_API_URL', trimmedStreamUrl);
+        } else {
+          localStorage.removeItem('CAMERA_CATCHER_API_URL');
+        }
+      }
 
       statusMessage.value = '¡Configuración guardada exitosamente!';
       statusType.value = 'success';
@@ -68,6 +85,7 @@ export function useSettings() {
   return {
     prompt,
     workingHours,
+    streamUrl,
     loading,
     saving,
     statusMessage,
