@@ -33,7 +33,7 @@ export function normalizeSharpness(val) {
 /**
  * Extrae y normaliza todas las fotos de un perfil
  * @param {Object} person
- * @returns {Array} Array de fotos { thumbnailBase64, sharpnessScore, capturedAt }
+ * @returns {Array} Array de fotos { thumbnailBase64, sharpnessScore, capturedAt, pose, poseLabel }
  */
 export function extractPersonPhotos(person) {
   if (!person) return [];
@@ -41,17 +41,142 @@ export function extractPersonPhotos(person) {
     return person.photos.map(p => ({
       thumbnailBase64: p.thumbnailBase64,
       sharpnessScore: normalizeSharpness(p.sharpnessScore),
-      capturedAt: p.capturedAt || person.firstSeen || person.lastSeen || new Date().toISOString()
+      capturedAt: p.capturedAt || person.firstSeen || person.lastSeen || new Date().toISOString(),
+      pose: p.pose || 'frontal',
+      poseLabel: p.poseLabel || (p.pose === 'frontal' ? 'Frontal' : (p.pose || 'Frontal'))
     }));
   }
   if (person.thumbnailBase64) {
     return [{
       thumbnailBase64: person.thumbnailBase64,
       sharpnessScore: normalizeSharpness(person.bestFaceScore),
-      capturedAt: person.firstSeen || person.lastSeen || new Date().toISOString()
+      capturedAt: person.firstSeen || person.lastSeen || new Date().toISOString(),
+      pose: person.pose || 'frontal',
+      poseLabel: person.poseLabel || 'Frontal'
     }];
   }
   return [];
+}
+
+/**
+ * Calcula la similitud coseno entre dos vectores numéricos
+ * @param {Array<number>} vecA
+ * @param {Array<number>} vecB
+ * @returns {number}
+ */
+export function computeCosineSimilarity(vecA, vecB) {
+  if (!Array.isArray(vecA) || !Array.isArray(vecB) || vecA.length === 0 || vecB.length === 0) return 0;
+  let dot = 0, normA = 0, normB = 0;
+  for (let i = 0; i < vecA.length; i++) {
+    const a = vecA[i] || 0;
+    const b = vecB[i] || 0;
+    dot += a * b;
+    normA += a * a;
+    normB += b * b;
+  }
+  if (normA === 0 || normB === 0) return 0;
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+function extractRawVector(embedding) {
+  if (Array.isArray(embedding)) return embedding;
+  if (embedding && typeof embedding === 'object' && Array.isArray(embedding.vector)) return embedding.vector;
+  return null;
+}
+
+/**
+ * Ordena y filtra fotos garantizando máxima diversidad posicional y calidad de nitidez:
+ * 1. Agrupa los candidatos por pose (o clusters de similitud coseno > 0.82 para fotos legadas).
+ * 2. De cada pose única, selecciona la foto con mayor nitidez (garantizando al menos 1 por posición).
+ * 3. Rellena los espacios restantes hasta maxLimit (por defecto 20) ordenados por nitidez descendente.
+ * @param {Array<Object>} candidateItems - Lista de items { photo, embedding, ... } o fotos { pose, sharpnessScore, ... }
+ * @param {number} maxLimit - Límite máximo de fotos a retornar (por defecto 20)
+ * @returns {Array<Object>}
+ */
+export function rankPhotosByPoseDiversity(candidateItems, maxLimit = 20) {
+  if (!Array.isArray(candidateItems) || candidateItems.length === 0) return [];
+  if (candidateItems.length <= 1) return candidateItems.slice(0, maxLimit);
+
+  const buckets = new Map();
+  const legacyClusterReps = []; // { key: string, vector: Array<number> }
+
+  for (const item of candidateItems) {
+    const photo = item.photo || item;
+    let poseKey = photo?.pose;
+
+    if (!poseKey) {
+      // Foto legada sin pose explícito: agrupar por similitud coseno si tiene embedding
+      const vec = extractRawVector(item.embedding || item.vector);
+      if (vec && vec.length > 0) {
+        let matchedClusterKey = null;
+        for (const rep of legacyClusterReps) {
+          const sim = computeCosineSimilarity(vec, rep.vector);
+          if (sim > 0.82) {
+            matchedClusterKey = rep.key;
+            break;
+          }
+        }
+        if (matchedClusterKey) {
+          poseKey = matchedClusterKey;
+        } else {
+          poseKey = `cluster_${legacyClusterReps.length + 1}`;
+          legacyClusterReps.push({ key: poseKey, vector: vec });
+        }
+      } else {
+        poseKey = 'frontal';
+      }
+    }
+
+    if (!buckets.has(poseKey)) {
+      buckets.set(poseKey, []);
+    }
+    buckets.get(poseKey).push(item);
+  }
+
+  // Ordenar los elementos dentro de cada bucket por nitidez descendente
+  for (const items of buckets.values()) {
+    items.sort((a, b) => {
+      const scoreA = Number((a.photo?.sharpnessScore ?? a.sharpnessScore) || 0);
+      const scoreB = Number((b.photo?.sharpnessScore ?? b.sharpnessScore) || 0);
+      return scoreB - scoreA;
+    });
+  }
+
+  // Extraer la mejor foto de cada bucket único (garantiza >= 1 foto por posición)
+  const guaranteedItems = [];
+  const remainingItems = [];
+
+  for (const items of buckets.values()) {
+    if (items.length > 0) {
+      guaranteedItems.push(items[0]);
+      for (let i = 1; i < items.length; i++) {
+        remainingItems.push(items[i]);
+      }
+    }
+  }
+
+  // Ordenar los garantizados por nitidez para que encabecen la galería con el mejor rostro
+  guaranteedItems.sort((a, b) => {
+    const scoreA = Number((a.photo?.sharpnessScore ?? a.sharpnessScore) || 0);
+    const scoreB = Number((b.photo?.sharpnessScore ?? b.sharpnessScore) || 0);
+    return scoreB - scoreA;
+  });
+
+  // Ordenar el resto de elementos de todos los buckets por nitidez descendente
+  remainingItems.sort((a, b) => {
+    const scoreA = Number((a.photo?.sharpnessScore ?? a.sharpnessScore) || 0);
+    const scoreB = Number((b.photo?.sharpnessScore ?? b.sharpnessScore) || 0);
+    return scoreB - scoreA;
+  });
+
+  // Completar hasta maxLimit (20)
+  const result = [...guaranteedItems.slice(0, maxLimit)];
+  for (const rem of remainingItems) {
+    if (result.length >= maxLimit) break;
+    result.push(rem);
+  }
+
+  return result.slice(0, maxLimit);
 }
 
 /**
@@ -65,7 +190,7 @@ export function toFirestoreEmbeddings(embeddings) {
   if (!Array.isArray(embeddings)) return [];
   return embeddings.map(e => {
     if (Array.isArray(e)) return { vector: e };
-    if (e && typeof e === 'object' && Array.isArray(e.vector)) return e;
+    if (e && typeof e === 'object' && Array.isArray(e.vector)) return { vector: e.vector };
     return null;
   }).filter(Boolean);
 }
@@ -73,8 +198,8 @@ export function toFirestoreEmbeddings(embeddings) {
 /**
  * Computa la combinación de datos para fusionar varios perfiles en uno solo.
  * 
- * - Combina fotos en un único array (hasta 6 máx), priorizando mayor nitidez y eliminando duplicados.
- * - Combina embeddings (hasta 6 máx) en correlación con las fotos conservadas.
+ * - Combina fotos en un único array (hasta 20 máx), garantizando diversidad posicional y orden de nitidez.
+ * - Combina embeddings (hasta 20 máx) en correlación con las fotos conservadas.
  * - firstSeen: timestamp más antiguo entre todos los seleccionados.
  * - lastSeen: timestamp más reciente entre todos los seleccionados.
  * - visitCount: suma acumulada de visitas de los perfiles fusionados.
@@ -122,7 +247,7 @@ export function computeMergedPersonData(profiles, options = {}) {
   const isStaff = profiles.some(p => Boolean(p.isStaff) || p.role === 'barber');
   const role = isStaff ? 'barber' : 'client';
 
-  // 5. Combinar fotos y embeddings respetando correlación y orden de nitidez
+  // 5. Combinar fotos y embeddings respetando correlación y diversidad de poses
   const candidateItems = [];
   const extraEmbeddings = [];
 
@@ -160,20 +285,15 @@ export function computeMergedPersonData(profiles, options = {}) {
     uniqueItems.push(item);
   }
 
-  // Ordenar fotos por nitidez descendente (mayor nitidez primero)
-  uniqueItems.sort((a, b) => {
-    return (b.photo.sharpnessScore || 0) - (a.photo.sharpnessScore || 0);
-  });
-
-  // Conservar hasta 6 fotos de mayor nitidez
-  const selectedItems = uniqueItems.slice(0, 6);
+  // Conservar hasta 20 fotos diversificadas por pose y ordenadas por nitidez
+  const selectedItems = rankPhotosByPoseDiversity(uniqueItems, 20);
   const mergedPhotos = selectedItems.map(item => item.photo);
 
-  // Combinar embeddings (hasta 6)
+  // Combinar embeddings (hasta 20)
   let mergedEmbeddings = selectedItems.map(item => item.embedding).filter(Boolean);
-  if (mergedEmbeddings.length < 6 && extraEmbeddings.length > 0) {
+  if (mergedEmbeddings.length < 20 && extraEmbeddings.length > 0) {
     for (const extraEmb of extraEmbeddings) {
-      if (mergedEmbeddings.length >= 6) break;
+      if (mergedEmbeddings.length >= 20) break;
       mergedEmbeddings.push(extraEmb);
     }
   }

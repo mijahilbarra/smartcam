@@ -21,26 +21,27 @@ Antes de esta decisión:
 
 Se implementa una solución de **fusión espacio-temporal y representación multi-vectorial**:
 
-### 1. Galería de Embeddings Multi-Ángulo (`embeddings: [...]`)
-* Cada cliente almacena una galería de hasta **6 vectores biométricos clave** en el campo `embeddings`.
+### 1. Galería de Embeddings y Fotos Multi-Ángulo (`embeddings: [...]` y `photos: [...]`)
+* Cada cliente almacena una galería de hasta **20 vectores y fotos biométricas diversificadas por posición**.
 * En [`src/face_recognizer.js`](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/src/face_recognizer.js), la función `identifyFace`:
   * Extrae todos los vectores disponibles de cada perfil (`profile.embeddings` soportando arrays planos o mapas `{ vector }`, con fallback a `profile.embedding`).
   * Calcula la similitud máxima contra todos los ángulos registrados:
     $$\text{sim} = \max_{v \in \text{gallery}} (\vec{e} \cdot \vec{v})$$
   * Se calibra el umbral de aceptación estándar a **0.50** para acomodar variaciones angulares sin comprometer la especificidad.
 
-### 2. Gobernanza Determinística por Sesión Temporal
-* En [`src/services/people_service.js`](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/src/services/people_service.js) y [`src/services/processes.js`](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/src/services/processes.js):
+### 2. Gobernanza Determinística por Sesión Temporal y Diversidad Posicional
+* En [`src/services/people_service.js`](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/src/services/people_service.js), [`src/services/face_quality_service.js`](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/src/services/face_quality_service.js) y [`src/services/processes.js`](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/src/services/processes.js):
   * El motor biométrico recibe en cada ciclo la lista de sesiones de visita activas (`activeSessions`) gestionadas por `VisitSessionService`.
   * **Regla Inmutable**: Si un rostro es detectado dentro de la zona/silla de una sesión activa que ya cuenta con un cliente identificado:
     1. **Queda terminantemente prohibido crear un cliente nuevo o candidato en debounce**.
     2. La detección se asocia de forma determinística al cliente asignado a dicha sesión.
-    3. Si el nuevo rostro aporta un ángulo complementario (similitud coseno entre 0.50 y 0.88) o presenta mayor nitidez (`sharpnessScore`), se incorpora automáticamente a la galería `embeddings` del cliente en Firestore, preservando el vector frontal inicial y rotando hasta un máximo de 6 ángulos.
+    3. Si el nuevo rostro aporta un ángulo complementario (similitud coseno entre 0.50 y 0.88), presenta mayor nitidez (`sharpnessScore`) o representa una pose aún no cubierta en su galería (`pose`), se incorpora automáticamente a las galerías `embeddings` y `photos` del cliente en SQLite/Firestore, preservando el vector frontal inicial y rotando hasta un máximo de 20 ángulos.
     4. Si la nitidez supera el récord previo, se actualizan `bestFaceScore` y la miniatura `thumbnailBase64`.
+  * En [`web/src/entities/person/model/person-merge.js`](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/web/src/entities/person/model/person-merge.js), `rankPhotosByPoseDiversity` garantiza al menos 1 foto por posición única (frontal, perfiles, inclinaciones) antes de llenar las 20 plazas restantes por nitidez.
 
 ### 3. Ciclo de Vida del Registro de Clientes
 * **Nuevo Cliente**: Tras superar la confirmación temporal de 3 ciclos consecutivos en la silla, se registra con `embeddings: [candidate.embedding]` y `embedding: candidate.embedding`.
-* **Cliente Frecuente**: Al ser identificado en visitas posteriores, cualquier pose novedosa capturada con buena nitidez enriquece progresivamente su galería hasta completar los 6 ángulos.
+* **Cliente Frecuente**: Al ser identificado en visitas posteriores, cualquier pose novedosa capturada con buena nitidez enriquece progresivamente su galería hasta completar los 20 ángulos.
 
 ---
 

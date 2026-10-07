@@ -11,31 +11,39 @@ import { isChairZone, isTransitZone } from "../core/barbershop_rules.js";
 import { customerService } from "./customer_service.js";
 
 /**
- * Añade una foto a la galería de fotos del cliente garantizando compatibilidad hacia atrás y tope de 6 fotos.
+ * Añade una foto a la galería de fotos del cliente garantizando compatibilidad hacia atrás y tope de 20 fotos.
  * @param {Object} person - Objeto o documento del cliente
  * @param {string} thumbnailBase64 - Miniatura en base64
  * @param {number} sharpnessScore - Score de nitidez
- * @returns {Array} Array de fotos resultante (máx 6)
+ * @param {Object} [options] - Opciones adicionales (pose, poseLabel)
+ * @returns {Array} Array de fotos resultante (máx 20)
  */
-export function enrichPersonPhotos(person, thumbnailBase64, sharpnessScore = 0) {
+export function enrichPersonPhotos(person, thumbnailBase64, sharpnessScore = 0, options = {}) {
   let existingPhotos = Array.isArray(person?.photos) ? [...person.photos] : [];
   if (existingPhotos.length === 0 && person?.thumbnailBase64) {
     existingPhotos = [{
       thumbnailBase64: person.thumbnailBase64,
       sharpnessScore: person.bestFaceScore || 0,
-      capturedAt: person.firstSeen || new Date().toISOString()
+      capturedAt: person.firstSeen || new Date().toISOString(),
+      pose: person.pose || 'frontal',
+      poseLabel: person.poseLabel || 'Frontal'
     }];
   }
 
   if (!thumbnailBase64) return existingPhotos;
 
+  const pose = options?.pose || 'frontal';
+  const poseLabel = options?.poseLabel || (pose === 'frontal' ? 'Frontal' : pose);
+
   const newPhoto = {
     thumbnailBase64,
     sharpnessScore: sharpnessScore || 0,
-    capturedAt: new Date().toISOString()
+    capturedAt: new Date().toISOString(),
+    pose,
+    poseLabel
   };
 
-  if (existingPhotos.length < 6) {
+  if (existingPhotos.length < 20) {
     existingPhotos.push(newPhoto);
   } else {
     // Conserva la foto frontal original de referencia (índice 0) y rota las intermedias
@@ -47,12 +55,12 @@ export function enrichPersonPhotos(person, thumbnailBase64, sharpnessScore = 0) 
 
 /**
  * Enriquece la galería biométrica y de fotos de un cliente existente con un nuevo ángulo
- * garantizando correspondencia estricta 1:1 entre embeddings y fotos.
+ * garantizando correspondencia estricta 1:1 entre embeddings y fotos hasta 20 ángulos.
  * @param {Object} person - Perfil del cliente
- * @param {Object} data - Datos del nuevo ángulo ({ embedding, faceThumbnailBase64, sharpnessScore })
+ * @param {Object} data - Datos del nuevo ángulo ({ embedding, faceThumbnailBase64, sharpnessScore, pose, poseLabel })
  * @returns {{ embeddings: Array, photos: Array }}
  */
-export function enrichPersonAngles(person, { embedding, faceThumbnailBase64, sharpnessScore = 0 }) {
+export function enrichPersonAngles(person, { embedding, faceThumbnailBase64, sharpnessScore = 0, pose, poseLabel }) {
   let currentGallery = Array.isArray(person?.embeddings) && person.embeddings.length > 0
     ? [...person.embeddings]
     : (Array.isArray(person?.embedding) ? [person.embedding] : []);
@@ -62,17 +70,19 @@ export function enrichPersonAngles(person, { embedding, faceThumbnailBase64, sha
     existingPhotos = [{
       thumbnailBase64: person.thumbnailBase64,
       sharpnessScore: person.bestFaceScore || 0,
-      capturedAt: person.firstSeen || new Date().toISOString()
+      capturedAt: person.firstSeen || new Date().toISOString(),
+      pose: person.pose || 'frontal',
+      poseLabel: person.poseLabel || 'Frontal'
     }];
   }
 
-  const updatedPhotos = enrichPersonPhotos(person, faceThumbnailBase64, sharpnessScore);
+  const updatedPhotos = enrichPersonPhotos(person, faceThumbnailBase64, sharpnessScore, { pose, poseLabel });
 
   if (embedding) {
-    if (currentGallery.length < 6) {
+    if (currentGallery.length < 20) {
       currentGallery.push(embedding);
     } else if (existingPhotos.length < currentGallery.length) {
-      // Perfil legado con más embeddings que fotos (ej: 6 embeddings y 1 foto):
+      // Perfil legado con más embeddings que fotos (ej: 20 embeddings y 1 foto):
       // Asignamos el nuevo embedding en la posición correspondiente al nuevo ángulo de foto (updatedPhotos.length - 1)
       const photoIdx = updatedPhotos.length - 1;
       if (photoIdx >= 0 && photoIdx < currentGallery.length) {
@@ -81,7 +91,7 @@ export function enrichPersonAngles(person, { embedding, faceThumbnailBase64, sha
         currentGallery = [currentGallery[0], ...currentGallery.slice(2), embedding];
       }
     } else {
-      // Galería completa (6 ángulos y 6 fotos): rotación en paralelo estricto con photos
+      // Galería completa (20 ángulos y 20 fotos): rotación en paralelo estricto con photos
       currentGallery = [currentGallery[0], ...currentGallery.slice(2), embedding];
     }
   }
@@ -213,7 +223,7 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
       // Si el rostro detectado se ubica en la zona/silla de una sesión activa que ya tiene un cliente identificado:
       // - NUNCA crear un nuevo cliente ni candidato en debounce.
       // - Asociar directamente la detección a ese cliente existente.
-      // - Si el nuevo embedding ofrece un ángulo complementario (similitud 0.50 a 0.88) o mayor nitidez, incorporarlo a su galería (hasta 6).
+      // - Si el nuevo embedding ofrece un ángulo complementario (similitud 0.50 a 0.88), mayor nitidez o pose no representada, incorporarlo a su galería (hasta 20).
       const activeSession = activeSessions.find(s =>
         (s.chairId && crop.zoneId && s.chairId === crop.zoneId) ||
         (s.chairName && crop.zoneId && s.chairName === crop.zoneId)
@@ -225,7 +235,9 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
           const initialPhoto = {
             thumbnailBase64: faceThumbnailBase64,
             sharpnessScore: quality.sharpnessScore || activeSession.bestFaceScore || 0,
-            capturedAt: new Date().toISOString()
+            capturedAt: new Date().toISOString(),
+            pose: quality.pose || 'frontal',
+            poseLabel: quality.poseLabel || 'Frontal'
           };
           p = {
             id: activeSession.personId,
@@ -266,18 +278,23 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
         const hasHigherSharpness = quality.sharpnessScore > (p.bestFaceScore || 0);
         const pPhotosCount = Array.isArray(p.photos) ? p.photos.length : 0;
         const pEmbeddingsCount = currentGallery.length;
-        const hasMissingPhotos = pPhotosCount < pEmbeddingsCount && pPhotosCount < 6;
+        const hasMissingPhotos = pPhotosCount < pEmbeddingsCount && pPhotosCount < 20;
 
-        if (isNovelAngle || hasHigherSharpness || hasMissingPhotos) {
+        const currentPoses = new Set((p.photos || []).map(ph => ph.pose || 'frontal'));
+        const isUnrepresentedPose = quality.pose && !currentPoses.has(quality.pose);
+
+        if (isNovelAngle || hasHigherSharpness || hasMissingPhotos || isUnrepresentedPose) {
           const enriched = enrichPersonAngles(p, {
             embedding,
             faceThumbnailBase64,
-            sharpnessScore: quality.sharpnessScore
+            sharpnessScore: quality.sharpnessScore,
+            pose: quality.pose,
+            poseLabel: quality.poseLabel
           });
           currentGallery = enriched.embeddings;
           p.photos = enriched.photos;
           galleryUpdated = true;
-          console.log(`[FaceRecognition] Rostro añadido a galería de "${p.name}" (NovelAngle: ${isNovelAngle}, MayorNitidez: ${hasHigherSharpness}, FaltanFotos: ${hasMissingPhotos}, Total embeddings: ${currentGallery.length}/6, Total fotos: ${p.photos.length}/6).`);
+          console.log(`[FaceRecognition] Rostro añadido a galería de "${p.name}" (NovelAngle: ${isNovelAngle}, MayorNitidez: ${hasHigherSharpness}, FaltanFotos: ${hasMissingPhotos}, UnrepresentedPose: ${Boolean(isUnrepresentedPose)}, Total embeddings: ${currentGallery.length}/20, Total fotos: ${p.photos.length}/20).`);
         }
 
         if (hasHigherSharpness || !p.photos?.length) {
@@ -379,18 +396,23 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
           const hasHigherSharpness = quality.sharpnessScore > (p.bestFaceScore || 0);
           const pPhotosCount = Array.isArray(p.photos) ? p.photos.length : 0;
           const pEmbeddingsCount = currentGallery.length;
-          const hasMissingPhotos = pPhotosCount < pEmbeddingsCount && pPhotosCount < 6;
+          const hasMissingPhotos = pPhotosCount < pEmbeddingsCount && pPhotosCount < 20;
 
-          if (isNovelAngle || hasHigherSharpness || hasMissingPhotos) {
+          const currentPoses = new Set((p.photos || []).map(ph => ph.pose || 'frontal'));
+          const isUnrepresentedPose = quality.pose && !currentPoses.has(quality.pose);
+
+          if (isNovelAngle || hasHigherSharpness || hasMissingPhotos || isUnrepresentedPose) {
             const enriched = enrichPersonAngles(p, {
               embedding,
               faceThumbnailBase64,
-              sharpnessScore: quality.sharpnessScore
+              sharpnessScore: quality.sharpnessScore,
+              pose: quality.pose,
+              poseLabel: quality.poseLabel
             });
             currentGallery = enriched.embeddings;
             p.photos = enriched.photos;
             galleryUpdated = true;
-            console.log(`[FaceRecognition] Rostro complementario añadido a cliente "${p.name}" (NovelAngle: ${isNovelAngle}, MayorNitidez: ${hasHigherSharpness}, FaltanFotos: ${hasMissingPhotos}, Total embeddings: ${currentGallery.length}/6, Total fotos: ${p.photos.length}/6).`);
+            console.log(`[FaceRecognition] Rostro complementario añadido a cliente "${p.name}" (NovelAngle: ${isNovelAngle}, MayorNitidez: ${hasHigherSharpness}, FaltanFotos: ${hasMissingPhotos}, UnrepresentedPose: ${Boolean(isUnrepresentedPose)}, Total embeddings: ${currentGallery.length}/20, Total fotos: ${p.photos.length}/20).`);
           }
 
           if (hasHigherSharpness || !p.photos?.length) {
@@ -465,14 +487,22 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
             candidate.photos = [{
               thumbnailBase64: candidate.faceThumbnailBase64 || faceThumbnailBase64,
               sharpnessScore: candidate.bestFaceScore || quality?.sharpnessScore || 0,
-              capturedAt: new Date(candidate.firstSeen || Date.now()).toISOString()
+              capturedAt: new Date(candidate.firstSeen || Date.now()).toISOString(),
+              pose: candidate.pose || quality?.pose || 'frontal',
+              poseLabel: candidate.poseLabel || quality?.poseLabel || 'Frontal'
             }];
           }
-          if (candidate.embeddings.length < 6 && (quality.sharpnessScore > (candidate.bestFaceScore || 0) || (candidateSim >= 0.50 && candidateSim <= 0.88))) {
+
+          const candPoses = new Set((candidate.photos || []).map(ph => ph.pose || 'frontal'));
+          const isCandUnrepresentedPose = quality.pose && !candPoses.has(quality.pose);
+
+          if (candidate.embeddings.length < 20 && (quality.sharpnessScore > (candidate.bestFaceScore || 0) || (candidateSim >= 0.50 && candidateSim <= 0.88) || isCandUnrepresentedPose)) {
             const enriched = enrichPersonAngles(candidate, {
               embedding,
               faceThumbnailBase64,
-              sharpnessScore: quality.sharpnessScore
+              sharpnessScore: quality.sharpnessScore,
+              pose: quality.pose,
+              poseLabel: quality.poseLabel
             });
             candidate.embeddings = enriched.embeddings;
             candidate.photos = enriched.photos;
@@ -481,6 +511,8 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
             candidate.embedding = embedding;
             candidate.faceThumbnailBase64 = faceThumbnailBase64;
             candidate.bestFaceScore = quality.sharpnessScore;
+            candidate.pose = quality.pose;
+            candidate.poseLabel = quality.poseLabel;
           }
 
           if (candidate.count >= 3) {
@@ -497,7 +529,9 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
               : [{
                   thumbnailBase64: candidate.faceThumbnailBase64 || faceThumbnailBase64,
                   sharpnessScore: candidate.bestFaceScore || quality?.sharpnessScore || 0,
-                  capturedAt: new Date().toISOString()
+                  capturedAt: new Date().toISOString(),
+                  pose: quality?.pose || 'frontal',
+                  poseLabel: quality?.poseLabel || 'Frontal'
                 }];
 
             const newProfile = {
@@ -569,7 +603,9 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
           const initialPhoto = {
             thumbnailBase64: faceThumbnailBase64,
             sharpnessScore: quality?.sharpnessScore || 0,
-            capturedAt: new Date().toISOString()
+            capturedAt: new Date().toISOString(),
+            pose: quality?.pose || 'frontal',
+            poseLabel: quality?.poseLabel || 'Frontal'
           };
           pendingNewClients.set(candidateKey, {
             tempId,
@@ -582,6 +618,8 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
             photos: [initialPhoto],
             faceThumbnailBase64,
             bestFaceScore: quality.sharpnessScore,
+            pose: quality?.pose || 'frontal',
+            poseLabel: quality?.poseLabel || 'Frontal',
             storagePath: record ? record.storagePath : ""
           });
 

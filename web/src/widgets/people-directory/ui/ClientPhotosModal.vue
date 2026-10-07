@@ -44,6 +44,30 @@ const formatTimeSafe = (val) => {
   return formatDateTime(val);
 };
 
+// Icono y etiqueta descriptiva de pose facial (Google Fonts Material Symbols Outlined exclusivo, sin emojis)
+const getPoseIcon = (pose) => {
+  switch (pose) {
+    case 'profile_left':
+    case 'semi_left':
+      return 'turn_left';
+    case 'profile_right':
+    case 'semi_right':
+      return 'turn_right';
+    case 'tilted_up':
+      return 'arrow_upward';
+    case 'tilted_down':
+      return 'arrow_downward';
+    case 'frontal':
+    default:
+      return 'face';
+  }
+};
+
+const getPoseLabel = (photo) => {
+  if (!photo) return 'Frontal';
+  return photo.poseLabel || photo.pose || 'Frontal';
+};
+
 // Galería de fotos del cliente (fuente canónica: person.photos)
 const photosList = computed(() => {
   if (!props.person) return [];
@@ -193,7 +217,7 @@ const handleConfirmDeletePhoto = async () => {
           </div>
           <div class="min-w-0">
             <span class="block text-[11px] text-slate-400 font-medium">Total Ángulos</span>
-            <span class="text-sm font-bold text-white font-mono">{{ photosList.length }} / 6</span>
+            <span class="text-sm font-bold text-white font-mono">{{ photosList.length }} / 20</span>
           </div>
         </div>
 
@@ -249,16 +273,25 @@ const handleConfirmDeletePhoto = async () => {
             <div class="absolute top-2 left-2 px-2 py-0.5 rounded-md text-[10px] font-bold bg-slate-900/90 text-sky-300 border border-sky-500/30">
               Ángulo #{{ selectedPhotoIndex + 1 }}
             </div>
+            <!-- Pose Badge on Large Inspector Photo -->
+            <div class="absolute bottom-2 left-2 inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold bg-slate-900/90 text-sky-300 border border-sky-500/40">
+              <AppIcon :name="getPoseIcon(selectedPhoto.pose)" :size="13" />
+              <span>{{ getPoseLabel(selectedPhoto) }}</span>
+            </div>
           </div>
 
           <!-- Inspector Details -->
           <div class="flex-1 w-full space-y-3">
             <div class="flex items-center justify-between border-b border-slate-800/80 pb-2 flex-wrap gap-2">
-              <div class="flex items-center gap-2">
+              <div class="flex items-center gap-2 flex-wrap">
                 <AppIcon name="zoom_in" :size="18" class="text-sky-400" />
                 <h4 class="text-sm font-bold text-white">
                   Detalles del Ángulo Facial #{{ selectedPhotoIndex + 1 }}
                 </h4>
+                <span class="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-md bg-sky-950/80 text-sky-300 border border-sky-500/30">
+                  <AppIcon :name="getPoseIcon(selectedPhoto.pose)" :size="12" />
+                  <span>{{ getPoseLabel(selectedPhoto) }}</span>
+                </span>
                 <span v-if="selectedPhoto.isFallback" class="text-[10px] font-semibold px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700">
                   Foto principal
                 </span>
@@ -278,7 +311,19 @@ const handleConfirmDeletePhoto = async () => {
               </AppButton>
             </div>
 
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs">
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
+              <!-- Posición / Pose -->
+              <div class="p-2.5 rounded-lg bg-slate-900/80 border border-slate-800">
+                <span class="text-[11px] text-slate-400 block mb-0.5 flex items-center gap-1.5">
+                  <AppIcon :name="getPoseIcon(selectedPhoto.pose)" :size="14" class="text-sky-400" />
+                  <span>Posición / Pose:</span>
+                </span>
+                <span class="text-sm font-bold font-mono text-sky-300 truncate block">
+                  {{ getPoseLabel(selectedPhoto) }}
+                </span>
+              </div>
+
+              <!-- Nitidez biométrica -->
               <div class="p-2.5 rounded-lg bg-slate-900/80 border border-slate-800">
                 <span class="text-[11px] text-slate-400 block mb-0.5 flex items-center gap-1.5">
                   <AppIcon name="center_focus_strong" :size="14" class="text-emerald-400" />
@@ -289,6 +334,7 @@ const handleConfirmDeletePhoto = async () => {
                 </span>
               </div>
 
+              <!-- Momento de captura -->
               <div class="p-2.5 rounded-lg bg-slate-900/80 border border-slate-800">
                 <span class="text-[11px] text-slate-400 block mb-0.5 flex items-center gap-1.5">
                   <AppIcon name="schedule" :size="14" class="text-sky-400" />
@@ -301,7 +347,7 @@ const handleConfirmDeletePhoto = async () => {
             </div>
 
             <p class="text-[11px] text-slate-400 italic">
-              Los ángulos biométricos complementarios permiten reconocer al cliente sin importar hacia dónde gire la cabeza en el sillón de atención.
+              Los ángulos biométricos complementarios diversificados por posición garantizan el reconocimiento continuo del cliente sin importar su orientación hacia el barbero o el espejo.
             </p>
           </div>
         </div>
@@ -327,8 +373,8 @@ const handleConfirmDeletePhoto = async () => {
             <span>Sin fotos faciales capturadas para este perfil.</span>
           </div>
 
-          <!-- Grid of Photos -->
-          <div v-else class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3">
+          <!-- Grid of Photos: 20 responsive layout -->
+          <div v-else class="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-5 gap-3">
             <button
               v-for="(photo, index) in photosList"
               :key="index"
@@ -357,6 +403,12 @@ const handleConfirmDeletePhoto = async () => {
                 <!-- Sharpness score badge -->
                 <span class="absolute top-1 right-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-950/85 text-emerald-400 border border-slate-700 font-mono">
                   {{ formatSharpness(photo.sharpnessScore) }}
+                </span>
+
+                <!-- Pose badge on thumbnail -->
+                <span class="absolute bottom-1 left-1 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-950/85 text-sky-300 border border-slate-700">
+                  <AppIcon :name="getPoseIcon(photo.pose)" :size="11" />
+                  <span class="truncate max-w-[65px]">{{ getPoseLabel(photo) }}</span>
                 </span>
 
                 <!-- Botón eliminar ángulo en tarjeta -->

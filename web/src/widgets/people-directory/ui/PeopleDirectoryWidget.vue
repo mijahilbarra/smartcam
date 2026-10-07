@@ -803,7 +803,7 @@ const confirmMerge = async () => {
       <div v-if="mergePreview" class="space-y-4">
         <p class="text-xs sm:text-sm text-slate-300 leading-relaxed">
           Se combinarán <strong class="text-sky-300">{{ selectedProfiles.length }} perfiles</strong> en uno solo.
-          Se conservarán hasta 6 ángulos faciales de mayor nitidez y se unificarán los tiempos de visita y conteo acumulado.
+          Se conservarán hasta 20 ángulos faciales diversificados por posición y mayor nitidez, y se unificarán los tiempos de visita y conteo acumulado.
         </p>
 
         <!-- Selector de Nombre Unificado -->
@@ -881,7 +881,7 @@ const confirmMerge = async () => {
               <span>Fotos resultantes:</span>
             </span>
             <span class="font-mono text-sky-300 font-bold">
-              {{ mergePreview.mergedData.photos.length }} / 6 conservadas
+              {{ mergePreview.mergedData.photos.length }} / 20 conservadas
             </span>
           </div>
 
