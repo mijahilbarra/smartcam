@@ -1,7 +1,9 @@
 <script setup>
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
+import { ref, computed, watch } from 'vue';
 import AppIcon from '@/shared/ui/atoms/AppIcon.vue';
+import AppButton from '@/shared/ui/atoms/AppButton.vue';
 import ModalTemplate from '@/shared/ui/templates/ModalTemplate.vue';
+import ConfirmModal from '@/shared/ui/molecules/ConfirmModal.vue';
 import { formatDateTime } from '@/shared/lib/date-utils';
 
 const props = defineProps({
@@ -15,9 +17,17 @@ const props = defineProps({
   }
 });
 
-const emit = defineEmits(['close']);
+const emit = defineEmits(['close', 'delete-person', 'delete-photo']);
 
 const selectedPhotoIndex = ref(0);
+
+// Estado de modales de confirmación
+const isConfirmDeletePersonOpen = ref(false);
+const isDeletingPerson = ref(false);
+
+const isConfirmDeletePhotoOpen = ref(false);
+const photoToDeleteIndex = ref(null);
+const isDeletingPhoto = ref(false);
 
 // Formateador seguro de nitidez facial (soporta escala 0..1 o 0..100)
 const formatSharpness = (val) => {
@@ -76,19 +86,55 @@ const bestSharpness = computed(() => {
   return `${Math.round(max)}%`;
 });
 
-// Total de ángulos registrados (acoplado directamente a la cantidad real de fotos)
-const totalAngles = computed(() => photosList.value.length);
-
 // Reiniciar índice seleccionado al abrir modal o cambiar de persona
 watch(() => props.person?.id, () => {
   selectedPhotoIndex.value = 0;
 });
 watch(() => props.show, (newVal) => {
-  if (newVal) selectedPhotoIndex.value = 0;
+  if (newVal) {
+    selectedPhotoIndex.value = 0;
+    isConfirmDeletePersonOpen.value = false;
+    isConfirmDeletePhotoOpen.value = false;
+    photoToDeleteIndex.value = null;
+  }
 });
 
 const selectPhoto = (index) => {
   selectedPhotoIndex.value = index;
+};
+
+const promptDeletePhoto = (index) => {
+  photoToDeleteIndex.value = index;
+  isConfirmDeletePhotoOpen.value = true;
+};
+
+const handleConfirmDeletePerson = async () => {
+  if (!props.person?.id) return;
+  isDeletingPerson.value = true;
+  try {
+    emit('delete-person', props.person);
+    isConfirmDeletePersonOpen.value = false;
+  } finally {
+    isDeletingPerson.value = false;
+  }
+};
+
+const handleConfirmDeletePhoto = async () => {
+  if (photoToDeleteIndex.value == null || !props.person?.id) return;
+  isDeletingPhoto.value = true;
+  try {
+    emit('delete-photo', {
+      personId: props.person.id,
+      photoIndex: photoToDeleteIndex.value
+    });
+    isConfirmDeletePhotoOpen.value = false;
+    if (selectedPhotoIndex.value >= photosList.value.length - 1) {
+      selectedPhotoIndex.value = Math.max(0, photosList.value.length - 2);
+    }
+  } finally {
+    isDeletingPhoto.value = false;
+    photoToDeleteIndex.value = null;
+  }
 };
 </script>
 
@@ -215,14 +261,29 @@ const selectPhoto = (index) => {
 
           <!-- Inspector Details -->
           <div class="flex-1 w-full space-y-3">
-            <div class="flex items-center justify-between border-b border-slate-800/80 pb-2">
-              <h4 class="text-sm font-bold text-white flex items-center gap-2">
+            <div class="flex items-center justify-between border-b border-slate-800/80 pb-2 flex-wrap gap-2">
+              <div class="flex items-center gap-2">
                 <AppIcon name="zoom_in" :size="18" class="text-sky-400" />
-                <span>Detalles del Ángulo Facial #{{ selectedPhotoIndex + 1 }}</span>
-              </h4>
-              <span v-if="selectedPhoto.isFallback" class="text-[10px] font-semibold px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700">
-                Foto principal de perfil
-              </span>
+                <h4 class="text-sm font-bold text-white">
+                  Detalles del Ángulo Facial #{{ selectedPhotoIndex + 1 }}
+                </h4>
+                <span v-if="selectedPhoto.isFallback" class="text-[10px] font-semibold px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700">
+                  Foto principal
+                </span>
+              </div>
+
+              <!-- Botón Eliminar Ángulo en Inspector -->
+              <AppButton
+                v-if="photosList.length > 0"
+                variant="danger-outline"
+                size="sm"
+                icon="delete"
+                :disabled="isDeletingPhoto"
+                @click="promptDeletePhoto(selectedPhotoIndex)"
+                title="Eliminar este ángulo facial de la galería"
+              >
+                Eliminar ángulo
+              </AppButton>
             </div>
 
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs">
@@ -305,6 +366,16 @@ const selectPhoto = (index) => {
                 <span class="absolute top-1 right-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-950/85 text-emerald-400 border border-slate-700 font-mono">
                   {{ formatSharpness(photo.sharpnessScore) }}
                 </span>
+
+                <!-- Botón eliminar ángulo en tarjeta -->
+                <button
+                  type="button"
+                  @click.stop="promptDeletePhoto(index)"
+                  class="absolute bottom-1 right-1 p-1 rounded-md bg-slate-950/90 text-slate-400 hover:text-red-400 hover:bg-red-950/90 border border-slate-800 hover:border-red-500/40 opacity-0 group-hover:opacity-100 transition cursor-pointer"
+                  title="Eliminar este ángulo"
+                >
+                  <AppIcon name="delete" :size="13" />
+                </button>
               </div>
 
               <!-- Caption -->
@@ -319,15 +390,57 @@ const selectPhoto = (index) => {
       </div>
 
       <!-- Modal Footer -->
-      <div class="flex items-center justify-end p-4 border-t border-slate-800 bg-slate-950/60">
-        <button
+      <div class="flex items-center justify-between p-4 border-t border-slate-800 bg-slate-950/60">
+        <!-- Botón Eliminar este perfil -->
+        <AppButton
           type="button"
+          variant="danger-outline"
+          size="sm"
+          icon="delete"
+          @click="isConfirmDeletePersonOpen = true"
+        >
+          Eliminar este perfil
+        </AppButton>
+
+        <AppButton
+          type="button"
+          variant="secondary"
+          size="sm"
           @click="emit('close')"
-          class="px-4 py-2 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 hover:border-slate-600 transition cursor-pointer"
         >
           Cerrar
-        </button>
+        </AppButton>
       </div>
     </div>
+
+    <!-- Modal de confirmación para eliminar perfil completo -->
+    <ConfirmModal
+      :show="isConfirmDeletePersonOpen"
+      :title="`¿Eliminar perfil de '${person?.name}'?`"
+      :message="`Se eliminará permanentemente este perfil biométrico de Firestore, junto con sus ${photosList.length} ángulos faciales y su historial de visitas. Esta acción no se puede revertir.`"
+      confirm-text="Eliminar perfil"
+      confirm-variant="danger"
+      confirm-icon="delete"
+      icon="person_remove"
+      icon-color="text-red-400"
+      :loading="isDeletingPerson"
+      @confirm="handleConfirmDeletePerson"
+      @close="isConfirmDeletePersonOpen = false"
+    />
+
+    <!-- Modal de confirmación para eliminar un ángulo facial individual -->
+    <ConfirmModal
+      :show="isConfirmDeletePhotoOpen"
+      :title="`¿Eliminar ángulo facial #${(photoToDeleteIndex ?? 0) + 1}?`"
+      :message="`Esta foto y su vector biométrico se removerán de la galería de este perfil. Esta acción no se puede deshacer.`"
+      confirm-text="Eliminar ángulo"
+      confirm-variant="danger"
+      confirm-icon="delete"
+      icon="delete"
+      icon-color="text-amber-400"
+      :loading="isDeletingPhoto"
+      @confirm="handleConfirmDeletePhoto"
+      @close="isConfirmDeletePhotoOpen = false"
+    />
   </ModalTemplate>
 </template>

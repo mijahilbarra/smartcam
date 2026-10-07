@@ -1,6 +1,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
-import { collection, doc, onSnapshot, updateDoc, deleteDoc } from 'firebase/firestore';
+import { collection, doc, onSnapshot, updateDoc, deleteDoc, writeBatch } from 'firebase/firestore';
 import { db } from '@/shared/api/firebase';
+import { computeMergedPersonData, extractPersonPhotos } from './person-merge';
 
 export function usePeople() {
   const people = ref([]);
@@ -122,6 +123,100 @@ export function usePeople() {
     }
   };
 
+  /**
+   * Elimina múltiples perfiles biométricos en una operación atómica por lotes (Batch)
+   * @param {Array<string>} personIds
+   */
+  const batchDeletePeople = async (personIds) => {
+    if (!Array.isArray(personIds) || personIds.length === 0) return { deletedCount: 0 };
+    try {
+      const chunkSize = 400;
+      let deletedCount = 0;
+      for (let i = 0; i < personIds.length; i += chunkSize) {
+        const chunk = personIds.slice(i, i + chunkSize);
+        const batch = writeBatch(db);
+        for (const id of chunk) {
+          batch.delete(doc(db, 'camera_catcher_people', id));
+        }
+        await batch.commit();
+        deletedCount += chunk.length;
+      }
+      return { success: true, deletedCount };
+    } catch (err) {
+      console.error('[People] Error en batch delete de personas:', err);
+      throw err;
+    }
+  };
+
+  /**
+   * Fusiona múltiples perfiles seleccionados en uno solo de forma atómica:
+   * combina fotos (máx 6 mayor nitidez), embeddings, rango de tiempo, suma de visitas y elimina los duplicados.
+   * @param {Array<Object>} selectedProfiles
+   * @param {Object} [options]
+   */
+  const mergePeople = async (selectedProfiles, options = {}) => {
+    const { targetId, deleteIds, mergedData } = computeMergedPersonData(selectedProfiles, options);
+    try {
+      const batch = writeBatch(db);
+      const targetRef = doc(db, 'camera_catcher_people', targetId);
+      batch.update(targetRef, mergedData);
+
+      for (const delId of deleteIds) {
+        batch.delete(doc(db, 'camera_catcher_people', delId));
+      }
+      await batch.commit();
+      return { success: true, targetId, mergedData };
+    } catch (err) {
+      console.error('[People] Error en fusión de perfiles:', err);
+      throw err;
+    }
+  };
+
+  /**
+   * Elimina un ángulo/foto específico de la galería de un perfil
+   * Actualiza el array de fotos, embeddings correlacionados, miniatura y nitidez máxima.
+   * @param {string} personId
+   * @param {number} photoIndex
+   */
+  const deletePersonPhoto = async (personId, photoIndex) => {
+    if (!personId || photoIndex == null || photoIndex < 0) return;
+    const person = people.value.find(p => p.id === personId);
+    if (!person) throw new Error('Perfil biométrico no encontrado');
+
+    const photos = extractPersonPhotos(person);
+    if (photoIndex >= photos.length) throw new Error('Índice de foto no válido');
+
+    const updatedPhotos = photos.filter((_, idx) => idx !== photoIndex);
+
+    let currentEmbeddings = Array.isArray(person.embeddings) && person.embeddings.length > 0
+      ? [...person.embeddings]
+      : (Array.isArray(person.embedding) ? [person.embedding] : []);
+    let updatedEmbeddings = currentEmbeddings.filter((_, idx) => idx !== photoIndex);
+
+    const bestFaceScore = updatedPhotos.length > 0
+      ? Math.max(...updatedPhotos.map(p => p.sharpnessScore || 0))
+      : 0;
+
+    const thumbnailBase64 = updatedPhotos.length > 0
+      ? updatedPhotos[0].thumbnailBase64
+      : null;
+
+    try {
+      const docRef = doc(db, 'camera_catcher_people', personId);
+      await updateDoc(docRef, {
+        photos: updatedPhotos,
+        embeddings: updatedEmbeddings,
+        thumbnailBase64,
+        bestFaceScore,
+        updatedAt: new Date().toISOString()
+      });
+      return { success: true, remainingPhotos: updatedPhotos.length };
+    } catch (err) {
+      console.error('[People] Error eliminando foto de persona:', err);
+      throw err;
+    }
+  };
+
   const barbersCount = computed(() => people.value.filter(p => p.isStaff).length);
   const frequentCount = computed(() => people.value.filter(p => !p.isStaff && p.visitCount > 1).length);
   const newClientsCount = computed(() => people.value.filter(p => !p.isStaff && p.visitCount <= 1).length);
@@ -143,6 +238,9 @@ export function usePeople() {
     newClientsCount,
     toggleRole,
     updatePersonName,
-    deletePerson
+    deletePerson,
+    batchDeletePeople,
+    mergePeople,
+    deletePersonPhoto
   };
 }
