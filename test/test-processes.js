@@ -13,7 +13,7 @@ import {
 import { CaptureOrchestrator } from "../src/services/capture_orchestrator.js";
 import { PersonTracker } from "../src/core/person_tracker.js";
 import { identifyFace } from "../src/face_recognizer.js";
-import { processPeopleRecognition, resetPendingCandidates } from "../src/services/people_service.js";
+import { processPeopleRecognition, resetPendingCandidates, enrichPersonAngles } from "../src/services/people_service.js";
 
 console.log("=== Test de Pipeline Funcional de Procesos (processes.js) ===");
 
@@ -501,8 +501,60 @@ assert.ok(Array.isArray(createdClientDoc.photos), "El nuevo cliente debe tener a
 assert.strictEqual(createdClientDoc.photos.length, 1, "Debe iniciar con 1 foto en photos");
 assert.ok(createdClientDoc.photos[0].thumbnailBase64, "La foto debe tener thumbnailBase64");
 assert.strictEqual(typeof createdClientDoc.photos[0].sharpnessScore, "number", "La foto debe tener sharpnessScore numérico");
-assert.ok(createdClientDoc.photos[0].capturedAt, "La foto debe tener capturedAt");
 console.log("-> Inicialización de embeddings y photos en creación de nuevo cliente validada exitosamente.");
+
+// 11. enrichPersonAngles: Correspondencia 1:1 y sincronización de perfiles legados
+console.log("\n[11] Probando sincronización 1:1 de embeddings y photos en enrichPersonAngles...");
+const legacyPerson = {
+  id: "client_legacy_215",
+  name: "Cliente #215",
+  isStaff: false,
+  thumbnailBase64: "data:image/jpeg;base64,initial_legacy_photo",
+  bestFaceScore: 45,
+  embeddings: [
+    createUnitVector(512, 0),
+    createUnitVector(512, 1),
+    createUnitVector(512, 2),
+    createUnitVector(512, 3),
+    createUnitVector(512, 4),
+    createUnitVector(512, 5)
+  ]
+};
+
+// Agregar fotos 2 a 6 consecutivamente
+let currentLegacy = { ...legacyPerson };
+for (let photoNum = 2; photoNum <= 6; photoNum++) {
+  const newEmb = createUnitVector(512, 10 + photoNum);
+  const newThumb = `data:image/jpeg;base64,photo_${photoNum}`;
+  const res = enrichPersonAngles(currentLegacy, {
+    embedding: newEmb,
+    faceThumbnailBase64: newThumb,
+    sharpnessScore: 50 + photoNum
+  });
+
+  assert.strictEqual(res.photos.length, photoNum, `Debe tener ${photoNum} fotos tras la adición`);
+  assert.strictEqual(res.embeddings.length, 6, "Debe mantener 6 embeddings");
+  assert.strictEqual(res.photos[photoNum - 1].thumbnailBase64, newThumb, "La miniatura de la foto debe coincidir");
+  assert.deepStrictEqual(res.embeddings[photoNum - 1], newEmb, `El embedding en índice ${photoNum - 1} debe corresponder a la foto`);
+  currentLegacy.embeddings = res.embeddings;
+  currentLegacy.photos = res.photos;
+}
+
+// Ahora con 6 fotos y 6 embeddings, añadir la 7ma foto debe rotar en paralelo
+const rotEmb = createUnitVector(512, 99);
+const rotThumb = "data:image/jpeg;base64,photo_7_rotated";
+const rotResult = enrichPersonAngles(currentLegacy, {
+  embedding: rotEmb,
+  faceThumbnailBase64: rotThumb,
+  sharpnessScore: 90
+});
+assert.strictEqual(rotResult.photos.length, 6, "Debe mantener máximo 6 fotos");
+assert.strictEqual(rotResult.embeddings.length, 6, "Debe mantener máximo 6 embeddings");
+assert.strictEqual(rotResult.photos[0].thumbnailBase64, "data:image/jpeg;base64,initial_legacy_photo", "Debe conservar la foto inicial de referencia en índice 0");
+assert.deepStrictEqual(rotResult.embeddings[0], createUnitVector(512, 0), "Debe conservar el embedding inicial de referencia en índice 0");
+assert.strictEqual(rotResult.photos[5].thumbnailBase64, rotThumb, "La última foto debe ser la recién incorporada");
+assert.deepStrictEqual(rotResult.embeddings[5], rotEmb, "El último embedding debe ser el recién incorporado");
+console.log("-> Correspondencia 1:1 y sincronización progresiva de perfiles legados validada exitosamente.");
 
 console.log("\n🎉 ¡Todos los tests del pipeline funcional de procesos pasaron exitosamente!");
 

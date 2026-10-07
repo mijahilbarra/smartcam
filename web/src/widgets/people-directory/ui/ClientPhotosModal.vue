@@ -76,11 +76,8 @@ const bestSharpness = computed(() => {
   return `${Math.round(max)}%`;
 });
 
-// Total de ángulos registrados
-const totalAngles = computed(() => {
-  if (!props.person) return 1;
-  return props.person.photos?.length || props.person.embeddings?.length || 1;
-});
+// Total de ángulos registrados (acoplado directamente a la cantidad real de fotos)
+const totalAngles = computed(() => photosList.value.length);
 
 // Reiniciar índice seleccionado al abrir modal o cambiar de persona
 watch(() => props.person?.id, () => {
@@ -158,7 +155,7 @@ const selectPhoto = (index) => {
           </div>
           <div class="min-w-0">
             <span class="block text-[11px] text-slate-400 font-medium">Total Ángulos</span>
-            <span class="text-sm font-bold text-white font-mono">{{ totalAngles }} / 6</span>
+            <span class="text-sm font-bold text-white font-mono">{{ photosList.length }} / 6</span>
           </div>
         </div>
 

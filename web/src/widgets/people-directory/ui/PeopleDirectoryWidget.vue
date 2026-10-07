@@ -424,7 +424,7 @@ const onDeletePerson = async (person) => {
                 <span>Ángulos guardados:</span>
               </span>
               <span class="font-mono text-sky-300 font-semibold">
-                {{ person.photos?.length || person.embeddings?.length || 1 }}
+                {{ person.photos?.length || (person.thumbnailBase64 ? 1 : 0) }}
               </span>
             </div>
 
@@ -468,7 +468,7 @@ const onDeletePerson = async (person) => {
             class="w-full flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-lg text-xs font-medium bg-slate-900/90 hover:bg-slate-800 text-sky-300 hover:text-sky-200 border border-slate-800 hover:border-sky-500/40 transition select-none cursor-pointer"
           >
             <AppIcon name="photo_library" :size="14" />
-            <span>Ver fotos ({{ person.photos?.length || person.embeddings?.length || 1 }})</span>
+            <span>Ver fotos ({{ person.photos?.length || (person.thumbnailBase64 ? 1 : 0) }})</span>
           </button>
 
           <!-- Bottom Row: Manual Role Switch Button & Delete -->

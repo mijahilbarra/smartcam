@@ -48,6 +48,7 @@ export function enrichPersonPhotos(person, thumbnailBase64, sharpnessScore = 0) 
 
 /**
  * Enriquece la galería biométrica y de fotos de un cliente existente con un nuevo ángulo
+ * garantizando correspondencia estricta 1:1 entre embeddings y fotos.
  * @param {Object} person - Perfil del cliente
  * @param {Object} data - Datos del nuevo ángulo ({ embedding, faceThumbnailBase64, sharpnessScore })
  * @returns {{ embeddings: Array, photos: Array }}
@@ -57,15 +58,36 @@ export function enrichPersonAngles(person, { embedding, faceThumbnailBase64, sha
     ? [...person.embeddings]
     : (Array.isArray(person?.embedding) ? [person.embedding] : []);
 
-  if (embedding) {
-    if (currentGallery.length < 6) {
-      currentGallery.push(embedding);
-    } else {
-      currentGallery = [currentGallery[0], ...currentGallery.slice(2), embedding];
-    }
+  let existingPhotos = [];
+  if (Array.isArray(person?.photos) && person.photos.length > 0) {
+    existingPhotos = [...person.photos];
+  } else if (person?.thumbnailBase64) {
+    existingPhotos = [{
+      thumbnailBase64: person.thumbnailBase64,
+      sharpnessScore: person.bestFaceScore || 0,
+      capturedAt: person.firstSeen || new Date().toISOString()
+    }];
   }
 
   const updatedPhotos = enrichPersonPhotos(person, faceThumbnailBase64, sharpnessScore);
+
+  if (embedding) {
+    if (currentGallery.length < 6) {
+      currentGallery.push(embedding);
+    } else if (existingPhotos.length < currentGallery.length) {
+      // Perfil legado con más embeddings que fotos (ej: 6 embeddings y 1 foto):
+      // Asignamos el nuevo embedding en la posición correspondiente al nuevo ángulo de foto (updatedPhotos.length - 1)
+      const photoIdx = updatedPhotos.length - 1;
+      if (photoIdx >= 0 && photoIdx < currentGallery.length) {
+        currentGallery[photoIdx] = embedding;
+      } else {
+        currentGallery = [currentGallery[0], ...currentGallery.slice(2), embedding];
+      }
+    } else {
+      // Galería completa (6 ángulos y 6 fotos): rotación en paralelo estricto con photos
+      currentGallery = [currentGallery[0], ...currentGallery.slice(2), embedding];
+    }
+  }
 
   return {
     embeddings: currentGallery,
@@ -210,14 +232,21 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
       if (activeSession && activeSession.personId && !activeSession.isStaff) {
         let p = knownProfiles.find(kp => kp.id === activeSession.personId);
         if (!p) {
+          const initialPhoto = {
+            thumbnailBase64: faceThumbnailBase64,
+            sharpnessScore: quality.sharpnessScore || activeSession.bestFaceScore || 0,
+            capturedAt: new Date().toISOString()
+          };
           p = {
             id: activeSession.personId,
             name: activeSession.personName || "Cliente",
             isStaff: false,
             visitCount: activeSession.visitCount || 1,
             bestFaceScore: activeSession.bestFaceScore || 0,
-            embeddings: [],
-            photos: []
+            embedding,
+            embeddings: [embedding],
+            photos: [initialPhoto],
+            thumbnailBase64: faceThumbnailBase64
           };
           knownProfiles.push(p);
           allKnown.push(p);
@@ -246,8 +275,13 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
 
         const isNovelAngle = sim >= 0.50 && sim <= 0.88;
         const hasHigherSharpness = quality.sharpnessScore > (p.bestFaceScore || 0);
+        const pPhotosCount = Array.isArray(p.photos) && p.photos.length > 0
+          ? p.photos.length
+          : (p.thumbnailBase64 ? 1 : 0);
+        const pEmbeddingsCount = currentGallery.length;
+        const hasMissingPhotos = pPhotosCount < pEmbeddingsCount && pPhotosCount < 6;
 
-        if (isNovelAngle || hasHigherSharpness) {
+        if (isNovelAngle || hasHigherSharpness || hasMissingPhotos) {
           const enriched = enrichPersonAngles(p, {
             embedding,
             faceThumbnailBase64,
@@ -256,7 +290,7 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
           currentGallery = enriched.embeddings;
           p.photos = enriched.photos;
           galleryUpdated = true;
-          console.log(`[FaceRecognition] Rostro añadido a galería de "${p.name}" (NovelAngle: ${isNovelAngle}, MayorNitidez: ${hasHigherSharpness}, Total embeddings: ${currentGallery.length}/6, Total fotos: ${p.photos.length}/6).`);
+          console.log(`[FaceRecognition] Rostro añadido a galería de "${p.name}" (NovelAngle: ${isNovelAngle}, MayorNitidez: ${hasHigherSharpness}, FaltanFotos: ${hasMissingPhotos}, Total embeddings: ${currentGallery.length}/6, Total fotos: ${p.photos.length}/6).`);
         }
 
         const updateData = {
@@ -355,8 +389,13 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
 
           const isNovelAngle = result.similarity >= 0.50 && result.similarity <= 0.88;
           const hasHigherSharpness = quality.sharpnessScore > (p.bestFaceScore || 0);
+          const pPhotosCount = Array.isArray(p.photos) && p.photos.length > 0
+            ? p.photos.length
+            : (p.thumbnailBase64 ? 1 : 0);
+          const pEmbeddingsCount = currentGallery.length;
+          const hasMissingPhotos = pPhotosCount < pEmbeddingsCount && pPhotosCount < 6;
 
-          if (isNovelAngle || hasHigherSharpness) {
+          if (isNovelAngle || hasHigherSharpness || hasMissingPhotos) {
             const enriched = enrichPersonAngles(p, {
               embedding,
               faceThumbnailBase64,
@@ -365,7 +404,7 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
             currentGallery = enriched.embeddings;
             p.photos = enriched.photos;
             galleryUpdated = true;
-            console.log(`[FaceRecognition] Rostro complementario añadido a cliente "${p.name}" (NovelAngle: ${isNovelAngle}, MayorNitidez: ${hasHigherSharpness}, Total embeddings: ${currentGallery.length}/6, Total fotos: ${p.photos.length}/6).`);
+            console.log(`[FaceRecognition] Rostro complementario añadido a cliente "${p.name}" (NovelAngle: ${isNovelAngle}, MayorNitidez: ${hasHigherSharpness}, FaltanFotos: ${hasMissingPhotos}, Total embeddings: ${currentGallery.length}/6, Total fotos: ${p.photos.length}/6).`);
           }
 
           if (hasHigherSharpness || !p.thumbnailBase64) {
@@ -444,10 +483,13 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
             }];
           }
           if (candidate.embeddings.length < 6 && (quality.sharpnessScore > (candidate.bestFaceScore || 0) || (candidateSim >= 0.50 && candidateSim <= 0.88))) {
-            candidate.embeddings.push(embedding);
-            if (faceThumbnailBase64) {
-              candidate.photos = enrichPersonPhotos({ photos: candidate.photos }, faceThumbnailBase64, quality.sharpnessScore);
-            }
+            const enriched = enrichPersonAngles(candidate, {
+              embedding,
+              faceThumbnailBase64,
+              sharpnessScore: quality.sharpnessScore
+            });
+            candidate.embeddings = enriched.embeddings;
+            candidate.photos = enriched.photos;
           }
           if (quality.sharpnessScore > (candidate.bestFaceScore || 0)) {
             candidate.embedding = embedding;
