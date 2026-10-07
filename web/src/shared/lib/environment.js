@@ -34,7 +34,11 @@ export function isLocalEnvironment() {
  */
 export function getEnvironmentInfo() {
   const isLocal = isLocalEnvironment();
-  const customUrl = typeof localStorage !== 'undefined' ? localStorage.getItem('CAMERA_CATCHER_API_URL') : null;
+  const rawCustomUrl = typeof localStorage !== 'undefined' ? localStorage.getItem('CAMERA_CATCHER_API_URL') : null;
+  const customUrl = rawCustomUrl && rawCustomUrl.trim() ? rawCustomUrl.trim().replace(/\/+$/, '') : null;
+  const envUrl = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_CAMERA_CATCHER_API_URL)
+    ? import.meta.env.VITE_CAMERA_CATCHER_API_URL.trim().replace(/\/+$/, '')
+    : null;
   const customDb = typeof localStorage !== 'undefined' ? localStorage.getItem('CAMERA_CATCHER_FIRESTORE_DB') : null;
   const customStorage = typeof localStorage !== 'undefined' ? localStorage.getItem('CAMERA_CATCHER_STORAGE_BUCKET') : null;
 
@@ -42,7 +46,22 @@ export function getEnvironmentInfo() {
   // En producción (GCP / Hosting) se utiliza "(default)" y "gs://skip-bigotes.firebasestorage.app".
   const databaseId = customDb || (isLocal ? 'test' : '(default)');
   const storageBucket = customStorage || (isLocal ? 'gs://skip-bigotes-test' : 'gs://skip-bigotes.firebasestorage.app');
-  const backendUrl = customUrl || (isLocal ? 'http://localhost:8085' : null);
+
+  // Resolución prioritaria de backendUrl:
+  // 1. customUrl desde localStorage ('CAMERA_CATCHER_API_URL') si existe
+  // 2. import.meta.env.VITE_CAMERA_CATCHER_API_URL si existe
+  // 3. Si es local (isLocal): 'http://localhost:8085'
+  // 4. Si es servidor cloud y no hay URL configurada: null
+  let backendUrl = null;
+  if (customUrl) {
+    backendUrl = customUrl;
+  } else if (envUrl) {
+    backendUrl = envUrl;
+  } else if (isLocal) {
+    backendUrl = 'http://localhost:8085';
+  } else {
+    backendUrl = null;
+  }
 
   return {
     isLocal,
@@ -53,13 +72,29 @@ export function getEnvironmentInfo() {
     databaseId,
     storageBucket,
     dispatchTarget: isLocal
-      ? `HTTP Directo (http://localhost:8085) + Firestore [${databaseId}] + Storage [${storageBucket}]`
-      : `Firestore Event Bus [${databaseId}] (camera_catcher/commands)`,
+      ? `HTTP Directo (${backendUrl || 'http://localhost:8085'}) + Firestore [${databaseId}] + Storage [${storageBucket}]`
+      : (backendUrl
+          ? `Túnel Seguro (${backendUrl}) + Firestore [${databaseId}] + Storage [${storageBucket}]`
+          : `Firestore Event Bus [${databaseId}] (camera_catcher/commands)`),
     backendUrl,
     hasCustomUrl: !!customUrl,
     hasCustomDb: !!customDb,
     hasCustomStorage: !!customStorage
   };
+}
+
+/**
+ * Permite actualizar dinámicamente la URL del backend/túnel en localStorage
+ * @param {string|null} url - URL del backend (ej: https://stream.tudominio.com)
+ */
+export function setCustomBackendUrl(url) {
+  if (typeof localStorage === 'undefined') return;
+  const trimmed = typeof url === 'string' ? url.trim().replace(/\/+$/, '') : '';
+  if (!trimmed) {
+    localStorage.removeItem('CAMERA_CATCHER_API_URL');
+  } else {
+    localStorage.setItem('CAMERA_CATCHER_API_URL', trimmed);
+  }
 }
 
 /**

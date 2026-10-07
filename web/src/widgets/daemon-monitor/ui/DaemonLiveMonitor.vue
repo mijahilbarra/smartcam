@@ -9,8 +9,9 @@ import { useDaemonState } from '@/entities/daemon/model/useDaemonState';
 import { useTriggerCapture } from '@/features/trigger-capture/model/useTriggerCapture';
 import { useQuadrants } from '@/entities/quadrant/model/useQuadrants';
 import { hexToRgba, toPointObject, ensureNorm01, boxNormToPolygonNorm } from '@/shared/lib/geometry';
+import { IS_LOCAL_ENV } from '@/shared/api/firebase';
 
-const emit = defineEmits(['open-calibrator-photo']);
+const emit = defineEmits(['open-calibrator-photo', 'open-settings']);
 
 const {
   daemonState,
@@ -51,23 +52,41 @@ const onStreamLoad = () => {
 };
 
 const reloadStream = () => {
+  if (!streamUrl.value) return;
   streamLoaded.value = false;
   streamActive.value = false;
   streamKey.value = Date.now();
   setTimeout(() => {
-    streamActive.value = true;
+    if (streamUrl.value) {
+      streamActive.value = true;
+    }
   }, 150);
 };
 
 const onStreamError = () => {
   streamActive.value = false;
   streamLoaded.value = false;
+  if (!streamUrl.value) return;
   console.info('[LiveStream] Reconectando flujo MJPEG...');
   setTimeout(() => {
-    streamKey.value = Date.now();
-    streamActive.value = true;
+    if (streamUrl.value) {
+      streamKey.value = Date.now();
+      streamActive.value = true;
+    }
   }, 2500);
 };
+
+// Reconectar y reactivar el stream automáticamente cuando streamUrl cambie
+watch(streamUrl, (newUrl) => {
+  if (newUrl) {
+    streamActive.value = true;
+    streamLoaded.value = false;
+    streamKey.value = Date.now();
+  } else {
+    streamActive.value = false;
+    streamLoaded.value = false;
+  }
+});
 
 const onTriggerClick = () => {
   triggerCapture(addLog);
@@ -557,15 +576,42 @@ onMounted(() => {
 
           <!-- Canvas Overlay for Quadrants, YOLO boxes & Biometry badges -->
           <canvas
+            v-if="streamUrl"
             ref="canvasRef"
             width="1024"
             height="576"
             class="absolute inset-0 w-full h-full object-contain pointer-events-none z-10"
           ></canvas>
 
+          <!-- Estado informativo: Túnel HTTPS no configurado en entorno cloud -->
+          <div
+            v-if="!streamUrl && !IS_LOCAL_ENV"
+            class="absolute inset-0 flex flex-col items-center justify-center text-center p-6 bg-slate-950/90 text-slate-400 gap-3 z-30"
+          >
+            <div class="p-3.5 bg-slate-900 rounded-full border border-slate-800 text-amber-400 shadow-lg">
+              <AppIcon name="videocam_off" :size="36" />
+            </div>
+            <div class="flex flex-col gap-1 items-center max-w-md">
+              <h3 class="text-base font-semibold text-slate-100 flex items-center gap-1.5">
+                Túnel HTTPS no configurado
+              </h3>
+              <p class="text-xs text-slate-400 leading-relaxed">
+                Para ver la transmisión en vivo y telemetría SSE desde producción, configura la URL pública de tu túnel HTTPS en Ajustes.
+              </p>
+            </div>
+            <AppButton
+              variant="secondary"
+              icon="settings"
+              class="text-xs mt-1"
+              @click="emit('open-settings')"
+            >
+              Abrir Ajustes
+            </AppButton>
+          </div>
+
           <!-- Fallback when stream is inactive and no image is loaded yet -->
           <div
-            v-if="!streamActive && !currentLoadedImage && !canvasImageData.imageUrl"
+            v-else-if="!streamActive && !currentLoadedImage && !canvasImageData.imageUrl"
             class="absolute inset-0 flex flex-col items-center justify-center text-center p-6 bg-slate-950/85 text-slate-400 gap-2 z-20"
           >
             <div class="p-3 bg-slate-900 rounded-full border border-slate-800 text-slate-400">
@@ -582,12 +628,12 @@ onMounted(() => {
         <div class="flex flex-wrap items-center gap-2 pt-1">
           <StatPill
             label="Transmisión"
-            :value="streamActive && streamLoaded ? 'En Vivo' : 'Fotograma Continuo'"
-            :value-class="streamActive && streamLoaded ? 'text-red-400 font-bold' : 'text-emerald-400 font-medium'"
+            :value="!streamUrl && !IS_LOCAL_ENV ? 'Sin Túnel' : (streamActive && streamLoaded ? 'En Vivo' : 'Fotograma Continuo')"
+            :value-class="!streamUrl && !IS_LOCAL_ENV ? 'text-amber-400 font-medium' : (streamActive && streamLoaded ? 'text-red-400 font-bold' : 'text-emerald-400 font-medium')"
           />
           <StatPill
             label="YOLO Streaming"
-            :value="isYoloStreaming ? 'SSE Directo (<20ms)' : 'Conectando...'"
+            :value="!streamUrl && !IS_LOCAL_ENV ? 'Túnel requerido' : (isYoloStreaming ? 'SSE Directo (<20ms)' : 'Conectando...')"
             :value-class="isYoloStreaming ? 'text-emerald-400 font-bold' : 'text-slate-400'"
           />
           <StatPill label="Inferencia ML" :value="canvasImageData.inferenceMs ? `${canvasImageData.inferenceMs} ms` : 'En tiempo real'" />
