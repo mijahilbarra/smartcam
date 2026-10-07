@@ -4,6 +4,7 @@ import AppIcon from '@/shared/ui/atoms/AppIcon.vue';
 import AppButton from '@/shared/ui/atoms/AppButton.vue';
 import AppBadge from '@/shared/ui/atoms/AppBadge.vue';
 import AppSpinner from '@/shared/ui/atoms/AppSpinner.vue';
+import ClientPhotosModal from './ClientPhotosModal.vue';
 import { usePeople } from '@/entities/person/model/usePeople';
 import { formatDateTime } from '@/shared/lib/date-utils';
 
@@ -16,7 +17,20 @@ const sortBy = ref('lastSeen'); // 'lastSeen' | 'visits' | 'name'
 const editingId = ref(null);
 const editingName = ref('');
 const updatingId = ref(null);
-const previewPerson = ref(null);
+
+// Estado de modal de fotos y ángulos
+const selectedPersonForPhotos = ref(null);
+const isPhotosModalOpen = ref(false);
+
+const openPhotosModal = (person) => {
+  selectedPersonForPhotos.value = person;
+  isPhotosModalOpen.value = true;
+};
+
+const closePhotosModal = () => {
+  isPhotosModalOpen.value = false;
+  selectedPersonForPhotos.value = null;
+};
 
 const {
   people,
@@ -162,11 +176,13 @@ const onDeletePerson = async (person) => {
 
       <div class="flex items-center gap-2 sm:gap-3 flex-wrap">
         <div class="flex items-center gap-1.5 text-xs">
-          <span class="px-2.5 py-1 rounded-lg bg-sky-950/70 text-sky-300 border border-sky-500/30 font-medium">
-            ✂️ {{ barbersCount }} Barberos
+          <span class="px-2.5 py-1 rounded-lg bg-sky-950/70 text-sky-300 border border-sky-500/30 font-medium flex items-center gap-1.5">
+            <AppIcon name="content_cut" :size="14" />
+            <span>{{ barbersCount }} Barberos</span>
           </span>
-          <span class="px-2.5 py-1 rounded-lg bg-amber-950/60 text-amber-300 border border-amber-500/30 font-medium">
-            ⭐ {{ frequentCount }} Frecuentes
+          <span class="px-2.5 py-1 rounded-lg bg-amber-950/60 text-amber-300 border border-amber-500/30 font-medium flex items-center gap-1.5">
+            <AppIcon name="star" :size="14" />
+            <span>{{ frequentCount }} Frecuentes</span>
           </span>
         </div>
 
@@ -293,17 +309,16 @@ const onDeletePerson = async (person) => {
             <div class="flex items-center gap-2.5 min-w-0">
               <!-- Avatar con Miniatura Facial Real o fallback -->
               <div
-                @click="person.thumbnailBase64 ? (previewPerson = person) : null"
+                @click="openPhotosModal(person)"
                 :class="[
-                  'w-14 h-14 rounded-xl flex items-center justify-center font-bold text-sm shrink-0 border overflow-hidden relative shadow-md transition-all',
-                  person.thumbnailBase64 ? 'cursor-pointer hover:scale-105 hover:ring-2 hover:ring-sky-400 hover:shadow-sky-500/20' : '',
+                  'w-14 h-14 rounded-xl flex items-center justify-center font-bold text-sm shrink-0 border overflow-hidden relative shadow-md transition-all cursor-pointer hover:scale-105 hover:ring-2 hover:ring-sky-400 hover:shadow-sky-500/20',
                   person.isStaff
                     ? 'bg-sky-950 text-sky-300 border-sky-500/50 shadow-sky-950/40'
                     : (person.visitCount > 1
                       ? 'bg-amber-950 text-amber-300 border-amber-500/40'
                       : 'bg-emerald-950 text-emerald-300 border-emerald-500/30')
                 ]"
-                :title="person.thumbnailBase64 ? 'Clic para ampliar foto facial' : ''"
+                title="Ver fotos y ángulos biométricos"
               >
                 <img
                   v-if="person.thumbnailBase64"
@@ -405,6 +420,16 @@ const onDeletePerson = async (person) => {
 
             <div class="flex items-center justify-between">
               <span class="flex items-center gap-1.5">
+                <AppIcon name="collections" :size="14" class="text-slate-500" />
+                <span>Ángulos guardados:</span>
+              </span>
+              <span class="font-mono text-sky-300 font-semibold">
+                {{ person.photos?.length || person.embeddings?.length || 1 }}
+              </span>
+            </div>
+
+            <div class="flex items-center justify-between">
+              <span class="flex items-center gap-1.5">
                 <AppIcon name="center_focus_strong" :size="14" class="text-slate-500" />
                 <span>Nitidez facial:</span>
               </span>
@@ -415,13 +440,36 @@ const onDeletePerson = async (person) => {
 
             <div class="flex items-center justify-between pt-1 border-t border-slate-800/50 text-[10px] text-slate-500">
               <span class="flex items-center gap-1">
-                <AppIcon name="schedule" :size="13" class="text-slate-500" />
-                <span>Última vez:</span>
+                <AppIcon name="login" :size="13" class="text-emerald-500" />
+                <span>Entrada:</span>
               </span>
-              <span v-if="person.lastSeen" class="font-mono text-slate-300">{{ formatDateTime(person.lastSeen) }}</span>
+              <span v-if="person.firstSeen" class="font-mono text-slate-300 truncate max-w-[130px]" :title="formatDateTime(person.firstSeen)">
+                {{ formatDateTime(person.firstSeen) }}
+              </span>
+              <span v-else class="text-slate-600 italic">Sin registro</span>
+            </div>
+
+            <div class="flex items-center justify-between text-[10px] text-slate-500">
+              <span class="flex items-center gap-1">
+                <AppIcon name="schedule" :size="13" class="text-amber-500" />
+                <span>Salida / Última vez:</span>
+              </span>
+              <span v-if="person.lastSeen" class="font-mono text-slate-300 truncate max-w-[130px]" :title="formatDateTime(person.lastSeen)">
+                {{ formatDateTime(person.lastSeen) }}
+              </span>
               <span v-else class="text-slate-600 italic">Sin registro</span>
             </div>
           </div>
+
+          <!-- Botón de Acción: Ver Galería de Fotos -->
+          <button
+            type="button"
+            @click="openPhotosModal(person)"
+            class="w-full flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-lg text-xs font-medium bg-slate-900/90 hover:bg-slate-800 text-sky-300 hover:text-sky-200 border border-slate-800 hover:border-sky-500/40 transition select-none cursor-pointer"
+          >
+            <AppIcon name="photo_library" :size="14" />
+            <span>Ver fotos ({{ person.photos?.length || person.embeddings?.length || 1 }})</span>
+          </button>
 
           <!-- Bottom Row: Manual Role Switch Button & Delete -->
           <div class="flex items-center gap-2 pt-1">
@@ -459,53 +507,11 @@ const onDeletePerson = async (person) => {
       </div>
     </div>
 
-    <!-- Modal de Vista Previa Facial Ampliada -->
-    <div
-      v-if="previewPerson"
-      @click="previewPerson = null"
-      class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
-    >
-      <div
-        @click.stop
-        class="bg-slate-900 border border-slate-700/80 rounded-2xl max-w-sm w-full p-5 shadow-2xl relative flex flex-col items-center gap-4 text-center animate-in fade-in zoom-in-95 duration-150"
-      >
-        <button
-          @click="previewPerson = null"
-          class="absolute top-3 right-3 text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition cursor-pointer"
-          title="Cerrar"
-        >
-          <AppIcon name="close" :size="20" />
-        </button>
-
-        <div class="w-48 h-48 rounded-2xl overflow-hidden border-2 border-sky-500/60 shadow-xl shadow-sky-950/50 bg-slate-950">
-          <img
-            :src="previewPerson.thumbnailBase64"
-            :alt="previewPerson.name"
-            class="w-full h-full object-cover"
-          />
-        </div>
-
-        <div class="space-y-1">
-          <h3 class="text-lg font-bold text-white">{{ previewPerson.name }}</h3>
-          <p class="text-xs text-slate-400 font-mono">{{ previewPerson.id }}</p>
-        </div>
-
-        <div class="flex items-center gap-2">
-          <span
-            :class="[
-              'px-3 py-1 rounded-full text-xs font-bold border',
-              previewPerson.isStaff
-                ? 'bg-sky-950 text-sky-300 border-sky-500/40'
-                : 'bg-emerald-950 text-emerald-300 border-emerald-500/40'
-            ]"
-          >
-            {{ previewPerson.isStaff ? 'Barbero / Personal' : 'Cliente' }}
-          </span>
-          <span v-if="previewPerson.bestFaceScore" class="text-xs text-emerald-400 bg-slate-800/80 px-2.5 py-1 rounded-full border border-slate-700">
-            Nitidez: {{ previewPerson.bestFaceScore }}%
-          </span>
-        </div>
-      </div>
-    </div>
+    <!-- Modal de Galería e Inspector de Fotos y Ángulos -->
+    <ClientPhotosModal
+      :show="isPhotosModalOpen"
+      :person="selectedPersonForPhotos"
+      @close="closePhotosModal"
+    />
   </section>
 </template>

@@ -28,6 +28,8 @@ export function usePeople() {
           bestFaceScore: data.bestFaceScore ?? 0,
           thumbnailBase64: data.thumbnailBase64 || null,
           thumbnailPath: data.thumbnailPath || data.lastThumbnailPath || null,
+          photos: Array.isArray(data.photos) ? data.photos : [],
+          embeddings: Array.isArray(data.embeddings) ? data.embeddings : (data.embedding ? [data.embedding] : []),
           firstSeen: data.firstSeen || null,
           lastSeen: data.lastSeen || null
         });

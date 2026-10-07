@@ -422,6 +422,9 @@ const updatedClientDoc = firestoreStorage.get("client_enrique");
 assert.ok(Array.isArray(updatedClientDoc.embeddings), "Debe tener galería de embeddings");
 assert.ok(updatedClientDoc.embeddings.length >= 2, "Debe haber anexado el nuevo ángulo a la galería");
 assert.ok(updatedClientDoc.embeddings.length <= 6, "No debe exceder el límite de 6 ángulos");
+assert.ok(Array.isArray(updatedClientDoc.photos), "Debe tener galería de photos");
+assert.ok(updatedClientDoc.photos.length >= 1, "Debe haber anexado la foto a la galería de photos");
+assert.ok(updatedClientDoc.photos.length <= 6, "No debe exceder el límite de 6 fotos");
 console.log(`-> Sesión activa gobernó detección: asignado a ${updatedClientDoc.name} con ${updatedClientDoc.embeddings.length} ángulos en galería.`);
 
 // Verificación de tope máximo de 6 ángulos en galería
@@ -494,7 +497,12 @@ assert.ok(createdClientDoc, "Debe existir el nuevo cliente en Firestore");
 assert.ok(Array.isArray(createdClientDoc.embeddings), "El nuevo cliente debe tener array de embeddings");
 assert.strictEqual(createdClientDoc.embeddings.length, 1, "Debe iniciar con 1 embedding en embeddings");
 assert.ok(Array.isArray(createdClientDoc.embedding), "Debe mantener compatibilidad con embedding singular");
-console.log("-> Inicialización de embeddings en creación de nuevo cliente validada exitosamente.");
+assert.ok(Array.isArray(createdClientDoc.photos), "El nuevo cliente debe tener array de photos");
+assert.strictEqual(createdClientDoc.photos.length, 1, "Debe iniciar con 1 foto en photos");
+assert.ok(createdClientDoc.photos[0].thumbnailBase64, "La foto debe tener thumbnailBase64");
+assert.strictEqual(typeof createdClientDoc.photos[0].sharpnessScore, "number", "La foto debe tener sharpnessScore numérico");
+assert.ok(createdClientDoc.photos[0].capturedAt, "La foto debe tener capturedAt");
+console.log("-> Inicialización de embeddings y photos en creación de nuevo cliente validada exitosamente.");
 
 console.log("\n🎉 ¡Todos los tests del pipeline funcional de procesos pasaron exitosamente!");
 
