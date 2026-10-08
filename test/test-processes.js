@@ -8,8 +8,10 @@ import {
   extractClientCrops,
   runProcessCycle,
   acquireClearFrame,
-  reidentifyPeople
+  reidentifyPeople,
+  enrichCropsWithClearStream
 } from "../src/services/processes.js";
+import { enrichCropsWithClearStream as enrichCropsDirect } from "../src/services/pipeline/clear_stream_step.js";
 import { CaptureOrchestrator } from "../src/services/capture_orchestrator.js";
 import { PersonTracker } from "../src/core/person_tracker.js";
 import { identifyFace, extractFaceEmbedding } from "../src/face_recognizer.js";
@@ -283,6 +285,46 @@ await runProcessCycle({
 }, { triggerSource: "realtime", asyncClear: true });
 assert.strictEqual(asyncClearCalled, true, "asyncClear debe disparar la captura reactiva");
 console.log("-> asyncClear no bloqueante en runProcessCycle validado exitosamente.");
+
+// 8b. enrichCropsWithClearStream (prueba unitaria aislada de la etapa)
+console.log("\n[8b] Probando enrichCropsWithClearStream como función pura y desacoplada...");
+assert.strictEqual(typeof enrichCropsWithClearStream, "function", "enrichCropsWithClearStream debe ser re-exportada desde processes.js");
+assert.strictEqual(enrichCropsWithClearStream, enrichCropsDirect, "La función re-exportada debe ser idéntica a la del step");
+
+const testIsolatedTrack = {
+  trackId: 77,
+  box: [64, 36, 512, 288],
+  confidence: 0.90,
+  currentQuadrant: {
+    id: "silla_corte_aislada",
+    name: "Silla Aislada",
+    type: "barber_chair",
+    capturePerson: true,
+    role: "client"
+  },
+  sharpnessScore: 30,
+  bestFace: null
+};
+
+const isolatedMlResult = {
+  origWidth: 640,
+  origHeight: 360,
+  clientCrops: []
+};
+
+await enrichCropsWithClearStream({
+  activeTracks: [testIsolatedTrack],
+  mlResult: isolatedMlResult,
+  options: {
+    acquireClearFrame: async () => dummyClearFrame
+  },
+  docId: "test_doc_isolated"
+});
+
+assert.strictEqual(isolatedMlResult.clientCrops.length, 1, "Debe haber generado 1 clientCrop de alta resolución");
+assert.strictEqual(isolatedMlResult.clientCrops[0].isHighRes, true, "El recorte generado debe tener isHighRes: true");
+assert.ok(isolatedMlResult.clientCrops[0].buffer, "El recorte debe tener buffer generado con Sharp");
+console.log("-> enrichCropsWithClearStream procesó y generó recortes de alta resolución de forma aislada.");
 
 // 9. identifyFace: Galería Multi-Ángulo y umbral por defecto 0.50
 console.log("\n[9] Probando comparación multi-ángulo en identifyFace...");

@@ -84,7 +84,9 @@ El repositorio utiliza GitHub Actions con filtros por ruta (`paths:`):
 > Para asegurar que el agente encargado de resolver la tarea trabaje con un contexto limpio, sin ruido ni sobrecarga del historial previo de la conversación:
 > 1. **El Agente Principal actúa como Orquestador**: Analiza la solicitud, dialoga con el usuario, diseña la estrategia y valida los resultados finales.
 > 2. **Delegación sistemática mediante `invoke_subagent`**: Toda modificación de código, refactorización, resolución de bugs o investigación técnica debe ser delegada a un subagente especializado.
-> 3. **Prompt autónomo y detallado**: Cada subagente debe recibir un prompt claro y auto-contenido con los antecedentes exactos, archivos a intervenir, restricciones de arquitectura y pasos de verificación que debe cumplir antes de reportar el resultado.
+> 3. **Ahorro de Tokens y Jerarquía de Modelos**:
+>    - Los subagentes deben ser invocados con modelos más ligeros y rápidos (ej. `Model: 'flash'` / Gemini Flash / Low) para optimizar costos de cómputo y consumo de tokens, mientras el agente principal orquestador opera en un modelo superior (High).
+>    - **Obligación de Instrucción Quirúrgica**: Como contrapartida indispensable de emplear un modelo más ligero en los subagentes, el agente orquestador (High) tiene la **obligación estricta** de suministrar un prompt y conjunto de instrucciones totalmente detallado, quirúrgico y exhaustivo, con todo el contexto necesario, rutas absolutas exactas de archivos, contratos de interfaz, restricciones y pasos de verificación que debe cumplir antes de reportar el resultado, evitando bajo cualquier circunstancia instrucciones vagas o ambiguas.
 
 ---
 
@@ -95,6 +97,17 @@ El repositorio utiliza GitHub Actions con filtros por ruta (`paths:`):
 > 1. **Reemplazo Radical y Definitivo**: El nuevo paradigma reemplaza por completo al anterior. Queda terminantemente prohibido mantener "dos formas paralelas", switchers de alternancia innecesarios ("Modo A vs Modo B") o vistas intermedias redundantes por miedo a romper lo anterior.
 > 2. **Depuración de Elementos Obsoletos**: Todo componente que pierda sentido con la nueva arquitectura debe eliminarse de raíz (por ejemplo: el contador/cron regresivo de 15 minutos, las barras de espera de captura y las fases antiguas del ciclo).
 > 3. **Fuente Única de Verdad (Single Source of Truth)**: La interfaz y el backend deben ofrecer una experiencia limpia, unificada y coherente con el nuevo paradigma, presentando directamente la sesión en vivo y la analítica en tiempo real.
+
+---
+
+### 8. Arquitectura Limpia del Pipeline Core (Prohibición Estricta de Ensuciar processes.js)
+> [!CAUTION]
+> **PROHIBICIÓN ESTRICTA DE ENSUCIAR `processes.js` CON LÓGICA DE DETALLE**.
+> El archivo [`src/services/processes.js`](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/src/services/processes.js) es el **orquestador declarativo principal del backend** y debe mantenerse estrictamente limpio, lineal y conciso (< 120-150 líneas en total, con `runProcessCycle` < 90 líneas).
+> 1. **Prohibición de Lógica Procedural Interna**: Queda terminantemente prohibido que los agentes coloquen lógica de detalle de un step (manipulación de buffers con Sharp, transformaciones de coordenadas, bucles anidados de persistencia, sockets, reescalados, etc.) directamente dentro de `processes.js` o en el cuerpo de `runProcessCycle`.
+> 2. **Modularización Obligatoria en `src/services/pipeline/`**: Cada paso del pipeline debe vivir en su propio módulo independiente bajo [`src/services/pipeline/`](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/src/services/pipeline) con interfaces puras y testeables (`acquisition_step.js`, `clear_stream_step.js`, `detection_step.js`, `tracking_step.js`, `biometrics_step.js`, `visits_step.js`, `occupancy_step.js`, `telemetry_step.js`, `persistence_step.js`).
+> 3. **Regla de Extensión de Nuevas Funcionalidades**: Si se necesita agregar una nueva funcionalidad, paso o etapa al pipeline, NUNCA se debe agregar código procedural dentro de `processes.js`. Se DEBE crear una nueva etapa modularizada en su propio archivo dentro de `src/services/pipeline/` (ej: `nuevo_step.js`) y luego solo importarse e invocarse limpiamente en la secuencia lineal de `processes.js`.
+> 4. **Re-exportación y Compatibilidad**: `processes.js` actúa como fachada re-exportando las funciones públicas de cada step para preservar 100% de compatibilidad hacia atrás con el resto del sistema y las suites de test.
 
 ---
 
@@ -114,5 +127,5 @@ El repositorio utiliza GitHub Actions con filtros por ruta (`paths:`):
    - Inferencia multimodal sobre el fotograma capturado según el prompt dinámico configurado.
 6. **Frontend Web Dashboard (`web/`)**:
    - Vue 3 + Tailwind CSS + Vite y Firebase SDK para monitoreo y control en tiempo real desde navegadores.
-7. **Pipeline Funcional Core (`src/services/processes.js` & `agent/PROCESSES.md`)**:
-   - **Pipeline Core del Sistema**: Descomposición funcional lineal en 10 etapas puras y declarativas para adquisición de fotogramas (0ms RAM en tiempo real o Stream Clear 2560x1440 reactivo), inferencia local YOLOv8, seguimiento continuo de personas (`PersonTracker`), biometría gobernada por sesión temporal con galería multi-ángulo (`VisitSessionService` + ArcFace MobileFaceNet), cálculo funcional de ocupación y emisión SSE de telemetría. Especificación canónica y guía de extensión detalladas en [`agent/PROCESSES.md`](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/PROCESSES.md).
+7. **Pipeline Funcional Core (`src/services/processes.js`, `src/services/pipeline/` & `agent/PROCESSES.md`)**:
+   - **Pipeline Core del Sistema**: Orquestador lineal de alto nivel (`src/services/processes.js`, < 110 líneas) descompuesto en etapas puras y declarativas bajo `src/services/pipeline/` para adquisición de fotogramas (0ms RAM en tiempo real o Stream Clear 2560x1440 reactivo en `clear_stream_step.js`), inferencia local YOLOv8 (`detection_step.js`), seguimiento continuo de personas (`tracking_step.js`), biometría gobernada por sesión con galería multi-ángulo (`biometrics_step.js` + `VisitSessionService` + ArcFace MobileFaceNet), gestión de visitas (`visits_step.js`), cálculo funcional de ocupación (`occupancy_step.js`), emisión SSE de telemetría (`telemetry_step.js`) y persistencia atómica (`persistence_step.js`). Especificación canónica y guía de extensión detalladas en [`agent/PROCESSES.md`](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/PROCESSES.md).
