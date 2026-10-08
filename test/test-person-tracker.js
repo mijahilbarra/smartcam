@@ -75,4 +75,43 @@ assert.strictEqual(tracker.historyTracks.length, 1, "Persona 2 debe estar en el 
 assert.strictEqual(tracker.historyTracks[0].trackId, 2);
 console.log("-> Salida de persona e historial validados exitosamente.");
 
+// Frame 5: Desplazamiento rápido donde IoU = 0 (Persona 1 da varios pasos rápidos)
+console.log("\n[5] Desplazamiento rápido con IoU = 0 (Centroid proximity fallback)...");
+// Caja anterior de Persona 1 era [105, 102, 205, 305] (ancho 100, alto 203, cx=155, cy=203)
+// Nueva caja desplazada a [220, 110, 320, 310] (cx=270, cy=210, dx=115px).
+// [105..205] y [220..320] NO se solapan (IoU = 0).
+const fastMovingDets = [
+  { class: "person", score: 0.88, box: [220, 110, 320, 310] }
+];
+const centroidTracks = tracker.update(fastMovingDets, quadrants);
+assert.strictEqual(centroidTracks.length, 1, "Debe haber 1 track activo");
+assert.strictEqual(centroidTracks[0].trackId, 1, "Debe preservar trackId = 1 gracias a la proximidad de centroides a pesar de IoU = 0");
+console.log("-> Preservación de trackId ante desplazamiento rápido (IoU = 0) validada exitosamente.");
+
+// Frame 6: Conflicto en Silla de Barbero con 2 personas (Barbero de pie vs Cliente sentado)
+console.log("\n[6] Conflicto en Silla de Barbero: 2 personas en la misma silla...");
+const chairZone = {
+  id: "silla_corte_principal",
+  name: "Silla de Corte",
+  type: "barber_chair",
+  box: [50, 50, 400, 450]
+};
+const twoInChairTracker = new PersonTracker();
+const twoPeopleDets = [
+  // Barbero de pie: cabeza alta (y1 = 60), altura 300px
+  { class: "person", score: 0.92, box: [80, 60, 200, 360] },
+  // Cliente sentado: cabeza más baja (y1 = 180), altura 200px
+  { class: "person", score: 0.89, box: [180, 180, 320, 380] }
+];
+const chairTracks = twoInChairTracker.update(twoPeopleDets, [chairZone]);
+assert.strictEqual(chairTracks.length, 2, "Debe haber 2 tracks en la silla");
+
+const barberTrack = chairTracks.find(t => t.isStaffHint === true);
+const clientTrack = chairTracks.find(t => t.isStaffHint === false);
+assert.ok(barberTrack, "Debe haber identificado al barbero de pie como staff");
+assert.ok(clientTrack, "Debe haber identificado al cliente sentado");
+assert.strictEqual(barberTrack.role, "staff");
+assert.strictEqual(clientTrack.role, "client");
+console.log("-> Discriminación de Barbero (Staff de pie) vs Cliente (sentado) validada exitosamente.");
+
 console.log("\n🎉 ¡Todos los tests de PersonTracker pasaron exitosamente!");

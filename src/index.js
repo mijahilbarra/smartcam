@@ -164,7 +164,7 @@ registerFirestoreListeners({
   onManualCapture: (src) => orchestrator.execute(src)
 });
 
-const DEFAULT_REALTIME_INTERVAL_MS = Number(process.env.REALTIME_INTERVAL_MS) || 1500;
+const DEFAULT_REALTIME_INTERVAL_MS = Number(process.env.REALTIME_INTERVAL_MS) || 450;
 let realtimeLoopInterval = null;
 
 export function startRealtimeLoop(intervalMs = DEFAULT_REALTIME_INTERVAL_MS) {
@@ -182,7 +182,7 @@ export function startRealtimeLoop(intervalMs = DEFAULT_REALTIME_INTERVAL_MS) {
       console.warn("[RealtimeLoop] Aviso en ciclo de visión:", err.message);
     }
   }, intervalMs);
-  console.log(`[RealtimeLoop] Bucle de visión continua activo cada ${intervalMs / 1000}s.`);
+  console.log(`[RealtimeLoop] Bucle de visión continua activo cada ${intervalMs / 1000}s (${(1000 / intervalMs).toFixed(1)} FPS).`);
 }
 
 export function stopRealtimeLoop() {

@@ -87,6 +87,78 @@ export class PersonTracker {
       }
     }
 
+    // 1b. Etapa 2: Emparejamiento por proximidad euclidiana de centroides
+    // Para personas que se desplazan rápido o cambian de postura entre fotogramas (evita saltos de trackId)
+    const centroidMatches = [];
+    const maxCentroidDist = Math.max(imgWidth, imgHeight) * 0.32;
+
+    for (let tIdx = 0; tIdx < trackEntries.length; tIdx++) {
+      const [tId, track] = trackEntries[tIdx];
+      if (matchedTrackIds.has(tId)) continue;
+
+      for (let dIdx = 0; dIdx < personDetections.length; dIdx++) {
+        if (matchedDetectionIndices.has(dIdx)) continue;
+        const det = personDetections[dIdx];
+        const detCx = (det.box[0] + det.box[2]) / 2;
+        const detCy = (det.box[1] + det.box[3]) / 2;
+
+        const trackCx = track.centroid?.x ?? ((track.box[0] + track.box[2]) / 2);
+        const trackCy = track.centroid?.y ?? ((track.box[1] + track.box[3]) / 2);
+
+        const dx = trackCx - detCx;
+        const dy = trackCy - detCy;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+
+        const trackW = Math.abs(track.box[2] - track.box[0]);
+        const trackH = Math.abs(track.box[3] - track.box[1]);
+        const allowedDist = Math.max(trackW, trackH, 90) * 1.6;
+
+        if (dist <= Math.min(allowedDist, maxCentroidDist)) {
+          centroidMatches.push({ tId, dIdx, dist });
+        }
+      }
+    }
+
+    centroidMatches.sort((a, b) => a.dist - b.dist);
+
+    for (const match of centroidMatches) {
+      if (matchedTrackIds.has(match.tId) || matchedDetectionIndices.has(match.dIdx)) {
+        continue;
+      }
+      matchedTrackIds.add(match.tId);
+      matchedDetectionIndices.add(match.dIdx);
+
+      const track = this.activeTracks.get(match.tId);
+      const det = personDetections[match.dIdx];
+
+      track.box = det.box;
+      track.boxNorm = [
+        Number((det.box[1] / imgHeight).toFixed(4)),
+        Number((det.box[0] / imgWidth).toFixed(4)),
+        Number((det.box[3] / imgHeight).toFixed(4)),
+        Number((det.box[2] / imgWidth).toFixed(4))
+      ];
+      track.confidence = det.score;
+      track.lastSeen = now;
+      track.missedFrames = 0;
+      track.centroid = {
+        x: Math.round((det.box[0] + det.box[2]) / 2),
+        y: Math.round((det.box[1] + det.box[3]) / 2)
+      };
+
+      track.seenCount = (track.seenCount || 0) + 1;
+      const prevQuadrant = track.currentQuadrant;
+      track.currentQuadrant = this.findMatchingQuadrant(track.box, quadrants, imgWidth, imgHeight);
+      if (prevQuadrant?.id !== track.currentQuadrant?.id) {
+        track.quadrantChangedAt = now;
+      }
+      if (track.currentQuadrant && isChairZone(track.currentQuadrant)) {
+        track.consecutiveChairFrames = (track.consecutiveChairFrames || 0) + 1;
+      } else {
+        track.consecutiveChairFrames = 0;
+      }
+    }
+
     // 2. Gestionar tracks existentes no emparejados en este cuadro
     for (const [tId, track] of trackEntries) {
       if (!matchedTrackIds.has(tId)) {
@@ -130,11 +202,54 @@ export class PersonTracker {
           quadrantChangedAt: now,
           status: "unidentified", // unidentified -> identifying -> identified
           identity: null,
+          isStaffHint: false,
+          role: "client",
           bestFace: null,
           topFaces: [] // Almacena hasta las 10 mejores caras
         };
 
         this.activeTracks.set(tId, newTrack);
+      }
+    }
+
+    // 4. Resolución de conflicto en Sillas de Barbero:
+    // En una silla de corte solo puede haber 1 cliente sentado. El acompañante de pie es el barbero.
+    const chairTracksMap = new Map();
+    for (const track of this.activeTracks.values()) {
+      if (track.currentQuadrant?.type === "barber_chair") {
+        const qId = track.currentQuadrant.id;
+        if (!chairTracksMap.has(qId)) chairTracksMap.set(qId, []);
+        chairTracksMap.get(qId).push(track);
+      }
+    }
+
+    for (const [qId, tracksInChair] of chairTracksMap.entries()) {
+      if (tracksInChair.length > 1) {
+        // Si uno ya está identificado como staff/barbero, ese es el barbero
+        const staffTrack = tracksInChair.find(t => t.identity?.isStaff === true);
+        const nonStaffTracks = tracksInChair.filter(t => t.identity?.isStaff !== true);
+
+        if (staffTrack && nonStaffTracks.length > 0) {
+          staffTrack.isStaffHint = true;
+          staffTrack.role = "staff";
+          for (const nonStaff of nonStaffTracks) {
+            nonStaff.isStaffHint = false;
+            nonStaff.role = "client";
+          }
+        } else {
+          // Si ninguno está formalizado aún:
+          // El barbero de pie tiene su cabeza más alta (y1 menor / ymin menor) o mayor altura total.
+          // El cliente sentado tiene la cabeza más baja (y1 mayor).
+          tracksInChair.sort((a, b) => a.box[1] - b.box[1]);
+          const standingBarber = tracksInChair[0];
+          standingBarber.isStaffHint = true;
+          standingBarber.role = "staff";
+
+          for (let i = 1; i < tracksInChair.length; i++) {
+            tracksInChair[i].isStaffHint = false;
+            tracksInChair[i].role = "client";
+          }
+        }
       }
     }
 
@@ -192,7 +307,7 @@ export class PersonTracker {
   /**
    * Actualiza la identidad y el buffer de mejores caras para un track
    */
-  updateIdentityAndFace(trackId, { identity, faceBuffer, faceBoxNorm, sharpnessScore }) {
+  updateIdentityAndFace(trackId, { identity, faceBuffer, faceBoxNorm, sharpnessScore, thumbnailBase64, embedding }) {
     const track = this.activeTracks.get(trackId);
     if (!track) return false;
 
@@ -206,6 +321,8 @@ export class PersonTracker {
         faceBuffer,
         faceBoxNorm,
         sharpnessScore,
+        thumbnailBase64: thumbnailBase64 || identity?.thumbnailBase64 || null,
+        embedding: embedding || identity?.embedding || null,
         timestamp: new Date().toISOString()
       };
 

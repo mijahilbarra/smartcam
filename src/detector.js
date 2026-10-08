@@ -57,9 +57,9 @@ const __dirname = path.dirname(__filename);
 
 sharp.cache(false);
 
-const DEFAULT_MODEL = fs.existsSync(path.join(__dirname, "models", "yolov8n.onnx"))
-  ? path.join(__dirname, "models", "yolov8n.onnx")
-  : path.join(__dirname, "models", "yolov8s.onnx");
+const DEFAULT_MODEL = fs.existsSync(path.join(__dirname, "models", "yolov8s.onnx"))
+  ? path.join(__dirname, "models", "yolov8s.onnx")
+  : path.join(__dirname, "models", "yolov8n.onnx");
 
 const MODEL_PATH = process.env.ML_MODEL_PATH || DEFAULT_MODEL;
 
@@ -261,21 +261,28 @@ export async function generateAnnotatedImage(imageBuffer, quadrants, width, heig
  * @param {Object|number} options
  */
 export async function detectObjectsAndQuadrants(imageBuffer, options = {}) {
-  const confThreshold = typeof options === "number" ? options : (options.confThreshold || 0.52);
+  const defaultConf = process.env.ML_CONF_THRESHOLD ? parseFloat(process.env.ML_CONF_THRESHOLD) : 0.35;
+  const confThreshold = typeof options === "number" ? options : (options.confThreshold !== undefined ? options.confThreshold : defaultConf);
   const forceRecheck = typeof options === "object" && options.forceRecheck === true;
-  const changeThreshold = typeof options === "object" && options.changeThreshold ? options.changeThreshold : 2.5;
+  const isRealtime = typeof options === "object" && options.isRealtime === true;
+  const changeThreshold = typeof options === "object" && options.changeThreshold ? options.changeThreshold : (isRealtime ? 1.0 : 2.5);
   const shouldAnnotate = typeof options === "object" && options.generateAnnotated !== undefined ? options.generateAnnotated : false;
+  // En modo realtime continuo no congelar fotogramas si hay personas seguidas activas
+  const skipAllowed = typeof options === "object" && options.skipStatic !== undefined ? options.skipStatic : !isRealtime;
+  const maxSkips = isRealtime ? 1 : MAX_CONSECUTIVE_STATIC_SKIPS;
+
   // Comparación contra fotograma previo
   const diff = await checkFrameDifference(imageBuffer, changeThreshold);
   const canSkip = !forceRecheck &&
+    skipAllowed &&
     !diff.hasChanged &&
     lastDetectionResult &&
-    consecutiveStaticSkips < MAX_CONSECUTIVE_STATIC_SKIPS &&
+    consecutiveStaticSkips < maxSkips &&
     (lastDetectionResult.rawDetections?.length > 0);
 
   if (canSkip) {
     consecutiveStaticSkips++;
-    console.log(`[Detector] Escena estática (variación ${diff.diffPercent}% < umbral ${changeThreshold}%). Reutilizando análisis previo (0% CPU / 0 ms) [${consecutiveStaticSkips}/${MAX_CONSECUTIVE_STATIC_SKIPS}].`);
+    console.log(`[Detector] Escena estática (variación ${diff.diffPercent}% < umbral ${changeThreshold}%). Reutilizando análisis previo (0% CPU / 0 ms) [${consecutiveStaticSkips}/${maxSkips}].`);
     return {
       ...lastDetectionResult,
       inferenceMs: 0,
@@ -310,9 +317,9 @@ export async function detectObjectsAndQuadrants(imageBuffer, options = {}) {
       }
     }
 
-    // Para personas, exigir mínimo 0.52 de confianza para erradicar falsos positivos de siluetas de sillas y sombras
+    // Umbral adaptativo para personas: permite detectar con fluidez personas inclinadas o de espaldas
     const targetThreshold = COCO_CLASSES[maxClass] === "person"
-      ? Math.max(0.52, confThreshold)
+      ? (typeof options === "object" && options.confThreshold !== undefined ? options.confThreshold : Math.min(confThreshold, 0.38))
       : confThreshold;
 
     if (maxScore >= targetThreshold && COCO_CLASSES[maxClass]) {
