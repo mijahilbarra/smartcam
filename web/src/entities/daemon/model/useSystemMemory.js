@@ -1,11 +1,10 @@
-import { ref, computed, onMounted, onUnmounted, getCurrentInstance } from 'vue';
-import { getEnvironmentInfo } from '@/shared/api/firebase';
+import { ref, computed } from 'vue';
 
 // Referencia compartida a nivel de módulo (singleton)
 const systemMemory = ref(null);
 
 /**
- * Actualiza los datos de memoria del sistema desde SSE o fetch
+ * Actualiza los datos de memoria del sistema desde SSE o reportes del daemon
  * @param {Object} data
  */
 export function setSystemMemory(data) {
@@ -18,39 +17,6 @@ export function setSystemMemory(data) {
  * Composable para el monitoreo de uso de RAM en el daemon / VM
  */
 export function useSystemMemory() {
-  const fetchMemory = async () => {
-    try {
-      const env = getEnvironmentInfo();
-      const backendUrl = env?.backendUrl;
-      if (!backendUrl) return;
-
-      const res = await fetch(`${backendUrl}/`);
-      if (!res.ok) return;
-
-      const data = await res.json();
-      if (data && data.memory) {
-        setSystemMemory(data.memory);
-      }
-    } catch (_) {
-      // Backend en reposo o no disponible por red
-    }
-  };
-
-  let intervalId = null;
-
-  if (getCurrentInstance()) {
-    onMounted(() => {
-      fetchMemory();
-      intervalId = setInterval(fetchMemory, 10000);
-    });
-
-    onUnmounted(() => {
-      if (intervalId) {
-        clearInterval(intervalId);
-      }
-    });
-  }
-
   const memoryBadgeVariant = computed(() => {
     if (!systemMemory.value || typeof systemMemory.value.rssMB !== 'number') {
       return 'info';
@@ -74,7 +40,6 @@ export function useSystemMemory() {
   return {
     systemMemory,
     memoryBadgeVariant,
-    memoryLabel,
-    fetchMemory
+    memoryLabel
   };
 }

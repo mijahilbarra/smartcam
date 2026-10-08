@@ -5,11 +5,14 @@ import AppButton from '@/shared/ui/atoms/AppButton.vue';
 import AppBadge from '@/shared/ui/atoms/AppBadge.vue';
 import ModalTemplate from '@/shared/ui/templates/ModalTemplate.vue';
 import ModalHeader from '@/shared/ui/molecules/ModalHeader.vue';
+import DeleteAppointmentModal from './DeleteAppointmentModal.vue';
 import { useAppointments } from '@/entities/appointment/model/useAppointments';
+import { usePeople } from '@/entities/person/model/usePeople';
 
 const emit = defineEmits(['open-person', 'open-photo']);
 
-const { appointments, loading, error, refresh } = useAppointments();
+const { appointments, loading, error, refresh, deleteAppointment } = useAppointments();
+const { people, deletePerson } = usePeople();
 
 // Control de semana actual (fecha base de la semana seleccionada)
 const currentWeekBase = ref(new Date());
@@ -132,6 +135,57 @@ const openDetailModal = (apt) => {
 const closeDetailModal = () => {
   isDetailModalOpen.value = false;
   selectedAppointment.value = null;
+};
+
+// Estado de Eliminación de Atención
+const appointmentToDelete = ref(null);
+const isDeleteModalOpen = ref(false);
+const isDeleting = ref(false);
+
+const matchedPersonToDelete = computed(() => {
+  if (!appointmentToDelete.value) return null;
+  const pId = appointmentToDelete.value.personId || appointmentToDelete.value.clientId;
+  if (!pId) return null;
+  return people.value.find(p => p.id === pId) || null;
+});
+
+const promptDeleteAppointment = (apt) => {
+  appointmentToDelete.value = apt;
+  isDeleteModalOpen.value = true;
+};
+
+const closeDeleteModal = () => {
+  if (isDeleting.value) return;
+  isDeleteModalOpen.value = false;
+  appointmentToDelete.value = null;
+};
+
+const handleConfirmDelete = async ({ appointmentId, deleteUser, personId }) => {
+  if (!appointmentId) return;
+  isDeleting.value = true;
+  try {
+    // 1. Eliminar cita de Firestore y SQLite
+    await deleteAppointment(appointmentId, { deletePersonId: deleteUser ? personId : null });
+
+    // 2. Si se solicitó borrar también el usuario y tiene personId
+    if (deleteUser && personId) {
+      await deletePerson(personId);
+    }
+
+    // Cerrar modal de confirmación
+    isDeleteModalOpen.value = false;
+    appointmentToDelete.value = null;
+
+    // Si el modal de detalle estaba abierto para esta misma cita, cerrarlo
+    if (selectedAppointment.value?.id === appointmentId) {
+      closeDetailModal();
+    }
+  } catch (err) {
+    console.error('[AppointmentsCalendar] Error al eliminar:', err);
+    alert(`Error al eliminar: ${err.message}`);
+  } finally {
+    isDeleting.value = false;
+  }
 };
 
 const formatTimeOnly = (isoString) => {
@@ -307,9 +361,19 @@ const getPhotoSrc = (photo) => {
                 <AppIcon name="schedule" :size="13" />
                 {{ formatTimeOnly(apt.startTime) }} - {{ formatTimeOnly(apt.endTime) }}
               </span>
-              <span class="text-[10px] bg-slate-900/80 px-1.5 py-0.5 rounded text-slate-400 border border-slate-700/50">
-                {{ apt.durationMinutes || 45 }} min
-              </span>
+              <div class="flex items-center gap-1.5">
+                <span class="text-[10px] bg-slate-900/80 px-1.5 py-0.5 rounded text-slate-400 border border-slate-700/50">
+                  {{ apt.durationMinutes || 45 }} min
+                </span>
+                <button
+                  type="button"
+                  @click.stop="promptDeleteAppointment(apt)"
+                  class="p-1 rounded text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 transition cursor-pointer"
+                  title="Eliminar atención"
+                >
+                  <AppIcon name="delete" :size="14" />
+                </button>
+              </div>
             </div>
 
             <!-- Info del Cliente y Silla -->
@@ -470,25 +534,45 @@ const getPhotoSrc = (photo) => {
         </div>
 
         <!-- Acciones del Modal -->
-        <div class="flex items-center justify-end gap-3 pt-4 border-t border-slate-800">
+        <div class="flex items-center justify-between gap-3 pt-4 border-t border-slate-800">
           <AppButton
-            variant="secondary"
+            variant="danger-outline"
             size="sm"
-            @click="closeDetailModal"
-            class="bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700"
+            icon="delete"
+            @click="promptDeleteAppointment(selectedAppointment)"
           >
-            Cerrar
+            Eliminar Atención
           </AppButton>
-          <AppButton
-            variant="primary"
-            size="sm"
-            @click="closeDetailModal"
-            class="bg-blue-600 hover:bg-blue-500 text-white shadow"
-          >
-            Ver Historial Completo del Cliente
-          </AppButton>
+          <div class="flex items-center gap-3">
+            <AppButton
+              variant="secondary"
+              size="sm"
+              @click="closeDetailModal"
+              class="bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700"
+            >
+              Cerrar
+            </AppButton>
+            <AppButton
+              variant="primary"
+              size="sm"
+              @click="closeDetailModal"
+              class="bg-blue-600 hover:bg-blue-500 text-white shadow"
+            >
+              Ver Historial Completo del Cliente
+            </AppButton>
+          </div>
         </div>
       </div>
     </ModalTemplate>
+
+    <!-- Modal de Confirmación para Borrar Atención / Usuario -->
+    <DeleteAppointmentModal
+      :show="isDeleteModalOpen"
+      :appointment="appointmentToDelete"
+      :person="matchedPersonToDelete"
+      :loading="isDeleting"
+      @close="closeDeleteModal"
+      @confirm="handleConfirmDelete"
+    />
   </div>
 </template>
