@@ -24,7 +24,7 @@ Se implementa un **Simulador Local de la VM `e2-micro`** utilizando contenedores
 ### 1. Especificaciones de Simulación de Hardware (`docker-compose.e2-sim.yml`)
 * **Límite de Memoria RAM**: `1024M` (1 GB). Si Node.js o Sharp exceden 1024 MB, el kernel Linux dispara el OOM Killer (`exit code 137`) en local antes de llegar a GCP.
 * **Memoria Swap**: `2048M` (1 GB de RAM física + 1 GB de swap), idéntico al aprovisionamiento estándar de Ubuntu en GCP.
-* **Límite de CPU**: `1.0` core para reproducir con precisión el rendimiento de inferencia de ONNX Runtime (`yolov8n.onnx`) en CPU compartida.
+* **Límite de CPU**: `0.5` core para reproducir con fidelidad la CPU compartida de GCP `e2-micro` (0.25 vCPU sostenida sujeta a throttling tras agotar burst credits).
 * **Patrón Sibling Containers**: Se monta el socket `/var/run/docker.sock` del host para permitir que el daemon ejecute el contenedor Neolink P2P de forma idéntica a la VM.
 
 ### 2. Detección Inteligente de Entorno en el Frontend (`web/src/shared/lib/environment.js`)

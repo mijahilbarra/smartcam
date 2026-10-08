@@ -17,6 +17,8 @@ export class StreamServer {
     this.isRemoteRelay = false;
     this.remoteRelayUrl = null;
     this.remoteRelayInterval = null;
+    this.reconnectAttempts = 0;
+    this.reconnectTimer = null;
   }
 
   /**
@@ -128,6 +130,11 @@ export class StreamServer {
     if (this.isStarting) return;
     this.isStarting = true;
 
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
     console.log(`[Stream] Iniciando ingesta FFmpeg on-demand desde: ${this.rtspUrl} a ${this.fps} FPS...`);
 
     const args = [
@@ -155,11 +162,6 @@ export class StreamServer {
         if (this.isActive && Date.now() - lastFrameTime > 20000) {
           console.warn("[Stream Watchdog] Inactividad de fotogramas detectada (>20s). Reiniciando ingesta FFmpeg...");
           this.stopFfmpegStream(true);
-          setTimeout(() => {
-            if (this.isPersistent || this.clients.size > 0) {
-              this.startFfmpegStream(this.isPersistent);
-            }
-          }, 1500);
         }
       }, 5000);
 
@@ -190,6 +192,7 @@ export class StreamServer {
           chunkBuffer = chunkBuffer.slice(endIndex + 2);
 
           lastFrameTime = Date.now();
+          this.reconnectAttempts = 0;
           this.latestFrameBuffer = frame;
           this.broadcastFrame(frame);
 
@@ -215,9 +218,26 @@ export class StreamServer {
           this.latestFrameBuffer = null;
         }
         if (this.watchdogInterval) clearInterval(this.watchdogInterval);
-        // Si es persistente o aún hay clientes, reiniciar tras 2 segundos
+        if (this.reconnectTimer) {
+          clearTimeout(this.reconnectTimer);
+          this.reconnectTimer = null;
+        }
+
+        // Si es persistente o aún hay clientes, programar reconexión con backoff en caso de fallo
         if (this.isPersistent || this.clients.size > 0) {
-          setTimeout(() => this.startFfmpegStream(this.isPersistent), 2000);
+          let delayMs = 2000;
+          if (code !== 0) {
+            this.reconnectAttempts = (this.reconnectAttempts || 0) + 1;
+            // Backoff exponencial: 2s, 4s, 8s, 16s, máx 30s
+            delayMs = Math.min(2000 * Math.pow(2, this.reconnectAttempts - 1), 30000);
+            console.warn(`[Stream] Reintento de ingesta FFmpeg programado en ${delayMs / 1000}s (fallo #${this.reconnectAttempts})...`);
+          } else {
+            this.reconnectAttempts = 0;
+          }
+          this.reconnectTimer = setTimeout(() => {
+            this.reconnectTimer = null;
+            this.startFfmpegStream(this.isPersistent);
+          }, delayMs);
         }
       });
 
@@ -236,6 +256,10 @@ export class StreamServer {
    * Detiene el proceso de FFmpeg para ahorrar CPU y ancho de banda
    */
   stopFfmpegStream(force = false) {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     if (this.isRemoteRelay) {
       if (!force && this.isPersistent) return;
       if (this.remoteRelayInterval) {

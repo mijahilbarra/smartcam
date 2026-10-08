@@ -8,7 +8,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '1.0'            # Simula las 2 vCPUs compartidas de Compute Engine e2-micro
+          cpus: '0.5'            # Simula de manera fidedigna la CPU de Compute Engine e2-micro (0.25 vCPU sostenida con throttling)
           memory: 1024M          # Límite estricto de 1 GB RAM (dispara OOM Killer si se supera)
         reservations:
           memory: 512M
