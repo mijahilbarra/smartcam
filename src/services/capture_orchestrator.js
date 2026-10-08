@@ -17,7 +17,7 @@ export class CaptureOrchestrator {
     this.streamServer = streamServer;
     this.isCapturing = false;
     this.tracker = new PersonTracker();
-    this.visitService = new VisitSessionService({ db, bucket });
+    this.visitService = new VisitSessionService({ db, bucket, minAppointmentMinutes: 10 });
   }
 
   /**

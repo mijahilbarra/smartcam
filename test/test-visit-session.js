@@ -41,7 +41,8 @@ track1.identity = {
 };
 track1.bestFace = {
   sharpnessScore: 88,
-  faceBuffer: Buffer.from("face_bytes")
+  faceBuffer: Buffer.from("face_bytes"),
+  thumbnailBase64: "data:image/jpeg;base64,juan_face"
 };
 
 const s2 = await service.processTrack(track1);
@@ -54,9 +55,9 @@ console.log("-> Sesión actualizada con identidad:", {
   visits: s2.visitCount
 });
 
-// 3. Cliente finaliza el corte y sale de la silla
+// 3. Cliente finaliza el corte y sale de la silla tras 45 minutos
 console.log("\n[3] Cliente sale de la silla y finaliza la visita...");
-const completed = await service.closeSession(101);
+const completed = await service.closeSession(101, { durationMinutes: 45 });
 assert.ok(completed, "Debe retornar el registro completado");
 assert.strictEqual(completed.personId, "person_juan_perez");
 assert.strictEqual(completed.personName, "Juan Pérez");

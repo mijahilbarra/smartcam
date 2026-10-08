@@ -11,6 +11,7 @@
  * - Persiste en SQLite (tabla appointments) y Firestore (camera_catcher_appointments y camera_catcher_visits).
  */
 
+import sharp from "sharp";
 import { uploadFaceCrop } from "../infrastructure/firebase/storage_client.js";
 import { isServiceChair as isServiceChairRule, isTransitZone } from "../core/barbershop_rules.js";
 import { computeCosineSimilarity } from "../face_recognizer.js";
@@ -25,7 +26,7 @@ export class VisitSessionService {
     this.customerService = customerService || defaultCustomerService;
     this.minAppointmentMinutes = typeof minAppointmentMinutes === "number"
       ? minAppointmentMinutes
-      : (process.env.MIN_APPOINTMENT_MINUTES ? parseInt(process.env.MIN_APPOINTMENT_MINUTES, 10) : 0);
+      : (process.env.MIN_APPOINTMENT_MINUTES ? parseInt(process.env.MIN_APPOINTMENT_MINUTES, 10) : 10);
     this.activeSessions = new Map(); // trackId -> Session
     this.completedAppointments = [];
     this.completedVisits = [];
@@ -52,6 +53,8 @@ export class VisitSessionService {
 
     // 1. Iniciar nueva sesión si entra a una silla de atención
     if (isChair && !this.activeSessions.has(track.trackId)) {
+      const isPendingInit = track.identity?.isPendingConfirmation || (track.identity?.name && track.identity.name.includes("confirmación"));
+      const validIdentity = isPendingInit ? null : track.identity;
       const visitId = `appt_${now}_${track.trackId}`;
       const session = {
         id: visitId,
@@ -64,12 +67,12 @@ export class VisitSessionService {
         startedAtEpoch: now,
         lastSeenEpoch: now,
         status: "en_corte",
-        personId: track.identity?.personId || null,
-        personName: track.identity?.name || null,
-        clientId: track.identity?.personId || null,
-        clientName: track.identity?.name || null,
-        isStaff: track.identity?.isStaff || false,
-        visitCount: track.identity?.visitCount || 1,
+        personId: validIdentity?.personId || null,
+        personName: validIdentity?.name || null,
+        clientId: validIdentity?.personId || null,
+        clientName: validIdentity?.name || null,
+        isStaff: validIdentity?.isStaff || false,
+        visitCount: validIdentity?.visitCount || 1,
         bestFaceScore: track.bestFace?.sharpnessScore || 0,
         bestFaceStoragePath: null,
         thumbnailBase64: null,
@@ -87,8 +90,9 @@ export class VisitSessionService {
       const session = this.activeSessions.get(track.trackId);
       session.lastSeenEpoch = now;
 
-      // Si la persona fue identificada previamente
-      if (track.identity && (!session.personId || session.personId !== track.identity.personId)) {
+      // Si la persona fue identificada previamente y no es candidato provisional
+      const isPendingTrack = track.identity?.isPendingConfirmation || (track.identity?.name && track.identity.name.includes("confirmación"));
+      if (track.identity && !isPendingTrack && (!session.personId || session.personId !== track.identity.personId)) {
         session.personId = track.identity.personId;
         session.personName = track.identity.name;
         session.clientId = track.identity.personId;
@@ -127,7 +131,6 @@ export class VisitSessionService {
     const { faceBuffer, sharpnessScore = 0, embedding, thumbnailBase64, isStaff } = sample;
 
     // 1. Exclusión estricta del barbero/staff:
-    // Si viene marcado como staff, o si su embedding coincide con staff (>= 0.52)
     if (isStaff || session.isStaff) {
       console.log(`[Appointment] Rostro en ${session.chairName} pertenece a Staff. Excluido de atención.`);
       return false;
@@ -142,10 +145,29 @@ export class VisitSessionService {
       }
     }
 
-    // 2. Acumulación de fotos y embeddings (hasta 20 recortes por atención)
+    // 2. Resolver miniatura en base64 (si solo viene el buffer, convertir con Sharp)
+    let finalThumbnailBase64 = thumbnailBase64 || null;
+    if (!finalThumbnailBase64 && faceBuffer) {
+      try {
+        const thumbBuf = await sharp(faceBuffer)
+          .resize(120, 120, { fit: "cover" })
+          .jpeg({ quality: 82 })
+          .toBuffer();
+        finalThumbnailBase64 = `data:image/jpeg;base64,${thumbBuf.toString("base64")}`;
+      } catch (_) {
+        finalThumbnailBase64 = `data:image/jpeg;base64,${faceBuffer.toString("base64")}`;
+      }
+    }
+
+    // Requerir miniatura válida antes de guardar foto en la atención
+    if (!finalThumbnailBase64) {
+      return false;
+    }
+
+    // 3. Acumulación de fotos y embeddings (hasta 20 recortes por atención)
     const now = Date.now();
     const photoItem = {
-      thumbnailBase64: thumbnailBase64 || null,
+      thumbnailBase64: finalThumbnailBase64,
       sharpnessScore,
       capturedAt: new Date(now).toISOString()
     };
@@ -171,10 +193,10 @@ export class VisitSessionService {
       }
     }
 
-    // 3. Actualizar bestFaceScore y miniatura
+    // 4. Actualizar bestFaceScore y miniatura
     if (sharpnessScore > (session.bestFaceScore || 0)) {
       session.bestFaceScore = sharpnessScore;
-      if (thumbnailBase64) session.thumbnailBase64 = thumbnailBase64;
+      session.thumbnailBase64 = finalThumbnailBase64;
 
       if (this.bucket && faceBuffer) {
         const personSlug = session.personId || `track_${trackId}`;
@@ -215,35 +237,48 @@ export class VisitSessionService {
       ? options.durationMinutes
       : Math.max(1, Math.round(durationMs / 60000));
 
-    // Si es personal/barbero, no se registra como atención de cliente
+    // 1. Si es personal/barbero, no se registra como atención de cliente
     if (session.isStaff) {
       console.log(`[Appointment] Atención finalizada para Barbero/Staff: ${session.personName || `Track #${trackId}`}.`);
       return null;
     }
 
-    // Comprobar umbral de atención válida
+    // 2. Comprobar umbral de permanencia mínima obligatoria (mínimo 10 min)
     const minMinutes = options.minMinutes !== undefined ? options.minMinutes : this.minAppointmentMinutes;
     if (durationMinutes < minMinutes) {
       console.log(`[Appointment] Estancia de ${durationMinutes} min en ${session.chairName} descartada (< ${minMinutes} min - transeúnte o cancelada).`);
       return null;
     }
 
-    // Set-to-Set matching si no tenía identidad previa confirmada
+    // 3. Prohibición estricta: Una atención válida REQUIERE fotos y biometría facial capturada
+    if (!session.photos || session.photos.length === 0) {
+      console.log(`[Appointment] Estancia de ${durationMinutes} min en ${session.chairName} descartada: 0 fotos capturadas (sin rostro identificable).`);
+      return null;
+    }
+
+    // 4. Set-to-Set matching si no tenía identidad previa confirmada
     let finalClient = null;
-    if (session.personId) {
-      finalClient = this.customerService?.getCustomerData?.(session.personId) || {
-        id: session.personId,
-        name: session.personName || "Cliente",
-        isStaff: false,
-        visitCount: session.visitCount || 1,
-        appointmentCount: session.visitCount || 1,
-        photos: session.photos || [],
-        embeddings: session.embeddings || []
-      };
+    if (session.personId && !session.personId.startsWith("unidentified_")) {
+      const existing = this.customerService?.getCustomerData?.(session.personId);
+      if (existing && !existing.name?.includes("confirmación")) {
+        finalClient = existing;
+      } else if (!existing && session.personName && !session.personName.includes("confirmación")) {
+        finalClient = {
+          id: session.personId,
+          name: session.personName,
+          visitCount: session.visitCount || 1,
+          appointmentCount: session.visitCount || 1,
+          photos: session.photos,
+          embeddings: session.embeddings
+        };
+      }
     }
 
     if (!finalClient && session.embeddings.length > 0) {
       finalClient = this.matchSessionAgainstClients(session.embeddings);
+      if (finalClient && finalClient.name?.includes("confirmación")) {
+        finalClient = null;
+      }
     }
 
     if (finalClient) {
@@ -271,11 +306,11 @@ export class VisitSessionService {
           forceSync: true
         });
       }
-    } else if (session.photos.length > 0 || session.bestFaceScore > 0) {
-      // Registrar nuevo cliente desde esta atención formal
+    } else {
+      // Registrar nuevo cliente formal desde esta atención legítima (>= 10 min y con fotos)
       const newClientId = `person_${now}_${trackId}`;
       const allKnown = this.customerService?.getComparisonProfiles?.() || [];
-      const clientCount = allKnown.filter(p => !p.isStaff).length;
+      const clientCount = allKnown.filter(p => !p.isStaff && !p.name?.includes("confirmación")).length;
       finalClient = {
         id: newClientId,
         name: `Cliente #${clientCount + 1}`,
@@ -313,10 +348,10 @@ export class VisitSessionService {
 
     const appointmentRecord = {
       id: session.appointmentId || session.visitId,
-      personId: session.personId || `unidentified_${trackId}`,
-      personName: session.personName || "Cliente sin identificar",
-      clientId: session.clientId || session.personId || null,
-      clientName: session.clientName || session.personName || "Cliente sin identificar",
+      personId: finalClient.id,
+      personName: finalClient.name,
+      clientId: finalClient.id,
+      clientName: finalClient.name,
       role: "client",
       isStaff: false,
       isFrequent: (session.visitCount || 1) > 1,
@@ -330,7 +365,8 @@ export class VisitSessionService {
       bestFaceStoragePath: session.bestFaceStoragePath,
       bestFaceScore: session.bestFaceScore,
       thumbnailPath: session.bestFaceStoragePath || null,
-      photos: session.photos || [],
+      thumbnailBase64: session.thumbnailBase64 || session.photos[0]?.thumbnailBase64 || null,
+      photos: session.photos,
       createdAt: new Date(now).toISOString()
     };
 
@@ -352,7 +388,7 @@ export class VisitSessionService {
       try {
         await this.db.doc(`camera_catcher_appointments/${appointmentRecord.id}`).set(appointmentRecord);
         await this.db.doc(`camera_catcher_visits/${appointmentRecord.id}`).set(appointmentRecord);
-        console.log(`[Appointment] ✅ Atención registrada exitosamente en camera_catcher_appointments/${appointmentRecord.id} (${appointmentRecord.clientName}, ${durationMinutes} min).`);
+        console.log(`[Appointment] ✅ Atención registrada exitosamente en camera_catcher_appointments/${appointmentRecord.id} (${appointmentRecord.clientName}, ${durationMinutes} min, ${session.photos.length} fotos).`);
       } catch (dbErr) {
         console.error(`[Appointment] Error guardando atención en Firestore:`, dbErr.message);
       }
