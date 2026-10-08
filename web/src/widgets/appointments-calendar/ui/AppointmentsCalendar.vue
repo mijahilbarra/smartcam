@@ -6,6 +6,7 @@ import AppBadge from '@/shared/ui/atoms/AppBadge.vue';
 import ModalTemplate from '@/shared/ui/templates/ModalTemplate.vue';
 import ModalHeader from '@/shared/ui/molecules/ModalHeader.vue';
 import DeleteAppointmentModal from './DeleteAppointmentModal.vue';
+import ClientAppointmentConflictModal from './ClientAppointmentConflictModal.vue';
 import { useAppointments } from '@/entities/appointment/model/useAppointments';
 import { usePeople } from '@/entities/person/model/usePeople';
 
@@ -142,6 +143,11 @@ const appointmentToDelete = ref(null);
 const isDeleteModalOpen = ref(false);
 const isDeleting = ref(false);
 
+const isConflictModalOpen = ref(false);
+const conflictingAppointments = ref([]);
+const pendingAppointmentForDelete = ref(null);
+const isDeletingConflictAppt = ref(false);
+
 const matchedPersonToDelete = computed(() => {
   if (!appointmentToDelete.value) return null;
   const pId = appointmentToDelete.value.personId || appointmentToDelete.value.clientId;
@@ -162,6 +168,27 @@ const closeDeleteModal = () => {
 
 const handleConfirmDelete = async ({ appointmentId, deleteUser, personId }) => {
   if (!appointmentId) return;
+
+  if (deleteUser) {
+    const pId = personId || appointmentToDelete.value?.personId || appointmentToDelete.value?.clientId;
+    const clientName = matchedPersonToDelete.value?.name || appointmentToDelete.value?.clientName;
+
+    const otherAppointments = appointments.value.filter(a => {
+      if (a.id === appointmentId) return false;
+      if (pId && (a.personId === pId || a.clientId === pId)) return true;
+      if (clientName && clientName !== 'Cliente' && clientName !== 'Cliente sin nombre' && a.clientName === clientName) return true;
+      return false;
+    });
+
+    if (otherAppointments.length > 0) {
+      conflictingAppointments.value = otherAppointments;
+      pendingAppointmentForDelete.value = appointmentToDelete.value;
+      isDeleteModalOpen.value = false;
+      isConflictModalOpen.value = true;
+      return;
+    }
+  }
+
   isDeleting.value = true;
   try {
     // 1. Eliminar cita de Firestore y SQLite
@@ -186,6 +213,34 @@ const handleConfirmDelete = async ({ appointmentId, deleteUser, personId }) => {
   } finally {
     isDeleting.value = false;
   }
+};
+
+const handleDeleteAppointmentOnlyFromConflict = async () => {
+  if (!pendingAppointmentForDelete.value) return;
+  isDeletingConflictAppt.value = true;
+  try {
+    const apptId = pendingAppointmentForDelete.value.id;
+    await deleteAppointment(apptId);
+    isConflictModalOpen.value = false;
+    conflictingAppointments.value = [];
+    pendingAppointmentForDelete.value = null;
+    appointmentToDelete.value = null;
+    if (selectedAppointment.value?.id === apptId) {
+      closeDetailModal();
+    }
+  } catch (err) {
+    console.error('Error eliminando cita desde conflicto:', err);
+    alert(`Error al eliminar cita: ${err.message}`);
+  } finally {
+    isDeletingConflictAppt.value = false;
+  }
+};
+
+const closeConflictModal = () => {
+  if (isDeletingConflictAppt.value) return;
+  isConflictModalOpen.value = false;
+  conflictingAppointments.value = [];
+  pendingAppointmentForDelete.value = null;
 };
 
 const formatTimeOnly = (isoString) => {
@@ -573,6 +628,16 @@ const getPhotoSrc = (photo) => {
       :loading="isDeleting"
       @close="closeDeleteModal"
       @confirm="handleConfirmDelete"
+    />
+
+    <!-- Modal de Conflicto de Atención con Cliente Vinculado -->
+    <ClientAppointmentConflictModal
+      :show="isConflictModalOpen"
+      :client-name="pendingAppointmentForDelete?.clientName || 'Cliente'"
+      :conflicting-appointments="conflictingAppointments"
+      :loading="isDeletingConflictAppt"
+      @close="closeConflictModal"
+      @confirm-delete-appointment-only="handleDeleteAppointmentOnlyFromConflict"
     />
   </div>
 </template>
