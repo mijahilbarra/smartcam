@@ -34,6 +34,7 @@ export class CustomerService {
     this.customClientProvided = Boolean(options.sqliteClient);
     this.sqliteClient = options.sqliteClient || (this.databaseId ? getSqliteClient(this.databaseId) : defaultSqliteClient);
     this.profilesCache = new Map();
+    this.pendingSyncs = new Set();
     this.isLoaded = false;
   }
 
@@ -270,8 +271,11 @@ export class CustomerService {
         console.warn(`[CustomerService] Error sincronizando a Firebase para "${updated.name}" (${updated.id}):`, err.message);
       });
 
+      this.pendingSyncs.add(syncPromise);
+      syncPromise.finally(() => this.pendingSyncs.delete(syncPromise));
+
       if (options.backgroundSync) {
-        return { id: updated.id, localSaved: true, queuedSync: true };
+        return { id: updated.id, localSaved: true, queuedSync: true, syncPromise };
       }
 
       await syncPromise;
@@ -279,6 +283,16 @@ export class CustomerService {
     }
 
     return { id: updated.id, localSaved: true, synced: false };
+  }
+
+  /**
+   * Espera a que todas las promesas de sincronización de fondo pendientes hacia Firebase se completen.
+   * Garantiza consistencia en pruebas unitarias o antes del apagado del proceso.
+   * @returns {Promise<void>}
+   */
+  async waitForPendingSyncs() {
+    if (this.pendingSyncs.size === 0) return;
+    await Promise.all(Array.from(this.pendingSyncs));
   }
 
   /**
@@ -312,6 +326,7 @@ export class CustomerService {
       firstSeen: customer.firstSeen || new Date().toISOString(),
       lastSeen: customer.lastSeen || new Date().toISOString(),
       visitCount: customer.visitCount || 1,
+      appointmentCount: typeof customer.appointmentCount === "number" ? customer.appointmentCount : (customer.visitCount || 1),
       bestFaceScore: Number(customer.bestFaceScore || 0),
       thumbnailBase64: customer.thumbnailBase64 || null,
       thumbnailPath: uploadedThumbnailPath || customer.thumbnailPath || "",

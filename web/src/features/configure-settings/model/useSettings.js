@@ -1,6 +1,6 @@
 import { ref, onMounted } from 'vue';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
-import { db, setCustomBackendUrl } from '@/shared/api/firebase';
+import { db, setCustomBackendUrl, normalizeUrl } from '@/shared/api/firebase';
 
 export function useSettings() {
   const prompt = ref('');
@@ -44,7 +44,7 @@ export function useSettings() {
 
     try {
       const docRef = doc(db, 'camera_catcher', 'prompt');
-      const trimmedStreamUrl = (streamUrl.value || '').trim();
+      const normalizedStreamUrl = normalizeUrl(streamUrl.value) || '';
 
       await setDoc(docRef, {
         prompt: prompt.value,
@@ -52,14 +52,14 @@ export function useSettings() {
           start: workingHours.value.start || '11:00',
           end: workingHours.value.end || '23:00'
         },
-        streamUrl: trimmedStreamUrl,
+        streamUrl: normalizedStreamUrl,
         updatedAt: new Date().toISOString()
       }, { merge: true });
 
       // Actualizar localStorage
       if (typeof localStorage !== 'undefined') {
-        if (trimmedStreamUrl) {
-          localStorage.setItem('CAMERA_CATCHER_API_URL', trimmedStreamUrl);
+        if (normalizedStreamUrl) {
+          localStorage.setItem('CAMERA_CATCHER_API_URL', normalizedStreamUrl);
         } else {
           localStorage.removeItem('CAMERA_CATCHER_API_URL');
         }

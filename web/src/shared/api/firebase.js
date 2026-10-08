@@ -1,7 +1,7 @@
 import { initializeApp } from "firebase/app";
 import { getFirestore } from "firebase/firestore";
 import { getStorage, ref, getDownloadURL } from "firebase/storage";
-import { isLocalEnvironment, getEnvironmentInfo, switchEnvironmentResources, switchFirestoreDatabase, setCustomBackendUrl } from '@/shared/lib/environment';
+import { isLocalEnvironment, getEnvironmentInfo, switchEnvironmentResources, switchFirestoreDatabase, setCustomBackendUrl, normalizeUrl } from '@/shared/lib/environment';
 
 export const firebaseConfig = {
   apiKey: "AIzaSyC2qf1_REPLACE_WITH_REAL_OR_PROD_IF_SET",
@@ -31,7 +31,7 @@ export const storage = getStorage(app, STORAGE_BUCKET);
 // Backend API URL: En local apunta al simulador/daemon (8085). En servidor (GCP/Hosting) es nulo ya que la VM usa Firestore
 export const BACKEND_URL = envInfo.backendUrl;
 
-export { isLocalEnvironment, getEnvironmentInfo, switchEnvironmentResources, switchFirestoreDatabase, setCustomBackendUrl };
+export { isLocalEnvironment, getEnvironmentInfo, switchEnvironmentResources, switchFirestoreDatabase, setCustomBackendUrl, normalizeUrl };
 
 // Cache resolved image URLs from Storage SDK to avoid redundant network calls
 const urlCache = new Map();

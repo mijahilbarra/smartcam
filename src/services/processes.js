@@ -46,16 +46,22 @@ export async function acquireFrame({
     await daemonReporter.reportCameraQuery(triggerSource);
   }
 
-  let buffer = streamServer?.getLatestFrame?.();
-  if (!buffer) {
-    if (isRealtime) {
-      // Esperar a que el stream FFmpeg entregue el primer fotograma en memoria
+  let buffer = null;
+  if (isRealtime) {
+    buffer = streamServer?.getLatestFrame?.();
+    if (!buffer) {
       return null;
     }
-    buffer = await captureSnapshotAdaptive({
-      tomlPath,
-      localOutputPath: localOutputPath || `/tmp/snap_${docId}.jpeg`
-    });
+  } else {
+    try {
+      buffer = await captureSnapshotAdaptive({
+        tomlPath,
+        localOutputPath: localOutputPath || `/tmp/snap_${docId}.jpeg`
+      });
+    } catch (err) {
+      console.warn(`[AcquireFrame] Aviso en captura adaptativa: ${err.message}. Intentando buffer en RAM...`);
+      buffer = streamServer?.getLatestFrame?.() || null;
+    }
   }
 
   if (!isRealtime && buffer) {
@@ -162,10 +168,11 @@ export async function extractClientCrops({ bucket, clientCrops = [], docId, isMa
  * @param {Array} [params.activeSessions] - Sesiones de visita activas
  * @returns {Promise<Array>} Personas identificadas
  */
-export async function reidentifyPeople({ db, clientRecords = [], clientCrops = [], activeSessions = [] }) {
+export async function reidentifyPeople({ db, clientRecords = [], clientCrops = [], activeSessions = [], isRealtime = false, backgroundSync }) {
   if (!clientCrops || clientCrops.length === 0) return [];
   console.log(`[FaceRecognition] Evaluando biometría de personas detectadas...`);
-  return await processPeopleRecognition(db, clientRecords, clientCrops, activeSessions);
+  const effectiveBackgroundSync = backgroundSync !== undefined ? backgroundSync : isRealtime;
+  return await processPeopleRecognition(db, clientRecords, clientCrops, activeSessions, { backgroundSync: effectiveBackgroundSync });
 }
 
 /**
@@ -487,89 +494,97 @@ export async function runProcessCycle(context = {}, options = {}) {
       t.lastClearCaptureTime = now;
     });
 
-    try {
-      const clearBuffer = await acquireClearFn({
-        localOutputPath: localOutputPath ? `${localOutputPath}_clear.jpeg` : `/tmp/snap_clear_${docId}.jpeg`,
-        rtspUrl: clearRtspUrl
-      });
+    const processClearCapture = async () => {
+      try {
+        const clearBuffer = await acquireClearFn({
+          localOutputPath: localOutputPath ? `${localOutputPath}_clear.jpeg` : `/tmp/snap_clear_${docId}.jpeg`,
+          rtspUrl: clearRtspUrl
+        });
 
-      if (clearBuffer) {
-        const clearMeta = await sharp(clearBuffer).metadata();
-        const clearW = clearMeta.width || 2560;
-        const clearH = clearMeta.height || 1440;
-        const origW = mlResult.origWidth || mlResult.imageDimensions?.width || 640;
-        const origH = mlResult.origHeight || mlResult.imageDimensions?.height || 360;
+        if (clearBuffer) {
+          const clearMeta = await sharp(clearBuffer).metadata();
+          const clearW = clearMeta.width || 2560;
+          const clearH = clearMeta.height || 1440;
+          const origW = mlResult.origWidth || mlResult.imageDimensions?.width || 640;
+          const origH = mlResult.origHeight || mlResult.imageDimensions?.height || 360;
 
-        const scaleX = clearW / origW;
-        const scaleY = clearH / origH;
+          const scaleX = clearW / origW;
+          const scaleY = clearH / origH;
 
-        for (const track of tracksNeedingClear) {
-          let cx1, cy1, cx2, cy2;
-          if (track.boxNorm && track.boxNorm.length === 4) {
-            cy1 = Math.round(track.boxNorm[0] * clearH);
-            cx1 = Math.round(track.boxNorm[1] * clearW);
-            cy2 = Math.round(track.boxNorm[2] * clearH);
-            cx2 = Math.round(track.boxNorm[3] * clearW);
-          } else if (track.box) {
-            cx1 = Math.round(track.box[0] * scaleX);
-            cy1 = Math.round(track.box[1] * scaleY);
-            cx2 = Math.round(track.box[2] * scaleX);
-            cy2 = Math.round(track.box[3] * scaleY);
-          } else {
-            continue;
-          }
-
-          cx1 = Math.max(0, Math.min(clearW - 1, cx1));
-          cy1 = Math.max(0, Math.min(clearH - 1, cy1));
-          cx2 = Math.max(cx1 + 1, Math.min(clearW, cx2));
-          cy2 = Math.max(cy1 + 1, Math.min(clearH, cy2));
-
-          const cropW = cx2 - cx1;
-          const cropH = cy2 - cy1;
-
-          if (cropW > 10 && cropH > 10) {
-            const highResCropBuffer = await sharp(clearBuffer)
-              .extract({ left: cx1, top: cy1, width: cropW, height: cropH })
-              .jpeg({ quality: 95 })
-              .toBuffer();
-
-            let matchedCrop = (mlResult.clientCrops || []).find(c => {
-              if (c.zoneId && track.currentQuadrant?.id && c.zoneId === track.currentQuadrant.id) return true;
-              if (c.box && track.box) return calculateIoU(c.box, track.box) > 0.30;
-              return false;
-            });
-
-            if (matchedCrop) {
-              matchedCrop.buffer = highResCropBuffer;
-              matchedCrop.isHighRes = true;
-              matchedCrop.scaleFactor = { scaleX, scaleY };
-              console.log(`[ClearStream] Recorte de Track #${track.trackId} actualizado a alta resolución (${cropW}x${cropH}).`);
+          for (const track of tracksNeedingClear) {
+            let cx1, cy1, cx2, cy2;
+            if (track.boxNorm && track.boxNorm.length === 4) {
+              cy1 = Math.round(track.boxNorm[0] * clearH);
+              cx1 = Math.round(track.boxNorm[1] * clearW);
+              cy2 = Math.round(track.boxNorm[2] * clearH);
+              cx2 = Math.round(track.boxNorm[3] * clearW);
+            } else if (track.box) {
+              cx1 = Math.round(track.box[0] * scaleX);
+              cy1 = Math.round(track.box[1] * scaleY);
+              cx2 = Math.round(track.box[2] * scaleX);
+              cy2 = Math.round(track.box[3] * scaleY);
             } else {
-              const role = track.currentQuadrant?.role || "client";
-              mlResult.clientCrops = mlResult.clientCrops || [];
-              mlResult.clientCrops.push({
-                id: `${role}_clear_${track.trackId}`,
-                role,
-                isStaffHint: role === "staff",
-                zoneId: track.currentQuadrant?.id || null,
-                zoneType: track.currentQuadrant?.type || "custom_zone",
-                box: track.box,
-                confidence: track.confidence,
-                status: role === "staff" ? "en_servicio" : "en_corte",
-                capturePerson: true,
-                requiresClearCapture: true,
-                isHighRes: true,
-                buffer: highResCropBuffer
+              continue;
+            }
+
+            cx1 = Math.max(0, Math.min(clearW - 1, cx1));
+            cy1 = Math.max(0, Math.min(clearH - 1, cy1));
+            cx2 = Math.max(cx1 + 1, Math.min(clearW, cx2));
+            cy2 = Math.max(cy1 + 1, Math.min(clearH, cy2));
+
+            const cropW = cx2 - cx1;
+            const cropH = cy2 - cy1;
+
+            if (cropW > 10 && cropH > 10) {
+              const highResCropBuffer = await sharp(clearBuffer)
+                .extract({ left: cx1, top: cy1, width: cropW, height: cropH })
+                .jpeg({ quality: 95 })
+                .toBuffer();
+
+              let matchedCrop = (mlResult.clientCrops || []).find(c => {
+                if (c.zoneId && track.currentQuadrant?.id && c.zoneId === track.currentQuadrant.id) return true;
+                if (c.box && track.box) return calculateIoU(c.box, track.box) > 0.30;
+                return false;
               });
-              console.log(`[ClearStream] Nuevo recorte de alta resolución generado para Track #${track.trackId}.`);
+
+              if (matchedCrop) {
+                matchedCrop.buffer = highResCropBuffer;
+                matchedCrop.isHighRes = true;
+                matchedCrop.scaleFactor = { scaleX, scaleY };
+                console.log(`[ClearStream] Recorte de Track #${track.trackId} actualizado a alta resolución (${cropW}x${cropH}).`);
+              } else {
+                const role = track.currentQuadrant?.role || "client";
+                mlResult.clientCrops = mlResult.clientCrops || [];
+                mlResult.clientCrops.push({
+                  id: `${role}_clear_${track.trackId}`,
+                  role,
+                  isStaffHint: role === "staff",
+                  zoneId: track.currentQuadrant?.id || null,
+                  zoneType: track.currentQuadrant?.type || "custom_zone",
+                  box: track.box,
+                  confidence: track.confidence,
+                  status: role === "staff" ? "en_servicio" : "en_corte",
+                  capturePerson: true,
+                  requiresClearCapture: true,
+                  isHighRes: true,
+                  buffer: highResCropBuffer
+                });
+                console.log(`[ClearStream] Nuevo recorte de alta resolución generado para Track #${track.trackId}.`);
+              }
             }
           }
+        } else {
+          console.warn(`[ClearStream] Fotograma Clear no disponible. Continuando con recortes ligeros.`);
         }
-      } else {
-        console.warn(`[ClearStream] Fotograma Clear no disponible. Continuando con recortes ligeros.`);
+      } catch (err) {
+        console.warn(`[ClearStream] Fallo al capturar fotograma Clear (${err.message}). Continuando con recortes ligeros.`);
       }
-    } catch (err) {
-      console.warn(`[ClearStream] Fallo al capturar fotograma Clear (${err.message}). Continuando con recortes ligeros.`);
+    };
+
+    if (options.asyncClear === true) {
+      processClearCapture();
+    } else {
+      await processClearCapture();
     }
   }
 
@@ -580,7 +595,9 @@ export async function runProcessCycle(context = {}, options = {}) {
     db,
     clientRecords,
     clientCrops: mlResult.clientCrops,
-    activeSessions
+    activeSessions,
+    isRealtime,
+    backgroundSync: options.backgroundSync
   });
 
   // 6. Asociación de identidades y caras nítidas a tracks vía IoU

@@ -9,6 +9,10 @@ const props = defineProps({
   maxWidth: {
     type: String,
     default: 'max-w-4xl'
+  },
+  title: {
+    type: String,
+    default: ''
   }
 });
 

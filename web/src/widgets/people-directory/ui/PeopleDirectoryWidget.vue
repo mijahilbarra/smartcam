@@ -590,11 +590,11 @@ const confirmMerge = async () => {
           <div class="flex flex-col gap-1.5 text-xs text-slate-400 bg-slate-950/40 p-2.5 rounded-lg border border-slate-800/60">
             <div class="flex items-center justify-between">
               <span class="flex items-center gap-1.5">
-                <AppIcon name="visibility" :size="14" class="text-slate-500" />
-                <span>Visitas:</span>
+                <AppIcon name="event" :size="14" class="text-blue-400" />
+                <span>Atenciones:</span>
               </span>
-              <strong :class="person.visitCount > 1 ? 'text-amber-300' : 'text-slate-200'">
-                {{ person.visitCount }}
+              <strong :class="(person.appointmentCount || person.appointmentsCount || person.visitCount || 1) > 1 ? 'text-blue-300' : 'text-slate-200'">
+                {{ person.appointmentCount || person.appointmentsCount || person.visitCount || 1 }}
               </strong>
             </div>
 

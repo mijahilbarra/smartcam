@@ -128,7 +128,7 @@ export class SQLiteClient {
   }
 
   /**
-   * Crea las tablas customers y customer_embeddings con claves foráneas e índices.
+   * Crea las tablas customers, customer_embeddings y appointments con claves foráneas e índices.
    * @private
    */
   _initTables() {
@@ -141,6 +141,7 @@ export class SQLiteClient {
         first_seen TEXT,
         last_seen TEXT,
         visit_count INTEGER DEFAULT 1,
+        appointment_count INTEGER DEFAULT 0,
         best_face_score REAL DEFAULT 0,
         thumbnail_base64 TEXT,
         thumbnail_path TEXT,
@@ -162,7 +163,35 @@ export class SQLiteClient {
 
       CREATE INDEX IF NOT EXISTS idx_customer_embeddings_customer_id
         ON customer_embeddings(customer_id);
+
+      CREATE TABLE IF NOT EXISTS appointments (
+        id TEXT PRIMARY KEY,
+        chair_id TEXT NOT NULL,
+        chair_name TEXT,
+        client_id TEXT,
+        client_name TEXT,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        duration_minutes INTEGER DEFAULT 0,
+        status TEXT DEFAULT 'completed',
+        best_face_score REAL DEFAULT 0,
+        thumbnail_path TEXT,
+        photos_json TEXT,
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now')),
+        FOREIGN KEY (client_id) REFERENCES customers(id) ON DELETE SET NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_appointments_client_id ON appointments(client_id);
+      CREATE INDEX IF NOT EXISTS idx_appointments_started_at ON appointments(started_at);
     `);
+
+    // Asegurar compatibilidad si la tabla customers ya existía sin appointment_count
+    try {
+      this.db.exec(`ALTER TABLE customers ADD COLUMN appointment_count INTEGER DEFAULT 0;`);
+    } catch (_) {
+      // La columna ya existe
+    }
   }
 
   /**
@@ -172,10 +201,10 @@ export class SQLiteClient {
   _prepareStatements() {
     this.stmtUpsertCustomer = this.db.prepare(`
       INSERT INTO customers (
-        id, name, is_staff, role, first_seen, last_seen, visit_count,
+        id, name, is_staff, role, first_seen, last_seen, visit_count, appointment_count,
         best_face_score, thumbnail_base64, thumbnail_path, photos_json, updated_at
       ) VALUES (
-        @id, @name, @isStaff, @role, @firstSeen, @lastSeen, @visitCount,
+        @id, @name, @isStaff, @role, @firstSeen, @lastSeen, @visitCount, @appointmentCount,
         @bestFaceScore, @thumbnailBase64, @thumbnailPath, @photosJson, datetime('now')
       )
       ON CONFLICT(id) DO UPDATE SET
@@ -185,6 +214,7 @@ export class SQLiteClient {
         first_seen = COALESCE(customers.first_seen, excluded.first_seen),
         last_seen = COALESCE(excluded.last_seen, customers.last_seen),
         visit_count = COALESCE(excluded.visit_count, customers.visit_count),
+        appointment_count = COALESCE(excluded.appointment_count, customers.appointment_count),
         best_face_score = CASE WHEN excluded.best_face_score IS NOT NULL AND excluded.best_face_score > customers.best_face_score THEN excluded.best_face_score ELSE customers.best_face_score END,
         thumbnail_base64 = COALESCE(excluded.thumbnail_base64, customers.thumbnail_base64),
         thumbnail_path = COALESCE(excluded.thumbnail_path, customers.thumbnail_path),
@@ -227,6 +257,45 @@ export class SQLiteClient {
     this.stmtDeleteCustomer = this.db.prepare(`
       DELETE FROM customers WHERE id = ?
     `);
+
+    this.stmtUpsertAppointment = this.db.prepare(`
+      INSERT INTO appointments (
+        id, chair_id, chair_name, client_id, client_name, started_at, ended_at,
+        duration_minutes, status, best_face_score, thumbnail_path, photos_json, updated_at
+      ) VALUES (
+        @id, @chairId, @chairName, @clientId, @clientName, @startedAt, @endedAt,
+        @durationMinutes, @status, @bestFaceScore, @thumbnailPath, @photosJson, datetime('now')
+      )
+      ON CONFLICT(id) DO UPDATE SET
+        chair_id = COALESCE(excluded.chair_id, appointments.chair_id),
+        chair_name = COALESCE(excluded.chair_name, appointments.chair_name),
+        client_id = COALESCE(excluded.client_id, appointments.client_id),
+        client_name = COALESCE(excluded.client_name, appointments.client_name),
+        started_at = COALESCE(excluded.started_at, appointments.started_at),
+        ended_at = COALESCE(excluded.ended_at, appointments.ended_at),
+        duration_minutes = COALESCE(excluded.duration_minutes, appointments.duration_minutes),
+        status = COALESCE(excluded.status, appointments.status),
+        best_face_score = COALESCE(excluded.best_face_score, appointments.best_face_score),
+        thumbnail_path = COALESCE(excluded.thumbnail_path, appointments.thumbnail_path),
+        photos_json = COALESCE(excluded.photos_json, appointments.photos_json),
+        updated_at = datetime('now')
+    `);
+
+    this.stmtGetAppointmentById = this.db.prepare(`
+      SELECT * FROM appointments WHERE id = ?
+    `);
+
+    this.stmtGetAppointmentsByClient = this.db.prepare(`
+      SELECT * FROM appointments WHERE client_id = ? ORDER BY started_at DESC
+    `);
+
+    this.stmtGetAllAppointments = this.db.prepare(`
+      SELECT * FROM appointments ORDER BY started_at DESC
+    `);
+
+    this.stmtDeleteAppointment = this.db.prepare(`
+      DELETE FROM appointments WHERE id = ?
+    `);
   }
 
   /**
@@ -252,6 +321,7 @@ export class SQLiteClient {
         firstSeen: customer.firstSeen || null,
         lastSeen: customer.lastSeen || nowIso,
         visitCount: typeof customer.visitCount === "number" ? customer.visitCount : null,
+        appointmentCount: typeof customer.appointmentCount === "number" ? customer.appointmentCount : null,
         bestFaceScore: typeof customer.bestFaceScore === "number" ? customer.bestFaceScore : null,
         thumbnailBase64: customer.thumbnailBase64 || null,
         thumbnailPath: customer.thumbnailPath || null,
@@ -328,6 +398,7 @@ export class SQLiteClient {
       firstSeen: row.first_seen,
       lastSeen: row.last_seen,
       visitCount: row.visit_count,
+      appointmentCount: row.appointment_count,
       bestFaceScore: row.best_face_score,
       thumbnailBase64: row.thumbnail_base64,
       thumbnailPath: row.thumbnail_path,
@@ -376,6 +447,7 @@ export class SQLiteClient {
         firstSeen: row.first_seen,
         lastSeen: row.last_seen,
         visitCount: row.visit_count,
+        appointmentCount: row.appointment_count,
         bestFaceScore: row.best_face_score,
         thumbnailBase64: row.thumbnail_base64,
         thumbnailPath: row.thumbnail_path,
@@ -395,6 +467,139 @@ export class SQLiteClient {
     const result = this.stmtDeleteCustomer.run(id);
     return result.changes > 0;
   }
+
+  /**
+   * Guarda o actualiza una atención (appointment)
+   * @param {Object} appointment
+   * @returns {Object}
+   */
+  saveAppointment(appointment) {
+    if (!appointment || !appointment.id) {
+      throw new Error("La atención (appointment) debe contener al menos un id válido.");
+    }
+    const photosJson = appointment.photos ? JSON.stringify(appointment.photos) : (appointment.photosJson || null);
+
+    this.stmtUpsertAppointment.run({
+      id: appointment.id,
+      chairId: appointment.chairId || appointment.chair_id || "silla_corte_1",
+      chairName: appointment.chairName || appointment.chair_name || "Silla de Corte 1",
+      clientId: appointment.clientId || appointment.client_id || null,
+      clientName: appointment.clientName || appointment.client_name || null,
+      startedAt: appointment.startedAt || appointment.started_at || new Date().toISOString(),
+      endedAt: appointment.endedAt || appointment.ended_at || null,
+      durationMinutes: typeof appointment.durationMinutes === "number" ? appointment.durationMinutes : (appointment.duration_minutes || 0),
+      status: appointment.status || "completed",
+      bestFaceScore: typeof appointment.bestFaceScore === "number" ? appointment.bestFaceScore : (appointment.best_face_score || 0),
+      thumbnailPath: appointment.thumbnailPath || appointment.thumbnail_path || null,
+      photosJson
+    });
+
+    return appointment;
+  }
+
+  /**
+   * Obtiene una atención por su ID
+   * @param {string} id
+   * @returns {Object|null}
+   */
+  getAppointmentById(id) {
+    const row = this.stmtGetAppointmentById.get(id);
+    if (!row) return null;
+    return {
+      id: row.id,
+      chairId: row.chair_id,
+      chairName: row.chair_name,
+      clientId: row.client_id,
+      clientName: row.client_name,
+      startedAt: row.started_at,
+      endedAt: row.ended_at,
+      durationMinutes: row.duration_minutes,
+      status: row.status,
+      bestFaceScore: row.best_face_score,
+      thumbnailPath: row.thumbnail_path,
+      photos: row.photos_json ? JSON.parse(row.photos_json) : [],
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    };
+  }
+
+  /**
+   * Obtiene todas las atenciones filtradas según criterios (clientId, chairId, status, etc.)
+   * @param {Object} [filters]
+   * @returns {Array<Object>}
+   */
+  getAppointments(filters = {}) {
+    let query = `SELECT * FROM appointments WHERE 1=1`;
+    const params = [];
+
+    if (filters.clientId) {
+      query += ` AND client_id = ?`;
+      params.push(filters.clientId);
+    }
+    if (filters.chairId) {
+      query += ` AND chair_id = ?`;
+      params.push(filters.chairId);
+    }
+    if (filters.status) {
+      query += ` AND status = ?`;
+      params.push(filters.status);
+    }
+    query += ` ORDER BY started_at DESC`;
+
+    const rows = this.db.prepare(query).all(...params);
+    return rows.map(row => ({
+      id: row.id,
+      chairId: row.chair_id,
+      chairName: row.chair_name,
+      clientId: row.client_id,
+      clientName: row.client_name,
+      startedAt: row.started_at,
+      endedAt: row.ended_at,
+      durationMinutes: row.duration_minutes,
+      status: row.status,
+      bestFaceScore: row.best_face_score,
+      thumbnailPath: row.thumbnail_path,
+      photos: row.photos_json ? JSON.parse(row.photos_json) : [],
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    }));
+  }
+
+  /**
+   * Obtiene todas las atenciones asociadas a un cliente específico
+   * @param {string} clientId
+   * @returns {Array<Object>}
+   */
+  getAppointmentsByClient(clientId) {
+    const rows = this.stmtGetAppointmentsByClient.all(clientId);
+    return rows.map(row => ({
+      id: row.id,
+      chairId: row.chair_id,
+      chairName: row.chair_name,
+      clientId: row.client_id,
+      clientName: row.client_name,
+      startedAt: row.started_at,
+      endedAt: row.ended_at,
+      durationMinutes: row.duration_minutes,
+      status: row.status,
+      bestFaceScore: row.best_face_score,
+      thumbnailPath: row.thumbnail_path,
+      photos: row.photos_json ? JSON.parse(row.photos_json) : [],
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    }));
+  }
+
+  /**
+   * Elimina una atención por su ID
+   * @param {string} id
+   * @returns {boolean}
+   */
+  deleteAppointment(id) {
+    const result = this.stmtDeleteAppointment.run(id);
+    return result.changes > 0;
+  }
+
 
   /**
    * Limpia todas las tablas (útil para pruebas unitarias)

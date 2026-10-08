@@ -25,7 +25,7 @@ export class CaptureOrchestrator {
    * @param {string} triggerSource - "manual" | "startup" | "realtime"
    * @returns {Promise<Object>}
    */
-  async execute(triggerSource = "manual") {
+  async execute(triggerSource = "manual", options = {}) {
     if (this.isCapturing) {
       console.log("[Capture] Ya hay una captura en curso. Omitiendo ejecución concurrente.");
       return { status: "already_running" };
@@ -34,6 +34,12 @@ export class CaptureOrchestrator {
     this.isCapturing = true;
 
     try {
+      const cycleOptions = {
+        triggerSource,
+        asyncClear: triggerSource === "realtime",
+        backgroundSync: triggerSource === "realtime",
+        ...options
+      };
       return await runProcessCycle({
         db: this.db,
         bucket: this.bucket,
@@ -41,7 +47,7 @@ export class CaptureOrchestrator {
         streamServer: this.streamServer,
         tracker: this.tracker,
         visitService: this.visitService
-      }, { triggerSource });
+      }, cycleOptions);
     } catch (err) {
       console.error(`[Capture Error] Falló el proceso de captura:`, err.message);
       await daemonReporter.reportError(err);

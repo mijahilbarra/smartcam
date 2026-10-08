@@ -12,8 +12,9 @@ import {
 } from "../src/services/processes.js";
 import { CaptureOrchestrator } from "../src/services/capture_orchestrator.js";
 import { PersonTracker } from "../src/core/person_tracker.js";
-import { identifyFace } from "../src/face_recognizer.js";
-import { processPeopleRecognition, resetPendingCandidates, enrichPersonAngles } from "../src/services/people_service.js";
+import { identifyFace, extractFaceEmbedding } from "../src/face_recognizer.js";
+import { evaluateFaceQuality } from "../src/services/face_quality_service.js";
+import { processPeopleRecognition, resetPendingCandidates, enrichPersonAngles, matchStaffFace } from "../src/services/people_service.js";
 import { customerService } from "../src/services/customer_service.js";
 
 console.log("=== Test de Pipeline Funcional de Procesos (processes.js) ===");
@@ -268,6 +269,21 @@ try {
 assert.strictEqual(fallbackWorked, true, "Fallo en frame Clear debe degradar transparentemente sin error");
 console.log("-> Fallback transparente a frame ligero validado exitosamente.");
 
+// Ciclo 4: Soporte de asyncClear: true no bloqueante
+let asyncClearCalled = false;
+updatedTrack.lastClearCaptureTime = 0;
+await runProcessCycle({
+  streamServer: mockStream,
+  tracker: customTracker,
+  visitService: mockVisit,
+  acquireClearFrame: async () => {
+    asyncClearCalled = true;
+    return dummyClearFrame;
+  }
+}, { triggerSource: "realtime", asyncClear: true });
+assert.strictEqual(asyncClearCalled, true, "asyncClear debe disparar la captura reactiva");
+console.log("-> asyncClear no bloqueante en runProcessCycle validado exitosamente.");
+
 // 9. identifyFace: Galería Multi-Ángulo y umbral por defecto 0.50
 console.log("\n[9] Probando comparación multi-ángulo en identifyFace...");
 const createUnitVector = (dim, index) => {
@@ -375,14 +391,23 @@ const mockDb = {
   })
 };
 
-// Guardamos cliente existente en Firestore
+// Guardamos cliente existente en Firestore con el embedding real de barber_crop.jpg
+const enriqueQuality = await evaluateFaceQuality(barberImgBuffer);
+const enriqueEmbedding = await extractFaceEmbedding(enriqueQuality.faceBuffer);
 const initialClient = {
   id: "client_enrique",
   name: "Enrique Gómez",
   isStaff: false,
   visitCount: 3,
   bestFaceScore: 50,
-  embeddings: [createUnitVector(512, 0)]
+  embeddings: [enriqueEmbedding],
+  photos: [{
+    thumbnailBase64: "data:image/jpeg;base64,mock_thumb",
+    sharpnessScore: 50,
+    capturedAt: new Date().toISOString(),
+    pose: "frontal",
+    poseLabel: "Frontal"
+  }]
 };
 firestoreStorage.set("client_enrique", initialClient);
 
@@ -433,9 +458,17 @@ console.log(`-> Sesión activa gobernó detección: asignado a ${updatedClientDo
 
 // Verificación de tope máximo de 20 ángulos en galería
 const currentDoc = firestoreStorage.get("client_enrique");
-currentDoc.embeddings = [];
-for (let k = 0; k < 19; k++) {
+currentDoc.embeddings = [enriqueEmbedding];
+currentDoc.photos = [currentDoc.photos[0]];
+for (let k = 1; k < 19; k++) {
   currentDoc.embeddings.push(createUnitVector(512, k));
+  currentDoc.photos.push({
+    thumbnailBase64: `data:image/jpeg;base64,mock_${k}`,
+    sharpnessScore: 20,
+    capturedAt: new Date().toISOString(),
+    pose: 'profile_left',
+    poseLabel: 'Perfil Izquierdo'
+  });
 }
 currentDoc.bestFaceScore = 10; // score bajo para que la captura con score 67 active incorporación
 customerService.saveOrUpdateCustomer(currentDoc);
@@ -530,7 +563,7 @@ for (let photoNum = 2; photoNum <= 20; photoNum++) {
     embedding: newEmb,
     faceThumbnailBase64: newThumb,
     sharpnessScore: 50 + photoNum
-  });
+  }, { skipCanonicalCheck: true });
 
   assert.strictEqual(res.photos.length, photoNum, `Debe tener ${photoNum} fotos tras la adición`);
   assert.strictEqual(res.embeddings.length, 20, "Debe mantener 20 embeddings");
@@ -547,7 +580,7 @@ const rotResult = enrichPersonAngles(currentLegacy, {
   embedding: rotEmb,
   faceThumbnailBase64: rotThumb,
   sharpnessScore: 90
-});
+}, { skipCanonicalCheck: true });
 assert.strictEqual(rotResult.photos.length, 20, "Debe mantener máximo 20 fotos");
 assert.strictEqual(rotResult.embeddings.length, 20, "Debe mantener máximo 20 embeddings");
 assert.strictEqual(rotResult.photos[0].thumbnailBase64, "data:image/jpeg;base64,initial_legacy_photo", "Debe conservar la foto inicial de referencia en índice 0");
@@ -555,6 +588,115 @@ assert.deepStrictEqual(rotResult.embeddings[0], createUnitVector(512, 0), "Debe 
 assert.strictEqual(rotResult.photos[19].thumbnailBase64, rotThumb, "La última foto debe ser la recién incorporada");
 assert.deepStrictEqual(rotResult.embeddings[19], rotEmb, "El último embedding debe ser el recién incorporado");
 console.log("-> Correspondencia 1:1 y sincronización progresiva de perfiles legados validada exitosamente.");
+
+// 12. Regla de Exclusión del Barbero y Unicidad ("si se parece al barbero, no se guarda")
+console.log("\n[12] Probando exclusión estricta del barbero y regla de unicidad...");
+resetPendingCandidates();
+
+const staffBarberProfile = {
+  id: "staff_barbero_test",
+  name: "Barbero Test",
+  isStaff: true,
+  role: "barber",
+  embedding: enriqueEmbedding,
+  embeddings: [enriqueEmbedding],
+  photos: [{
+    thumbnailBase64: "data:image/jpeg;base64,barber_mock",
+    sharpnessScore: 95,
+    capturedAt: new Date().toISOString(),
+    pose: "frontal",
+    poseLabel: "Frontal"
+  }]
+};
+
+// Mock DB con Barbero registrado
+const staffStorage = new Map();
+staffStorage.set("staff_barbero_test", staffBarberProfile);
+const staffMockDb = {
+  collection: () => ({
+    get: async () => Array.from(staffStorage.entries()).map(([id, data]) => ({ id, data: () => data }))
+  }),
+  doc: (path) => ({
+    get: async () => {
+      const id = path.replace("camera_catcher_people/", "");
+      const d = staffStorage.get(id);
+      return { exists: !!d, data: () => d };
+    },
+    set: async (val) => {
+      const id = path.replace("camera_catcher_people/", "");
+      staffStorage.set(id, val);
+    }
+  })
+};
+
+// Cliente sentado en silla de corte
+const clientDocInChair = {
+  id: "client_frecuente_100",
+  name: "Cliente Frecuente 100",
+  isStaff: false,
+  role: "client",
+  embedding: createUnitVector(512, 100),
+  embeddings: [createUnitVector(512, 100)],
+  photos: [{
+    thumbnailBase64: "data:image/jpeg;base64,client_100",
+    sharpnessScore: 90,
+    capturedAt: new Date().toISOString(),
+    pose: "frontal",
+    poseLabel: "Frontal"
+  }]
+};
+staffStorage.set("client_frecuente_100", clientDocInChair);
+
+// Sesión activa del cliente en la silla
+const chairSession = [{
+  visitId: "visit_client_100",
+  chairId: "silla_corte_vip",
+  personId: "client_frecuente_100",
+  personName: "Cliente Frecuente 100",
+  isStaff: false
+}];
+
+// El barbero se asoma a la silla_corte_vip (su cara genera crop en la zona de la silla)
+const barberCropInClientChair = {
+  id: "crop_barbero_inclinado",
+  zoneId: "silla_corte_vip",
+  zoneType: "barber_chair",
+  box: [50, 50, 200, 200],
+  confidence: 0.95,
+  status: "en_corte",
+  capturePerson: true,
+  buffer: barberImgBuffer // Rostro del barbero
+};
+
+// Ejecución: cuando el barbero se asoma a la silla del cliente:
+// DEBE ser clasificado como Barbero (isStaff: true).
+// NO debe contaminar al cliente ni agregarle fotos.
+const staffRecognitionResult = await processPeopleRecognition(
+  staffMockDb,
+  [{ id: "crop_barbero_inclinado", storagePath: null }],
+  [barberCropInClientChair],
+  chairSession
+);
+
+assert.strictEqual(staffRecognitionResult.length, 1);
+assert.strictEqual(staffRecognitionResult[0].isStaff, true, "Debe ser clasificado como Barbero/Staff");
+assert.strictEqual(staffRecognitionResult[0].personId, "staff_barbero_test", "Debe ser el Barbero");
+
+const unpollutedClient = staffStorage.get("client_frecuente_100");
+assert.strictEqual(unpollutedClient.photos.length, 1, "La galería del cliente NO debe ser contaminada con fotos del barbero");
+assert.strictEqual(unpollutedClient.embeddings.length, 1, "Los embeddings del cliente NO deben ser contaminados con los del barbero");
+console.log("-> Exclusión estricta del barbero en silla activa validada: el barbero fue identificado como Staff y la galería del cliente permaneció intacta.");
+
+// Prueba de rechazo de intruso no parecido: Si un rostro no se parece al cliente en la silla ni al barbero:
+// "guardar un rostro cuando solo haya una opcion" -> no se inyecta en el cliente
+const intruderEmbedding = createUnitVector(512, 250);
+const enrichIntruderAttempt = enrichPersonAngles(clientDocInChair, {
+  embedding: intruderEmbedding,
+  faceThumbnailBase64: "data:image/jpeg;base64,intruder",
+  sharpnessScore: 99
+});
+assert.strictEqual(enrichIntruderAttempt.rejected, true, "Debe rechazar enriquecimiento si no coincide con el rostro canónico");
+console.log("-> Candado de anclaje canónico validado: intruso rechazado exitosamente.");
 
 console.log("\n🎉 ¡Todos los tests del pipeline funcional de procesos pasaron exitosamente!");
 

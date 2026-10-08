@@ -117,7 +117,55 @@ console.log("-> Eliminación en cascada validada exitosamente.");
 
 client.close();
 
-// 8. Paridad de entornos de base de datos SQLite con Firestore ('(default)' y 'test')
+// 8. Test de Atenciones (Appointments)
+console.log("\n[8] Probando gestión de Atenciones (Appointments) en SQLiteClient...");
+const appClient = new SQLiteClient(":memory:");
+const sampleCustomer = {
+  id: "cust_app_01",
+  name: "Carlos Mendoza",
+  isStaff: false,
+  firstSeen: "2026-10-08T10:00:00.000Z",
+  lastSeen: "2026-10-08T10:45:00.000Z",
+  visitCount: 1
+};
+appClient.upsertCustomer(sampleCustomer);
+
+const sampleAppointment = {
+  id: "appt_01",
+  chairId: "silla_corte_1",
+  chairName: "Silla de Corte 1",
+  clientId: "cust_app_01",
+  clientName: "Carlos Mendoza",
+  startedAt: "2026-10-08T10:00:00.000Z",
+  endedAt: "2026-10-08T10:45:00.000Z",
+  durationMinutes: 45,
+  status: "completed",
+  bestFaceScore: 85.4,
+  photos: [{ url: "photo1.jpg" }]
+};
+
+appClient.saveAppointment(sampleAppointment);
+
+const retrievedAppt = appClient.getAppointmentById("appt_01");
+assert.ok(retrievedAppt, "Debe recuperar la atención guardada");
+assert.strictEqual(retrievedAppt.id, "appt_01");
+assert.strictEqual(retrievedAppt.clientId, "cust_app_01");
+assert.strictEqual(retrievedAppt.durationMinutes, 45);
+assert.strictEqual(retrievedAppt.photos.length, 1);
+
+const listByClient = appClient.getAppointmentsByClient("cust_app_01");
+assert.strictEqual(listByClient.length, 1);
+
+const allApps = appClient.getAppointments({ status: "completed" });
+assert.strictEqual(allApps.length, 1);
+
+const deletedAppt = appClient.deleteAppointment("appt_01");
+assert.strictEqual(deletedAppt, true);
+assert.strictEqual(appClient.getAppointmentById("appt_01"), null);
+appClient.close();
+console.log("-> Gestión de Atenciones (Appointments) validada exitosamente.");
+
+// 9. Paridad de entornos de base de datos SQLite con Firestore ('(default)' y 'test')
 console.log("\n[8] Probando paridad de entornos de base de datos SQLite (getResolvedSqlitePath / getSqliteClient)...");
 
 // 8.1 Resolución de rutas

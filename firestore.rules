@@ -17,6 +17,11 @@ service cloud.firestore {
       allow read, write: if true;
     }
 
+    // Registro de citas y atenciones formalizadas en sillas de corte
+    match /camera_catcher_appointments/{appointmentId} {
+      allow read, write: if true;
+    }
+
     // Por defecto denegar acceso a cualquier otra colección
     match /{document=**} {
       allow read, write: if false;

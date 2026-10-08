@@ -32,6 +32,10 @@ export async function cleanupZombies(containerName = DEFAULT_CONTAINER_NAME) {
     // Solo eliminar contenedores efímeros de captura, NUNCA el daemon RTSP permanente
     await execPromise(`docker ps -a -q --filter name=neolink-capture | xargs -r docker rm -f 2>/dev/null || true`);
     await execPromise(`pkill -9 -f 'neolink image' 2>/dev/null || true`);
+    // Purgar procesos zombies de FFmpeg asociados a RTSP / snapshots
+    await execPromise(`pkill -9 -f 'ffmpeg.*8554' 2>/dev/null || true`);
+    await execPromise(`pkill -9 -f 'ffmpeg.*barberia' 2>/dev/null || true`);
+    await execPromise(`pkill -9 -f 'ffmpeg.*snap_clear' 2>/dev/null || true`);
   } catch (err) {
     console.warn("[Neolink] Aviso durante limpieza inicial:", err.message);
   }
@@ -86,7 +90,7 @@ export async function captureSnapshotFromRtsp({
   timeoutMs = 8000
 }) {
   const cmd = `ffmpeg -y -rtsp_transport tcp -i "${rtspUrl}" -vframes 1 -f image2 "${localOutputPath}"`;
-  await execPromise(cmd, { timeout: timeoutMs });
+  await execPromise(cmd, { timeout: timeoutMs, killSignal: "SIGKILL" });
   const buffer = await fs.readFile(localOutputPath);
   try {
     await fs.unlink(localOutputPath);

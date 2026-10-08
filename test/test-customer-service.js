@@ -217,5 +217,34 @@ testClient.close();
 defaultClient.close();
 console.log("-> initForDatabase y separación de entornos SQLite validados exitosamente.");
 
+// 11. Sincronización desacoplada en segundo plano (backgroundSync: true)
+console.log("\n[10] Probando backgroundSync: true y waitForPendingSyncs...");
+const bgService = new CustomerService({ sqliteClient: memoryDb });
+const bgCustomer = {
+  id: "client_background",
+  name: "Cliente Asíncrono",
+  isStaff: false,
+  visitCount: 1,
+  bestFaceScore: 90.0,
+  embedding: dummyVector,
+  embeddings: [dummyVector]
+};
+
+const bgResult = await bgService.saveOrUpdateCustomer(bgCustomer, {
+  db: mockFirestore,
+  isNew: true,
+  backgroundSync: true
+});
+
+assert.strictEqual(bgResult.localSaved, true, "Debe guardar localmente sin esperar");
+assert.strictEqual(bgResult.queuedSync, true, "Debe marcar queuedSync");
+assert.ok(bgService.hasProfile("client_background"), "Debe estar en RAM de inmediato");
+assert.ok(bgService.pendingSyncs.size > 0, "Debe tener promesas de sincronización pendientes");
+
+await bgService.waitForPendingSyncs();
+assert.strictEqual(bgService.pendingSyncs.size, 0, "Todas las sincronizaciones deben haber terminado");
+assert.ok(firestoreStorage.has("client_background"), "Debe estar reflejado en Firestore tras completarse");
+console.log("-> backgroundSync y waitForPendingSyncs validados exitosamente.");
+
 memoryDb.close();
 console.log("\n🎉 ¡Todos los tests de CustomerService pasaron exitosamente!");

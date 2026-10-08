@@ -6,12 +6,13 @@ import AppBadge from '@/shared/ui/atoms/AppBadge.vue';
 import AppHeader from '@/widgets/app-header/ui/AppHeader.vue';
 import LiveMonitorPage from '@/pages/live-monitor/ui/LiveMonitorPage.vue';
 import HistoryPage from '@/pages/history/ui/HistoryPage.vue';
+import AppointmentsCalendar from '@/widgets/appointments-calendar/ui/AppointmentsCalendar.vue';
 import PhotoDetailModal from '@/widgets/photo-detail-modal/ui/PhotoDetailModal.vue';
 import QuadrantCalibratorModal from '@/widgets/quadrant-calibrator-modal/ui/QuadrantCalibratorModal.vue';
 import SettingsModal from '@/widgets/settings-modal/ui/SettingsModal.vue';
 import { usePhotos } from '@/entities/photo/model/usePhotos';
 
-// Active Tab state: 'live' | 'history'
+// Active Tab state: 'live' | 'history' | 'calendar'
 const activeTab = ref('live');
 
 // Modals state
@@ -82,6 +83,22 @@ const openCalibratorWithPhoto = (photo) => {
         <button
           type="button"
           role="tab"
+          :aria-selected="activeTab === 'calendar'"
+          @click="activeTab = 'calendar'"
+          :class="[
+            'flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs sm:text-sm font-semibold transition cursor-pointer',
+            activeTab === 'calendar'
+              ? 'bg-slate-800 text-white shadow-sm border border-slate-700'
+              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+          ]"
+        >
+          <AppIcon name="calendar_month" :size="18" :class="activeTab === 'calendar' ? 'text-blue-400' : ''" />
+          <span>Calendario de Atenciones</span>
+        </button>
+
+        <button
+          type="button"
+          role="tab"
           :aria-selected="activeTab === 'history'"
           @click="activeTab = 'history'"
           :class="[
@@ -102,6 +119,10 @@ const openCalibratorWithPhoto = (photo) => {
       v-if="activeTab === 'live'"
       @open-calibrator-photo="openCalibratorWithPhoto"
       @open-settings="showSettings = true"
+    />
+
+    <AppointmentsCalendar
+      v-else-if="activeTab === 'calendar'"
     />
 
     <HistoryPage

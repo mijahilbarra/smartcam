@@ -30,22 +30,43 @@ export function isLocalEnvironment() {
 }
 
 /**
+ * Normaliza una URL asegurando protocolo http:// o https:// y eliminando barras finales
+ * @param {string|null} url
+ * @returns {string|null}
+ */
+export function normalizeUrl(url) {
+  if (!url) return null;
+  let u = url.trim();
+  if (!u) return null;
+  if (!/^https?:\/\//i.test(u)) {
+    if (/^(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?/i.test(u)) {
+      u = `http://${u}`;
+    } else {
+      u = `https://${u}`;
+    }
+  }
+  return u.replace(/\/+$/, '');
+}
+
+/**
  * Obtiene la configuración y estado completo del entorno actual
  */
 export function getEnvironmentInfo() {
   const isLocal = isLocalEnvironment();
   const rawCustomUrl = typeof localStorage !== 'undefined' ? localStorage.getItem('CAMERA_CATCHER_API_URL') : null;
-  const customUrl = rawCustomUrl && rawCustomUrl.trim() ? rawCustomUrl.trim().replace(/\/+$/, '') : null;
-  const envUrl = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_CAMERA_CATCHER_API_URL)
-    ? import.meta.env.VITE_CAMERA_CATCHER_API_URL.trim().replace(/\/+$/, '')
-    : null;
+  const customUrl = normalizeUrl(rawCustomUrl);
+  const envUrl = normalizeUrl(
+    typeof import.meta !== 'undefined' && import.meta.env
+      ? import.meta.env.VITE_CAMERA_CATCHER_API_URL
+      : null
+  );
   const customDb = typeof localStorage !== 'undefined' ? localStorage.getItem('CAMERA_CATCHER_FIRESTORE_DB') : null;
   const customStorage = typeof localStorage !== 'undefined' ? localStorage.getItem('CAMERA_CATCHER_STORAGE_BUCKET') : null;
 
-  // En local por defecto se utiliza la base de datos "test" y el bucket "gs://skip-bigotes-test".
-  // En producción (GCP / Hosting) se utiliza "(default)" y "gs://skip-bigotes.firebasestorage.app".
-  const databaseId = customDb || (isLocal ? 'test' : '(default)');
-  const storageBucket = customStorage || (isLocal ? 'gs://skip-bigotes-test' : 'gs://skip-bigotes.firebasestorage.app');
+  // Base de datos oficial con datos reales de la barbería.
+  // Permite override si el usuario selecciona explícitamente otra base en la configuración.
+  const databaseId = customDb || '(default)';
+  const storageBucket = customStorage || 'gs://skip-bigotes.firebasestorage.app';
 
   // Resolución prioritaria de backendUrl:
   // 1. customUrl desde localStorage ('CAMERA_CATCHER_API_URL') si existe
