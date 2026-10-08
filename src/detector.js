@@ -266,7 +266,12 @@ export async function detectObjectsAndQuadrants(imageBuffer, options = {}) {
   const shouldAnnotate = typeof options === "object" && options.generateAnnotated !== undefined ? options.generateAnnotated : false;
   // En modo realtime continuo permitir reutilizar detecciones si la escena está inmóvil (ahorra CPU en e2-micro)
   const skipAllowed = typeof options === "object" && options.skipStatic !== undefined ? options.skipStatic : true;
-  const maxSkips = isRealtime ? 3 : MAX_CONSECUTIVE_STATIC_SKIPS;
+  const hasHumansInLastResult = (lastDetectionResult?.rawDetections || []).some(d => d.class === "person");
+  // Modo centinela: si no hay personas en la escena y la escena está inmóvil, permitir hasta 25 saltos (~30s a 0% CPU)
+  // Si hay personas en la escena, permitir hasta 5 saltos para mantener reactividad en el tracking
+  const maxSkips = isRealtime
+    ? (hasHumansInLastResult ? 5 : 25)
+    : MAX_CONSECUTIVE_STATIC_SKIPS;
 
   // Comparación contra fotograma previo
   const diff = await checkFrameDifference(imageBuffer, changeThreshold);

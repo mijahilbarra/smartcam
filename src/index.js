@@ -25,6 +25,7 @@ import { CaptureOrchestrator } from "./services/capture_orchestrator.js";
 import { StreamServer } from "./infrastructure/streaming/stream_server.js";
 import { telemetryStream } from "./infrastructure/streaming/telemetry_stream.js";
 import { getSqliteClient } from "./infrastructure/storage/sqlite_client.js";
+import { getSystemMemoryMetrics } from "./core/system_metrics.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -84,6 +85,7 @@ app.get("/", (req, res) => {
     status: "ok",
     service: "iot-camera-catcher",
     vm: "gcp-e2-micro",
+    memory: getSystemMemoryMetrics(),
     workingHours: workingHours.getState(),
     timestamp: new Date().toISOString()
   });
