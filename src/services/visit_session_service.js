@@ -372,6 +372,8 @@ export class VisitSessionService {
 
     this.completedAppointments.push(appointmentRecord);
     this.completedVisits.push(appointmentRecord);
+    if (this.completedAppointments.length > 20) this.completedAppointments.shift();
+    if (this.completedVisits.length > 20) this.completedVisits.shift();
 
     // Persistir en SQLite si el cliente está disponible
     const sqlite = this.sqliteClient || (this.customerService?.sqliteClient);
@@ -383,11 +385,10 @@ export class VisitSessionService {
       }
     }
 
-    // Persistir en Firestore en camera_catcher_appointments y camera_catcher_visits
+    // Persistir en Firestore en camera_catcher_appointments
     if (this.db) {
       try {
         await this.db.doc(`camera_catcher_appointments/${appointmentRecord.id}`).set(appointmentRecord);
-        await this.db.doc(`camera_catcher_visits/${appointmentRecord.id}`).set(appointmentRecord);
         console.log(`[Appointment] ✅ Atención registrada exitosamente en camera_catcher_appointments/${appointmentRecord.id} (${appointmentRecord.clientName}, ${durationMinutes} min, ${session.photos.length} fotos).`);
       } catch (dbErr) {
         console.error(`[Appointment] Error guardando atención en Firestore:`, dbErr.message);

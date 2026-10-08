@@ -1,6 +1,7 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { db, resolveStorageUrl, IS_LOCAL_ENV, getEnvironmentInfo, normalizeUrl } from '@/shared/api/firebase';
+import { setSystemMemory } from './useSystemMemory';
 
 export function useDaemonState() {
   const daemonState = ref(null);
@@ -325,6 +326,10 @@ export function useDaemonState() {
 
             if (data.occupancy) {
               liveOccupancy.value = data.occupancy;
+            }
+
+            if (data.memory) {
+              setSystemMemory(data.memory);
             }
           }
         } catch (_) {}

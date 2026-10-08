@@ -84,7 +84,7 @@ const startSnapshotFallback = () => {
     // Si el stream MJPEG ya está activo y cargado, no saturar la red con polling continuo
     if (streamActive.value && streamLoaded.value) return;
     fetchSnapshotFallback();
-  }, 1500);
+  }, 500);
 };
 
 const stopSnapshotFallback = () => {

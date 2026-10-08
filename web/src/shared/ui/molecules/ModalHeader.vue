@@ -11,6 +11,10 @@ defineProps({
     type: String,
     default: null
   },
+  iconColor: {
+    type: String,
+    default: 'text-blue-400'
+  },
   tag: {
     type: String,
     default: null
@@ -23,7 +27,7 @@ const emit = defineEmits(['close']);
 <template>
   <div class="flex items-center justify-between p-4 sm:p-5 border-b border-slate-700/80 bg-slate-800/50">
     <div class="flex items-center gap-3">
-      <AppIcon v-if="icon" :name="icon" :size="22" class="text-blue-400" />
+      <AppIcon v-if="icon" :name="icon" :size="22" :class="iconColor || 'text-blue-400'" />
       <div>
         <div class="flex items-center gap-2">
           <h3 class="text-base sm:text-lg font-semibold text-slate-100">{{ title }}</h3>

@@ -6,6 +6,10 @@
 import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
+import sharp from "sharp";
+
+sharp.concurrency(1);
+sharp.cache(false);
 
 // Re-exports de compatibilidad para suites de prueba y clientes externos
 export { parseTimeToMinutes, isWithinWorkingHours, WorkingHoursManager } from "./core/working_hours.js";
@@ -24,7 +28,7 @@ import { WorkingHoursManager } from "./core/working_hours.js";
 import { CaptureOrchestrator } from "./services/capture_orchestrator.js";
 import { StreamServer } from "./infrastructure/streaming/stream_server.js";
 import { telemetryStream } from "./infrastructure/streaming/telemetry_stream.js";
-import { getSqliteClient } from "./infrastructure/storage/sqlite_client.js";
+import { getSystemMemoryMetrics } from "./core/system_metrics.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -73,7 +77,7 @@ const app = express();
 app.use(express.json());
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
@@ -84,6 +88,7 @@ app.get("/", (req, res) => {
     status: "ok",
     service: "iot-camera-catcher",
     vm: "gcp-e2-micro",
+    memory: getSystemMemoryMetrics(),
     workingHours: workingHours.getState(),
     timestamp: new Date().toISOString()
   });
@@ -111,41 +116,6 @@ app.get(["/api/yolo/latest", "/api/telemetry/latest"], (req, res) => {
   res.json(telemetryStream.getLatestTelemetry() || { status: "no_data_yet" });
 });
 
-app.get("/api/visits/active", (req, res) => {
-  res.json({
-    activeSessions: orchestrator.visitService.getActiveSessions(),
-    timestamp: new Date().toISOString()
-  });
-});
-
-app.get(["/api/appointments", "/appointments"], (req, res) => {
-  try {
-    const sqlite = orchestrator.visitService?.sqliteClient || getSqliteClient();
-    const list = sqlite.getAppointments();
-    res.json({ appointments: list, count: list.length });
-  } catch (err) {
-    res.status(500).json({ error: err.message, appointments: [] });
-  }
-});
-
-app.all("/capture", (req, res) => {
-  if (orchestrator.isCapturing) {
-    return res.status(409).json({
-      success: false,
-      status: "already_running",
-      message: "Ya hay una captura en curso."
-    });
-  }
-
-  orchestrator.execute("manual").catch(err => console.error("[Daemon] Error en captura asíncrona:", err));
-
-  return res.status(202).json({
-    success: true,
-    status: "started",
-    message: "Ciclo de captura iniciado exitosamente."
-  });
-});
-
 const PORT = process.env.PORT || 8085;
 const server = app.listen(PORT, () => {
   console.log(`[Server] Daemon escuchando en http://localhost:${PORT}`);
@@ -164,8 +134,9 @@ registerFirestoreListeners({
   onManualCapture: (src) => orchestrator.execute(src)
 });
 
-const DEFAULT_REALTIME_INTERVAL_MS = Number(process.env.REALTIME_INTERVAL_MS) || 1200;
-let realtimeLoopInterval = null;
+const DEFAULT_REALTIME_INTERVAL_MS = Number(process.env.REALTIME_INTERVAL_MS) || 400;
+let isRealtimeLoopRunning = false;
+let realtimeLoopTimeout = null;
 
 const PROD_STREAM_URL = process.env.PROD_STREAM_URL || "https://stream.perrosuelto.com";
 
@@ -203,27 +174,41 @@ export async function checkProductionStream(url = PROD_STREAM_URL, timeoutMs = 6
 }
 
 export function startRealtimeLoop(intervalMs = DEFAULT_REALTIME_INTERVAL_MS) {
-  // Asegurar que el stream esté activo permanentemente para alimentar frames a memoria en 0ms
   streamServer.startFfmpegStream(true);
+  if (isRealtimeLoopRunning) return;
+  isRealtimeLoopRunning = true;
 
-  if (realtimeLoopInterval) clearInterval(realtimeLoopInterval);
-  realtimeLoopInterval = setInterval(async () => {
-    if (!workingHours.isWorkingNow()) return;
-    if (orchestrator.isCapturing) return;
+  const loopStep = async () => {
+    if (!isRealtimeLoopRunning) return;
+    if (!workingHours.isWorkingNow()) {
+      realtimeLoopTimeout = setTimeout(loopStep, 5000);
+      return;
+    }
 
+    const start = Date.now();
     try {
-      await orchestrator.execute("realtime");
+      if (!orchestrator.isCapturing) {
+        await orchestrator.execute("realtime");
+      }
     } catch (err) {
       console.warn("[RealtimeLoop] Aviso en ciclo de visión:", err.message);
     }
-  }, intervalMs);
-  console.log(`[RealtimeLoop] Bucle de visión continua activo cada ${intervalMs / 1000}s (${(1000 / intervalMs).toFixed(1)} FPS).`);
+
+    if (!isRealtimeLoopRunning) return;
+    const elapsed = Date.now() - start;
+    const delay = Math.max(10, intervalMs - elapsed);
+    realtimeLoopTimeout = setTimeout(loopStep, delay);
+  };
+
+  console.log(`[RealtimeLoop] Bucle de visión continua activo cadencia dinámica ~${intervalMs}ms (${(1000 / intervalMs).toFixed(1)} FPS objetivo).`);
+  loopStep();
 }
 
 export function stopRealtimeLoop() {
-  if (realtimeLoopInterval) {
-    clearInterval(realtimeLoopInterval);
-    realtimeLoopInterval = null;
+  isRealtimeLoopRunning = false;
+  if (realtimeLoopTimeout) {
+    clearTimeout(realtimeLoopTimeout);
+    realtimeLoopTimeout = null;
   }
 }
 

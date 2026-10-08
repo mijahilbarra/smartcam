@@ -25,7 +25,9 @@ export async function getFaceInferenceSession() {
       executionProviders: ["cpu"],
       graphOptimizationLevel: "basic",
       intraOpNumThreads: 1, // Cap to 1 thread for low CPU footprint
-      interOpNumThreads: 1
+      interOpNumThreads: 1,
+      enableCpuMemArena: false,
+      enableMemPattern: false
     });
     console.log(`[FaceRecognizer] Modelo facial inicializado en ${Date.now() - t0} ms.`);
   }

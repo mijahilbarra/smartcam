@@ -1,6 +1,6 @@
 import { ref, onMounted, onUnmounted } from 'vue';
-import { collection, onSnapshot } from 'firebase/firestore';
-import { db, BACKEND_URL, resolveStorageUrl } from '@/shared/api/firebase';
+import { collection, doc, deleteDoc, onSnapshot } from 'firebase/firestore';
+import { db, resolveStorageUrl } from '@/shared/api/firebase';
 
 export function useAppointments() {
   const appointments = ref([]);
@@ -12,27 +12,6 @@ export function useAppointments() {
   const isValidUrlOrBase64 = (val) => {
     if (!val || typeof val !== 'string') return false;
     return val.startsWith('data:image/') || val.startsWith('http://') || val.startsWith('https://') || val.startsWith('blob:');
-  };
-
-  /**
-   * Intenta consultar el endpoint local del backend (/api/appointments) que lee directamente de SQLite
-   */
-  const fetchFromBackendFallback = async () => {
-    try {
-      const baseUrl = BACKEND_URL || (typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.hostname}:8085` : 'http://localhost:8085');
-      const res = await fetch(`${baseUrl}/api/appointments`);
-      if (!res.ok) return false;
-      const data = await res.json();
-      if (Array.isArray(data.appointments) && data.appointments.length > 0) {
-        appointments.value = data.appointments.map(mapAppointmentRecord);
-        appointments.value.sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
-        console.log(`[Appointments] Cargadas ${data.appointments.length} atenciones reales desde SQLite local.`);
-        return true;
-      }
-    } catch (err) {
-      console.warn('[Appointments] No se pudo consultar SQLite local:', err.message);
-    }
-    return false;
   };
 
   /**
@@ -106,40 +85,50 @@ export function useAppointments() {
     try {
       const colRef = collection(db, 'camera_catcher_appointments');
       
-      unsubscribe = onSnapshot(colRef, async (snapshot) => {
+      unsubscribe = onSnapshot(colRef, (snapshot) => {
         const list = [];
         snapshot.forEach((docSnap) => {
           list.push(mapAppointmentRecord(docSnap.data(), docSnap.id));
         });
-
-        if (list.length > 0) {
-          list.sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
-          appointments.value = list;
-          loading.value = false;
-        } else {
-          // Si Firestore aún no tiene documentos cargados, intentar SQLite local
-          const loadedFromBackend = await fetchFromBackendFallback();
-          if (!loadedFromBackend) {
-            appointments.value = [];
-          }
-          loading.value = false;
-        }
-      }, async (err) => {
-        console.warn('[Appointments] Error en snapshot de Firestore, intentando SQLite local:', err.message);
+        list.sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
+        appointments.value = list;
+        loading.value = false;
+      }, (err) => {
+        console.warn('[Appointments] Error en snapshot de Firestore:', err.message);
         error.value = err.message;
-        const loadedFromBackend = await fetchFromBackendFallback();
-        if (!loadedFromBackend) {
-          appointments.value = [];
-        }
         loading.value = false;
       });
     } catch (err) {
       console.warn('[Appointments] Excepción inicializando suscripción:', err.message);
       error.value = err.message;
-      fetchFromBackendFallback().then(loaded => {
-        if (!loaded) appointments.value = [];
-        loading.value = false;
-      });
+      loading.value = false;
+    }
+  };
+
+  /**
+   * Elimina una atención de Firestore (camera_catcher_appointments y camera_catcher_visits)
+   */
+  const deleteAppointment = async (appointmentId, { deletePersonId = null } = {}) => {
+    if (!appointmentId) return;
+    try {
+      // 1. Eliminar de Firestore camera_catcher_appointments
+      const apptRef = doc(db, 'camera_catcher_appointments', appointmentId);
+      await deleteDoc(apptRef);
+
+      // 2. Eliminar de Firestore camera_catcher_visits si existe
+      try {
+        const visitRef = doc(db, 'camera_catcher_visits', appointmentId);
+        await deleteDoc(visitRef);
+      } catch (vErr) {
+        // Silencioso si no existía documento en visits
+      }
+
+      // Actualizar reactividad local inmediatamente
+      appointments.value = appointments.value.filter(a => a.id !== appointmentId);
+      return { success: true };
+    } catch (err) {
+      console.error('[Appointments] Error eliminando atención:', err);
+      throw err;
     }
   };
 
@@ -157,6 +146,7 @@ export function useAppointments() {
     appointments,
     loading,
     error,
-    refresh: subscribe
+    refresh: subscribe,
+    deleteAppointment
   };
 }

@@ -1,4 +1,5 @@
 import { telemetryStream } from "../../infrastructure/streaming/telemetry_stream.js";
+import { getSystemMemoryMetrics } from "../../core/system_metrics.js";
 
 /**
  * 9. Emisión de telemetría de baja latencia por Server-Sent Events (SSE).
@@ -54,6 +55,7 @@ export function broadcastTelemetry({ docId, mlResult, activeTracks = [], identif
       visitCount: p.visitCount || 1,
       box: p.box
     })),
-    occupancy
+    occupancy,
+    memory: getSystemMemoryMetrics()
   });
 }

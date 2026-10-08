@@ -68,7 +68,9 @@ export async function getRfbInferenceSession() {
       executionProviders: ["cpu"],
       graphOptimizationLevel: "basic",
       intraOpNumThreads: 1,
-      interOpNumThreads: 1
+      interOpNumThreads: 1,
+      enableCpuMemArena: false,
+      enableMemPattern: false
     });
   }
   return rfbSession;

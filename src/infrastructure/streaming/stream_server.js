@@ -5,6 +5,11 @@
  */
 
 import { spawn } from "child_process";
+import http from "http";
+import https from "https";
+
+const JPEG_SOI = Buffer.from([0xff, 0xd8]);
+const JPEG_EOI = Buffer.from([0xff, 0xd9]);
 
 export class StreamServer {
   constructor(options = {}) {
@@ -16,7 +21,10 @@ export class StreamServer {
     this.isActive = false;
     this.isRemoteRelay = false;
     this.remoteRelayUrl = null;
-    this.remoteRelayInterval = null;
+    this.remoteRelayActive = false;
+    this.relayRequest = null;
+    this.relayWatchdog = null;
+    this.relayReconnectTimer = null;
     this.reconnectAttempts = 0;
     this.reconnectTimer = null;
   }
@@ -38,44 +46,111 @@ export class StreamServer {
   }
 
   startRemoteRelayLoop() {
-    if (this.remoteRelayInterval) return;
+    if (this.remoteRelayActive) return;
+    this.remoteRelayActive = true;
     this.isActive = true;
 
-    const pollFrame = async () => {
-      if (!this.isRemoteRelay || !this.remoteRelayUrl) return;
-      try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 2000);
-        const res = await fetch(`${this.remoteRelayUrl}/api/snapshot`, {
-          method: "GET",
-          signal: controller.signal,
-          headers: { "Cache-Control": "no-cache" }
-        });
-        clearTimeout(timer);
-        if (res.ok) {
-          const arrayBuffer = await res.arrayBuffer();
-          if (arrayBuffer.byteLength > 1000) {
-            const frame = Buffer.from(arrayBuffer);
+    const connectRelay = () => {
+      if (!this.isRemoteRelay || !this.remoteRelayUrl || !this.remoteRelayActive) return;
+
+      const isHttps = this.remoteRelayUrl.startsWith("https");
+      const transport = isHttps ? https : http;
+      const streamEndpoint = `${this.remoteRelayUrl}/api/stream`;
+
+      console.log(`[Stream Relay] Conectando flujo continuo MJPEG persistente a: ${streamEndpoint}...`);
+
+      let chunkBuffer = Buffer.alloc(0);
+      let lastFrameTime = Date.now();
+
+      const req = transport.get(streamEndpoint, { headers: { "Cache-Control": "no-cache" } }, (res) => {
+        if (res.statusCode !== 200) {
+          console.warn(`[Stream Relay] Respuesta HTTP no-200 (${res.statusCode}). Reintentando en 3s...`);
+          res.resume();
+          scheduleReconnect();
+          return;
+        }
+
+        res.on("data", (data) => {
+          chunkBuffer = Buffer.concat([chunkBuffer, data]);
+          const firstSoi = chunkBuffer.indexOf(JPEG_SOI);
+          if (firstSoi > 0) {
+            chunkBuffer = chunkBuffer.slice(firstSoi);
+          }
+
+          let startIndex = chunkBuffer.indexOf(JPEG_SOI);
+          let endIndex = chunkBuffer.indexOf(JPEG_EOI);
+
+          while (startIndex !== -1 && endIndex !== -1 && endIndex > startIndex) {
+            const frame = chunkBuffer.slice(startIndex, endIndex + 2);
+            chunkBuffer = chunkBuffer.slice(endIndex + 2);
+
+            lastFrameTime = Date.now();
             this.latestFrameBuffer = frame;
             this.broadcastFrame(frame);
+
+            startIndex = chunkBuffer.indexOf(JPEG_SOI);
+            endIndex = chunkBuffer.indexOf(JPEG_EOI);
           }
+        });
+
+        res.on("end", () => {
+          console.warn("[Stream Relay] Flujo remoto finalizado. Reconectando...");
+          scheduleReconnect();
+        });
+
+        res.on("error", (err) => {
+          console.warn("[Stream Relay] Error en flujo remoto:", err.message);
+          scheduleReconnect();
+        });
+      });
+
+      req.on("error", (err) => {
+        console.warn("[Stream Relay] Error de conexión hacia origen:", err.message);
+        scheduleReconnect();
+      });
+
+      this.relayRequest = req;
+
+      if (this.relayWatchdog) clearInterval(this.relayWatchdog);
+      this.relayWatchdog = setInterval(() => {
+        if (this.remoteRelayActive && Date.now() - lastFrameTime > 10000) {
+          console.warn("[Stream Relay] Sin fotogramas remotos (>10s). Reiniciando conexión...");
+          if (this.relayWatchdog) clearInterval(this.relayWatchdog);
+          try { req.destroy(); } catch (_) {}
+          scheduleReconnect();
         }
-      } catch (_) {
-        // Silencioso ante pérdidas transitorias de red
-      }
+      }, 3000);
+
+      const scheduleReconnect = () => {
+        if (this.relayWatchdog) {
+          clearInterval(this.relayWatchdog);
+          this.relayWatchdog = null;
+        }
+        if (this.relayReconnectTimer) clearTimeout(this.relayReconnectTimer);
+        if (this.remoteRelayActive) {
+          this.relayReconnectTimer = setTimeout(connectRelay, 3000);
+        }
+      };
     };
 
-    // Polling a ~2 FPS (500ms) para telemetría y visualización fluida sin sobrecargar red
-    this.remoteRelayInterval = setInterval(pollFrame, 500);
-    pollFrame();
+    connectRelay();
   }
 
   disableRemoteRelay() {
     this.isRemoteRelay = false;
     this.remoteRelayUrl = null;
-    if (this.remoteRelayInterval) {
-      clearInterval(this.remoteRelayInterval);
-      this.remoteRelayInterval = null;
+    this.remoteRelayActive = false;
+    if (this.relayWatchdog) {
+      clearInterval(this.relayWatchdog);
+      this.relayWatchdog = null;
+    }
+    if (this.relayReconnectTimer) {
+      clearTimeout(this.relayReconnectTimer);
+      this.relayReconnectTimer = null;
+    }
+    if (this.relayRequest) {
+      try { this.relayRequest.destroy(); } catch (_) {}
+      this.relayRequest = null;
     }
     console.log("[Stream] Modo Relay Remoto desactivado.");
   }
@@ -178,14 +253,14 @@ export class StreamServer {
         chunkBuffer = Buffer.concat([chunkBuffer, data]);
 
         // Descartar bytes corruptos previos al primer SOI (0xFF, 0xD8)
-        const firstSoi = chunkBuffer.indexOf(Buffer.from([0xff, 0xd8]));
+        const firstSoi = chunkBuffer.indexOf(JPEG_SOI);
         if (firstSoi > 0) {
           chunkBuffer = chunkBuffer.slice(firstSoi);
         }
 
         // Delimitador JPEG: SOI (0xFFD8) y EOI (0xFFD9)
-        let startIndex = chunkBuffer.indexOf(Buffer.from([0xff, 0xd8]));
-        let endIndex = chunkBuffer.indexOf(Buffer.from([0xff, 0xd9]));
+        let startIndex = chunkBuffer.indexOf(JPEG_SOI);
+        let endIndex = chunkBuffer.indexOf(JPEG_EOI);
 
         while (startIndex !== -1 && endIndex !== -1 && endIndex > startIndex) {
           const frame = chunkBuffer.slice(startIndex, endIndex + 2);
@@ -196,12 +271,12 @@ export class StreamServer {
           this.latestFrameBuffer = frame;
           this.broadcastFrame(frame);
 
-          const nextSoi = chunkBuffer.indexOf(Buffer.from([0xff, 0xd8]));
+          const nextSoi = chunkBuffer.indexOf(JPEG_SOI);
           if (nextSoi > 0) {
             chunkBuffer = chunkBuffer.slice(nextSoi);
           }
-          startIndex = chunkBuffer.indexOf(Buffer.from([0xff, 0xd8]));
-          endIndex = chunkBuffer.indexOf(Buffer.from([0xff, 0xd9]));
+          startIndex = chunkBuffer.indexOf(JPEG_SOI);
+          endIndex = chunkBuffer.indexOf(JPEG_EOI);
         }
 
         // Si el buffer crece demasiado por datos corruptos, reiniciar
@@ -262,10 +337,7 @@ export class StreamServer {
     }
     if (this.isRemoteRelay) {
       if (!force && this.isPersistent) return;
-      if (this.remoteRelayInterval) {
-        clearInterval(this.remoteRelayInterval);
-        this.remoteRelayInterval = null;
-      }
+      this.disableRemoteRelay();
       this.isActive = false;
       return;
     }
