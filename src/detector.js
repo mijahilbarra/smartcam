@@ -147,6 +147,8 @@ export async function checkFrameDifference(imageBuffer, thresholdPercent = 2.5) 
   return { hasChanged, diffPercent: Number(diffPercent.toFixed(2)) };
 }
 
+const PREALLOC_FLOAT_DATA = new Float32Array(3 * 640 * 640);
+
 /**
  * Obtiene o inicializa la sesión ONNX (limitada a 1 hilo para mantener uso de CPU < 20%)
  */
@@ -158,7 +160,9 @@ export async function getInferenceSession() {
       executionProviders: ["cpu"],
       graphOptimizationLevel: "basic",
       intraOpNumThreads: 1,
-      interOpNumThreads: 1
+      interOpNumThreads: 1,
+      enableCpuMemArena: false,
+      enableMemPattern: false
     });
     console.log(`[Detector] Modelo ONNX inicializado en ${Date.now() - t0} ms (1 hilo CPU).`);
   }
@@ -180,17 +184,16 @@ async function preprocessImage(imageBuffer) {
     .raw()
     .toBuffer({ resolveWithObject: true });
 
-  const floatData = new Float32Array(3 * 640 * 640);
   const channelSize = 640 * 640;
   const INV_255 = 1.0 / 255.0;
 
   for (let i = 0; i < channelSize; i++) {
-    floatData[i] = data[i * 3] * INV_255;
-    floatData[channelSize + i] = data[i * 3 + 1] * INV_255;
-    floatData[2 * channelSize + i] = data[i * 3 + 2] * INV_255;
+    PREALLOC_FLOAT_DATA[i] = data[i * 3] * INV_255;
+    PREALLOC_FLOAT_DATA[channelSize + i] = data[i * 3 + 1] * INV_255;
+    PREALLOC_FLOAT_DATA[2 * channelSize + i] = data[i * 3 + 2] * INV_255;
   }
 
-  const tensor = new ort.Tensor("float32", floatData, [1, 3, 640, 640]);
+  const tensor = new ort.Tensor("float32", PREALLOC_FLOAT_DATA, [1, 3, 640, 640]);
   return { tensor, origWidth, origHeight };
 }
 

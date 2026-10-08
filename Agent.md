@@ -111,6 +111,17 @@ El repositorio utiliza GitHub Actions con filtros por ruta (`paths:`):
 
 ---
 
+### 9. El Servidor es Exclusivamente Motor de Visión (Cero Endpoints de API / CRUD)
+> [!IMPORTANT]
+> **EL SERVIDOR SOLO RECIBE IMAGEN Y PROCESA IMAGEN**.
+> El servidor / daemon (`src/index.js`) tiene una única responsabilidad: conectarse a la cámara/stream, adquirir fotogramas y procesar el pipeline de visión por computadora (detección YOLO, ArcFace y seguimiento).
+> 1. **Prohibición Total de Servir como API Web o Backend CRUD**: Queda terminantemente prohibido utilizar el servidor para servir endpoints de consulta, creación, modificación o eliminación de datos de negocio (como atenciones/appointments, perfiles de clientes, fotos o configuraciones).
+> 2. **Todo el Proceso de Datos Vive en el Frontend**: Toda la gestión de lectura, escritura y borrado de citas, clientes y configuraciones debe realizarse directamente desde el frontend (`web/`) comunicándose de forma serverless con Firebase (Cloud Firestore y Storage).
+> 3. **Cero Sobrecarga Extra en la Máquina Virtual**: La VM de cómputo (`e2-micro` o hardware de borde) debe dedicar el 100% de su capacidad a la inferencia neuronal y flujo de imágenes sin sobrecargas de peticiones HTTP de datos.
+> 4. **Comunicación Asíncrona vía Firestore**: Cualquier comando operativo desde el frontend hacia el daemon (como disparar una captura manual) se transmite exclusivamente mediante el bus de eventos de Firestore (`camera_catcher/commands`), el cual es escuchado en tiempo real por el daemon.
+
+---
+
 ## 🛠️ Resumen de Componentes Técnicos
 
 1. **Captura P2P (Neolink)**:

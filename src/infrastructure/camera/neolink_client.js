@@ -28,14 +28,14 @@ export async function killCaptureContainer(containerName = DEFAULT_CONTAINER_NAM
 export async function cleanupZombies(containerName = DEFAULT_CONTAINER_NAME) {
   try {
     console.log("[Neolink] Limpiando procesos y contenedores huérfanos de capturas anteriores...");
-    await execPromise(`docker rm -f ${containerName} 2>/dev/null || true`);
+    try { await execPromise(`docker rm -f ${containerName} 2>/dev/null || true`); } catch (_) {}
     // Solo eliminar contenedores efímeros de captura, NUNCA el daemon RTSP permanente
-    await execPromise(`docker ps -a -q --filter name=neolink-capture | xargs -r docker rm -f 2>/dev/null || true`);
-    await execPromise(`pkill -9 -f 'neolink image' 2>/dev/null || true`);
+    try { await execPromise(`docker ps -a -q --filter name=neolink-capture | xargs -r docker rm -f 2>/dev/null || true`); } catch (_) {}
+    try { await execPromise(`pkill -9 -f 'neolink image' 2>/dev/null || true`); } catch (_) {}
     // Purgar procesos zombies de FFmpeg asociados a RTSP / snapshots
-    await execPromise(`pkill -9 -f 'ffmpeg.*8554' 2>/dev/null || true`);
-    await execPromise(`pkill -9 -f 'ffmpeg.*barberia' 2>/dev/null || true`);
-    await execPromise(`pkill -9 -f 'ffmpeg.*snap_clear' 2>/dev/null || true`);
+    try { await execPromise(`pkill -9 -f 'ffmpeg.*8554' 2>/dev/null || true`); } catch (_) {}
+    try { await execPromise(`pkill -9 -f 'ffmpeg.*barberia' 2>/dev/null || true`); } catch (_) {}
+    try { await execPromise(`pkill -9 -f 'ffmpeg.*snap_clear' 2>/dev/null || true`); } catch (_) {}
   } catch (err) {
     console.warn("[Neolink] Aviso durante limpieza inicial:", err.message);
   }
@@ -51,16 +51,26 @@ export const DEFAULT_DAEMON_CONTAINER = "neolink-daemon";
  */
 export async function startNeolinkDaemon({ tomlPath, containerName = DEFAULT_DAEMON_CONTAINER }) {
   try {
-    const { stdout } = await execPromise(`docker ps -q --filter name=${containerName}`);
+    let stdout = "";
+    try {
+      const res = await execPromise(`docker ps -q --filter name=${containerName}`);
+      stdout = res.stdout;
+    } catch (_) {
+      return false;
+    }
     if (stdout.trim().length > 0) {
       console.log(`[Neolink] Daemon RTSP ya está en ejecución (${containerName}).`);
       return true;
     }
-    await execPromise(`docker rm -f ${containerName} 2>/dev/null || true`);
+    try { await execPromise(`docker rm -f ${containerName} 2>/dev/null || true`); } catch (_) {}
     const cmd = `docker run -d --name ${containerName} --restart unless-stopped -v "${tomlPath}":/etc/neolink.toml -p 8554:8554 quantumentangledandy/neolink:latest neolink rtsp -c /etc/neolink.toml`;
-    await execPromise(cmd);
-    console.log(`[Neolink] Daemon RTSP iniciado exitosamente en puerto 8554.`);
-    return true;
+    try {
+      await execPromise(cmd);
+      console.log(`[Neolink] Daemon RTSP iniciado exitosamente en puerto 8554.`);
+      return true;
+    } catch (_) {
+      return false;
+    }
   } catch (err) {
     console.warn(`[Neolink] Aviso iniciando daemon RTSP:`, err.message);
     return false;
@@ -72,8 +82,8 @@ export async function startNeolinkDaemon({ tomlPath, containerName = DEFAULT_DAE
  */
 export async function stopNeolinkDaemon(containerName = DEFAULT_DAEMON_CONTAINER) {
   try {
-    await execPromise(`docker rm -f ${containerName} 2>/dev/null || true`);
-    await execPromise(`pkill -9 -f 'neolink rtsp' 2>/dev/null || true`);
+    try { await execPromise(`docker rm -f ${containerName} 2>/dev/null || true`); } catch (_) {}
+    try { await execPromise(`pkill -9 -f 'neolink rtsp' 2>/dev/null || true`); } catch (_) {}
   } catch (_) {}
 }
 
@@ -106,8 +116,13 @@ export async function captureSnapshotFromRtsp({
 export async function captureSnapshotAdaptive(options) {
   try {
     return await captureSnapshotFromRtsp(options);
-  } catch (_) {
-    return await captureSnapshotWithDocker(options);
+  } catch (err) {
+    try {
+      return await captureSnapshotWithDocker(options);
+    } catch (_) {
+      console.warn("[Neolink] Captura Docker de respaldo no disponible (entorno desacoplado). Retornando null.");
+      return null;
+    }
   }
 }
 

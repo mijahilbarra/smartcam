@@ -65,7 +65,7 @@ assert.strictEqual(completed.isFrequent, true);
 assert.strictEqual(completed.status, "completed");
 
 // Verificar persistencia en Firestore mock
-const visitDocPath = `camera_catcher_visits/${completed.id}`;
+const visitDocPath = `camera_catcher_appointments/${completed.id}`;
 assert.ok(savedDocs[visitDocPath], "Debe haberse guardado en Firestore");
 assert.strictEqual(savedDocs[visitDocPath].personName, "Juan Pérez");
 console.log("-> Visita persistida en Firestore:", savedDocs[visitDocPath]);

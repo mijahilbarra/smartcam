@@ -6,6 +6,10 @@
 import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
+import sharp from "sharp";
+
+sharp.concurrency(1);
+sharp.cache(false);
 
 // Re-exports de compatibilidad para suites de prueba y clientes externos
 export { parseTimeToMinutes, isWithinWorkingHours, WorkingHoursManager } from "./core/working_hours.js";
@@ -24,7 +28,6 @@ import { WorkingHoursManager } from "./core/working_hours.js";
 import { CaptureOrchestrator } from "./services/capture_orchestrator.js";
 import { StreamServer } from "./infrastructure/streaming/stream_server.js";
 import { telemetryStream } from "./infrastructure/streaming/telemetry_stream.js";
-import { getSqliteClient } from "./infrastructure/storage/sqlite_client.js";
 import { getSystemMemoryMetrics } from "./core/system_metrics.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -74,7 +77,7 @@ const app = express();
 app.use(express.json());
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
@@ -111,58 +114,6 @@ app.get(["/api/yolo/stream", "/api/telemetry/stream"], (req, res) => {
 
 app.get(["/api/yolo/latest", "/api/telemetry/latest"], (req, res) => {
   res.json(telemetryStream.getLatestTelemetry() || { status: "no_data_yet" });
-});
-
-app.get("/api/visits/active", (req, res) => {
-  res.json({
-    activeSessions: orchestrator.visitService.getActiveSessions(),
-    timestamp: new Date().toISOString()
-  });
-});
-
-app.get(["/api/appointments", "/appointments"], (req, res) => {
-  try {
-    const sqlite = orchestrator.visitService?.sqliteClient || getSqliteClient();
-    const list = sqlite.getAppointments();
-    res.json({ appointments: list, count: list.length });
-  } catch (err) {
-    res.status(500).json({ error: err.message, appointments: [] });
-  }
-});
-
-app.delete(["/api/appointments/:id", "/appointments/:id"], (req, res) => {
-  try {
-    const { id } = req.params;
-    const deleteCustomer = req.query.deleteCustomer === 'true';
-    const customerId = req.query.customerId;
-    const sqlite = orchestrator.visitService?.sqliteClient || getSqliteClient();
-    const deleted = sqlite.deleteAppointment(id);
-    let customerDeleted = false;
-    if (deleteCustomer && customerId) {
-      customerDeleted = sqlite.deleteCustomer(customerId);
-    }
-    res.json({ success: true, deleted, customerDeleted, id });
-  } catch (err) {
-    res.status(500).json({ error: err.message, success: false });
-  }
-});
-
-app.all("/capture", (req, res) => {
-  if (orchestrator.isCapturing) {
-    return res.status(409).json({
-      success: false,
-      status: "already_running",
-      message: "Ya hay una captura en curso."
-    });
-  }
-
-  orchestrator.execute("manual").catch(err => console.error("[Daemon] Error en captura asíncrona:", err));
-
-  return res.status(202).json({
-    success: true,
-    status: "started",
-    message: "Ciclo de captura iniciado exitosamente."
-  });
 });
 
 const PORT = process.env.PORT || 8085;

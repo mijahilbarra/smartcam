@@ -222,5 +222,12 @@ const defaultService = new VisitSessionService();
 assert.strictEqual(defaultService.minAppointmentMinutes, 10, "minAppointmentMinutes debe ser 10 por defecto");
 console.log("-> Umbral por defecto de 10 minutos validado exitosamente.");
 
+console.log("\n[10] Probando eliminación de atención (appointment) y cliente asociado en SQLite...");
+assert.strictEqual(sqlite.deleteAppointment(candidateCompletion.id), true, "Debe eliminar la atención de SQLite");
+assert.strictEqual(sqlite.getAppointmentById(candidateCompletion.id), null, "La atención eliminada no debe existir");
+assert.strictEqual(sqlite.deleteCustomer(candidateCompletion.clientId), true, "Debe eliminar el cliente de SQLite");
+assert.strictEqual(sqlite.getCustomerById(candidateCompletion.clientId), null, "El cliente eliminado no debe existir");
+console.log("-> Eliminación de atención y cliente en cascada validada exitosamente.");
+
 sqlite.close();
 console.log("\n🎉 ¡Todas las pruebas del pipeline de Atenciones pasaron al 100%!");
