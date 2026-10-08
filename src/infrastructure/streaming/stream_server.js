@@ -66,6 +66,8 @@ export class StreamServer {
 
     const args = [
       "-rtsp_transport", "tcp",
+      "-analyzeduration", "15000000",
+      "-probesize", "1000000",
       "-i", this.rtspUrl,
       "-an",
       "-r", String(this.fps),
@@ -81,11 +83,11 @@ export class StreamServer {
       this.isActive = true;
       let lastFrameTime = Date.now();
 
-      // Watchdog de inactividad: Si FFmpeg no entrega fotogramas en 12 segundos, reiniciar
+      // Watchdog de inactividad: Si FFmpeg no entrega fotogramas en 20 segundos, reiniciar
       if (this.watchdogInterval) clearInterval(this.watchdogInterval);
       this.watchdogInterval = setInterval(() => {
-        if (this.isActive && Date.now() - lastFrameTime > 12000) {
-          console.warn("[Stream Watchdog] Inactividad de fotogramas detectada (>12s). Reiniciando ingesta FFmpeg...");
+        if (this.isActive && Date.now() - lastFrameTime > 20000) {
+          console.warn("[Stream Watchdog] Inactividad de fotogramas detectada (>20s). Reiniciando ingesta FFmpeg...");
           this.stopFfmpegStream(true);
           setTimeout(() => {
             if (this.isPersistent || this.clients.size > 0) {

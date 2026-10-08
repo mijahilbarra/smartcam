@@ -85,11 +85,11 @@ export async function stopNeolinkDaemon(containerName = DEFAULT_DAEMON_CONTAINER
  * @returns {Promise<Buffer>}
  */
 export async function captureSnapshotFromRtsp({
-  rtspUrl = "rtsp://127.0.0.1:8554/barberia/main",
+  rtspUrl = "rtsp://127.0.0.1:8554/barberia/sub",
   localOutputPath,
-  timeoutMs = 8000
+  timeoutMs = 15000
 }) {
-  const cmd = `ffmpeg -y -rtsp_transport tcp -i "${rtspUrl}" -vframes 1 -f image2 "${localOutputPath}"`;
+  const cmd = `ffmpeg -y -rtsp_transport tcp -analyzeduration 15000000 -probesize 1000000 -i "${rtspUrl}" -vframes 1 -f image2 "${localOutputPath}"`;
   await execPromise(cmd, { timeout: timeoutMs, killSignal: "SIGKILL" });
   const buffer = await fs.readFile(localOutputPath);
   try {
