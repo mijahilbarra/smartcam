@@ -14,7 +14,8 @@
     "migrate:test-to-prod": "node scripts/migrate-test-to-prod.js",
     "purge": "bash scripts/purge-connections.sh",
     "prestart": "bash scripts/purge-connections.sh",
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "start:watch": "node --watch --watch-path=src src/index.js"
   },
   "dependencies": {
     "better-sqlite3": "^12.11.1",

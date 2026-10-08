@@ -4,6 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile.e2-sim
     container_name: e2-micro-sim
+    command: ["node", "--watch", "--watch-path=src", "src/index.js"]
     restart: unless-stopped
     deploy:
       resources:
