@@ -269,58 +269,21 @@ const renderCanvas = () => {
     });
   }
 
-  // 2. Draw Humans Layer (YOLO Tracking & Dynamic Detections)
+  // 2. Draw Animated Humans Layer (Smooth 60 FPS Sliding Interpolation)
   if (showHumans.value) {
-    const frameW = canvasImageData.value.frameWidth || 640;
-    const frameH = canvasImageData.value.frameHeight || 360;
+    for (const t of animatedTracks.values()) {
+      if (t.opacity <= 0.01) continue;
 
-    const tracksToDraw = (canvasImageData.value.tracks && canvasImageData.value.tracks.length > 0)
-      ? canvasImageData.value.tracks
-      : (canvasImageData.value.humanBoxes || []).map((b, idx) => ({ trackId: idx + 1, box: b }));
+      const x = t.current.xmin * W;
+      const y = t.current.ymin * H;
+      const w = Math.max(12, (t.current.xmax - t.current.xmin) * W);
+      const h = Math.max(16, (t.current.ymax - t.current.ymin) * H);
 
-    tracksToDraw.forEach((t) => {
-      let xmin, ymin, xmax, ymax;
-
-      if (t.boxNorm && Array.isArray(t.boxNorm) && t.boxNorm.length === 4) {
-        // Formato estándar normalizado [ymin, xmin, ymax, xmax] en rango 0..1
-        ymin = t.boxNorm[0];
-        xmin = t.boxNorm[1];
-        ymax = t.boxNorm[2];
-        xmax = t.boxNorm[3];
-      } else if (t.box && Array.isArray(t.box) && t.box.length === 4) {
-        const b = t.box;
-        if (b[0] <= 1 && b[1] <= 1 && b[2] <= 1 && b[3] <= 1) {
-          // Ya normalizado [ymin, xmin, ymax, xmax]
-          ymin = b[0]; xmin = b[1]; ymax = b[2]; xmax = b[3];
-        } else {
-          // Coordenadas en píxeles de YOLO [x1, y1, x2, y2]
-          xmin = b[0] / frameW;
-          ymin = b[1] / frameH;
-          xmax = b[2] / frameW;
-          ymax = b[3] / frameH;
-        }
-      } else {
-        return;
-      }
-
-      // Restringir a rango [0, 1]
-      xmin = Math.max(0, Math.min(1, xmin));
-      ymin = Math.max(0, Math.min(1, ymin));
-      xmax = Math.max(0, Math.min(1, xmax));
-      ymax = Math.max(0, Math.min(1, ymax));
-
-      const x = xmin * W;
-      const y = ymin * H;
-      const w = Math.max(12, (xmax - xmin) * W);
-      const h = Math.max(16, (ymax - ymin) * H);
-
-      const isStaff = t.identity?.isStaff;
-      const isFrequent = t.identity?.isFrequent;
-      const strokeColor = isStaff ? '#38bdf8' : (isFrequent ? '#fbbf24' : '#10b981');
-      const tagBg = isStaff ? 'rgba(12, 74, 110, 0.92)' : (isFrequent ? 'rgba(120, 53, 15, 0.92)' : 'rgba(6, 78, 59, 0.92)');
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, Math.min(1, t.opacity));
 
       // 1. Primary Bounding Box
-      ctx.strokeStyle = strokeColor;
+      ctx.strokeStyle = t.strokeColor;
       ctx.lineWidth = 2;
       ctx.strokeRect(x, y, w, h);
 
@@ -339,85 +302,246 @@ const renderCanvas = () => {
       ctx.beginPath(); ctx.moveTo(x + w - cornerLen, y + h); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w, y + h - cornerLen); ctx.stroke();
 
       // 3. Person Track & Quadrant Tag
-      const confText = t.confidence ? ` ${Math.round(t.confidence * 100)}%` : '';
-      const quadText = t.quadrant ? ` [${t.quadrant}]` : '';
-      const idText = t.identity?.name ? ` • ${t.identity.name}` : '';
-      const tagText = `YOLO #${t.trackId}${quadText}${idText}${confText}`;
-
       ctx.font = 'bold 11px Inter, sans-serif';
-      const tagW = ctx.measureText(tagText).width + 12;
+      const tagW = ctx.measureText(t.tagText).width + 12;
 
-      ctx.fillStyle = tagBg;
+      ctx.fillStyle = t.tagBg;
       ctx.fillRect(x, Math.max(0, y - 20), tagW, 20);
-      ctx.strokeStyle = strokeColor;
+      ctx.strokeStyle = t.strokeColor;
       ctx.lineWidth = 1;
       ctx.strokeRect(x, Math.max(0, y - 20), tagW, 20);
 
       ctx.fillStyle = '#ffffff';
-      ctx.fillText(tagText, x + 6, Math.max(14, y - 6));
-    });
+      ctx.fillText(t.tagText, x + 6, Math.max(14, y - 6));
+      ctx.restore();
+    }
   }
 
-  // 3. Draw Biometry Layer (Staff, Frequent, New Customer Badges)
-  if (showBiometry.value && canvasImageData.value.peopleIdentified?.length) {
-    const frameW = canvasImageData.value.frameWidth || 640;
-    const frameH = canvasImageData.value.frameHeight || 360;
+  // 3. Draw Animated Biometry Layer (Staff, Frequent, New Customer Badges)
+  if (showBiometry.value) {
+    for (const p of animatedPeople.values()) {
+      if (p.opacity <= 0.01) continue;
 
-    canvasImageData.value.peopleIdentified.forEach((p) => {
-      if (p.box) {
-        let pXmin, pYmin, pXmax, pYmax;
-        if (p.boxNorm && Array.isArray(p.boxNorm)) {
-          pYmin = p.boxNorm[0];
-          pXmin = p.boxNorm[1];
-          pYmax = p.boxNorm[2];
-          pXmax = p.boxNorm[3];
-        } else {
-          // Pixel box [x1, y1, x2, y2]
-          pXmin = p.box[0] / frameW;
-          pYmin = p.box[1] / frameH;
-          pXmax = p.box[2] / frameW;
-          pYmax = p.box[3] / frameH;
-        }
+      const x = p.current.xmin * W;
+      const y = p.current.ymin * H;
+      const w = Math.max(12, (p.current.xmax - p.current.xmin) * W);
+      const h = Math.max(16, (p.current.ymax - p.current.ymin) * H);
 
-        const x = pXmin * W;
-        const y = pYmin * H;
-        const w = Math.max(12, (pXmax - pXmin) * W);
-        const h = Math.max(16, (pYmax - pYmin) * H);
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, Math.min(1, p.opacity));
 
-        let badgeColor = '#38bdf8'; // Blue for Staff
-        let badgeBg = 'rgba(12, 74, 110, 0.9)';
-        let labelText = `Barbero: ${p.name || 'Personal'}`;
+      ctx.strokeStyle = p.badgeColor;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4, 4]);
+      ctx.strokeRect(x, y, w, h);
+      ctx.setLineDash([]);
 
-        if (!p.isStaff && p.isFrequent) {
-          badgeColor = '#fbbf24'; // Gold/Amber for Frequent
-          badgeBg = 'rgba(120, 53, 15, 0.9)';
-          labelText = `Frecuente: ${p.name || 'Cliente'} (${p.visitCount || 2} v.)`;
-        } else if (!p.isStaff) {
-          badgeColor = '#34d399'; // Emerald for New
-          badgeBg = 'rgba(6, 78, 59, 0.9)';
-          labelText = `Nuevo: ${p.name || 'Cliente'}`;
-        }
+      // Biometry insignia banner
+      ctx.font = 'bold 11px Inter, sans-serif';
+      const labelW = ctx.measureText(p.labelText).width + 12;
 
-        ctx.strokeStyle = badgeColor;
-        ctx.lineWidth = 2;
-        ctx.setLineDash([4, 4]);
-        ctx.strokeRect(x, y, w, h);
-        ctx.setLineDash([]);
+      ctx.fillStyle = p.badgeBg;
+      ctx.fillRect(x, Math.min(H - 20, y + h + 2), labelW, 20);
+      ctx.strokeStyle = p.badgeColor;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x, Math.min(H - 20, y + h + 2), labelW, 20);
 
-        // Biometry insignia banner
-        ctx.font = 'bold 11px Inter, sans-serif';
-        const labelW = ctx.measureText(labelText).width + 12;
+      ctx.fillStyle = p.badgeColor;
+      ctx.fillText(p.labelText, x + 6, Math.min(H - 6, y + h + 16));
+      ctx.restore();
+    }
+  }
+};
 
-        ctx.fillStyle = badgeBg;
-        ctx.fillRect(x, Math.min(H - 20, y + h + 2), labelW, 20);
-        ctx.strokeStyle = badgeColor;
-        ctx.lineWidth = 1;
-        ctx.strokeRect(x, Math.min(H - 20, y + h + 2), labelW, 20);
+// State for smooth 60 FPS interpolated bounding boxes
+const animatedTracks = new Map();
+const animatedPeople = new Map();
+let animationFrameId = null;
 
-        ctx.fillStyle = badgeColor;
-        ctx.fillText(labelText, x + 6, Math.min(H - 6, y + h + 16));
+const syncIncomingTelemetry = (telemetry) => {
+  if (!telemetry) return;
+  const frameW = telemetry.frameWidth || 640;
+  const frameH = telemetry.frameHeight || 360;
+
+  // 1. Sync Humans / Tracks
+  const tracksToDraw = (telemetry.tracks && telemetry.tracks.length > 0)
+    ? telemetry.tracks
+    : (telemetry.humanBoxes || []).map((b, idx) => ({ trackId: idx + 1, box: b }));
+
+  const activeTrackKeys = new Set();
+
+  tracksToDraw.forEach((t, idx) => {
+    const trackKey = t.trackId ? `track_${t.trackId}` : `box_${idx}`;
+    activeTrackKeys.add(trackKey);
+
+    let xmin, ymin, xmax, ymax;
+    if (t.boxNorm && Array.isArray(t.boxNorm) && t.boxNorm.length === 4) {
+      ymin = t.boxNorm[0]; xmin = t.boxNorm[1]; ymax = t.boxNorm[2]; xmax = t.boxNorm[3];
+    } else if (t.box && Array.isArray(t.box) && t.box.length === 4) {
+      const b = t.box;
+      if (b[0] <= 1 && b[1] <= 1 && b[2] <= 1 && b[3] <= 1) {
+        ymin = b[0]; xmin = b[1]; ymax = b[2]; xmax = b[3];
+      } else {
+        xmin = b[0] / frameW; ymin = b[1] / frameH;
+        xmax = b[2] / frameW; ymax = b[3] / frameH;
       }
-    });
+    } else {
+      return;
+    }
+
+    xmin = Math.max(0, Math.min(1, xmin));
+    ymin = Math.max(0, Math.min(1, ymin));
+    xmax = Math.max(0, Math.min(1, xmax));
+    ymax = Math.max(0, Math.min(1, ymax));
+
+    const isStaff = t.identity?.isStaff;
+    const isFrequent = t.identity?.isFrequent;
+    const strokeColor = isStaff ? '#38bdf8' : (isFrequent ? '#fbbf24' : '#10b981');
+    const tagBg = isStaff ? 'rgba(12, 74, 110, 0.92)' : (isFrequent ? 'rgba(120, 53, 15, 0.92)' : 'rgba(6, 78, 59, 0.92)');
+    const confText = t.confidence ? ` ${Math.round(t.confidence * 100)}%` : '';
+    const quadText = t.quadrant ? ` [${t.quadrant}]` : '';
+    const idText = t.identity?.name ? ` • ${t.identity.name}` : '';
+    const tagText = `YOLO #${t.trackId || idx + 1}${quadText}${idText}${confText}`;
+
+    const existing = animatedTracks.get(trackKey);
+    if (existing) {
+      existing.target = { xmin, ymin, xmax, ymax };
+      existing.targetOpacity = 1.0;
+      existing.lastSeen = Date.now();
+      existing.strokeColor = strokeColor;
+      existing.tagBg = tagBg;
+      existing.tagText = tagText;
+    } else {
+      animatedTracks.set(trackKey, {
+        current: { xmin, ymin, xmax, ymax },
+        target: { xmin, ymin, xmax, ymax },
+        opacity: 0.1,
+        targetOpacity: 1.0,
+        lastSeen: Date.now(),
+        strokeColor,
+        tagBg,
+        tagText
+      });
+    }
+  });
+
+  // Fade out tracks no longer present
+  for (const [key, track] of animatedTracks.entries()) {
+    if (!activeTrackKeys.has(key)) {
+      track.targetOpacity = 0.0;
+    }
+  }
+
+  // 2. Sync Biometry / People Identified
+  const activePeopleKeys = new Set();
+  const people = telemetry.peopleIdentified || [];
+
+  people.forEach((p, idx) => {
+    if (!p.box) return;
+    const personKey = p.personId || p.name ? `p_${p.personId || p.name}` : `p_idx_${idx}`;
+    activePeopleKeys.add(personKey);
+
+    let pXmin, pYmin, pXmax, pYmax;
+    if (p.boxNorm && Array.isArray(p.boxNorm)) {
+      pYmin = p.boxNorm[0]; pXmin = p.boxNorm[1]; pYmax = p.boxNorm[2]; pXmax = p.boxNorm[3];
+    } else {
+      pXmin = p.box[0] / frameW; pYmin = p.box[1] / frameH;
+      pXmax = p.box[2] / frameW; pYmax = p.box[3] / frameH;
+    }
+
+    pXmin = Math.max(0, Math.min(1, pXmin));
+    pYmin = Math.max(0, Math.min(1, pYmin));
+    pXmax = Math.max(0, Math.min(1, pXmax));
+    pYmax = Math.max(0, Math.min(1, pYmax));
+
+    let badgeColor = '#38bdf8';
+    let badgeBg = 'rgba(12, 74, 110, 0.9)';
+    let labelText = `Barbero: ${p.name || 'Personal'}`;
+
+    if (!p.isStaff && p.isFrequent) {
+      badgeColor = '#fbbf24';
+      badgeBg = 'rgba(120, 53, 15, 0.9)';
+      labelText = `Frecuente: ${p.name || 'Cliente'} (${p.visitCount || 2} v.)`;
+    } else if (!p.isStaff) {
+      badgeColor = '#34d399';
+      badgeBg = 'rgba(6, 78, 59, 0.9)';
+      labelText = `Nuevo: ${p.name || 'Cliente'}`;
+    }
+
+    const existing = animatedPeople.get(personKey);
+    if (existing) {
+      existing.target = { xmin: pXmin, ymin: pYmin, xmax: pXmax, ymax: pYmax };
+      existing.targetOpacity = 1.0;
+      existing.lastSeen = Date.now();
+      existing.badgeColor = badgeColor;
+      existing.badgeBg = badgeBg;
+      existing.labelText = labelText;
+    } else {
+      animatedPeople.set(personKey, {
+        current: { xmin: pXmin, ymin: pYmin, xmax: pXmax, ymax: pYmax },
+        target: { xmin: pXmin, ymin: pYmin, xmax: pXmax, ymax: pYmax },
+        opacity: 0.1,
+        targetOpacity: 1.0,
+        lastSeen: Date.now(),
+        badgeColor,
+        badgeBg,
+        labelText
+      });
+    }
+  });
+
+  for (const [key, p] of animatedPeople.entries()) {
+    if (!activePeopleKeys.has(key)) {
+      p.targetOpacity = 0.0;
+    }
+  }
+};
+
+const updateInterpolatedPositions = () => {
+  const LERP_FACTOR = 0.20; // Suave amortiguación para deslizar el recuadro a 60 FPS
+  const FADE_FACTOR = 0.14;
+
+  for (const [key, track] of animatedTracks.entries()) {
+    track.current.xmin += (track.target.xmin - track.current.xmin) * LERP_FACTOR;
+    track.current.ymin += (track.target.ymin - track.current.ymin) * LERP_FACTOR;
+    track.current.xmax += (track.target.xmax - track.current.xmax) * LERP_FACTOR;
+    track.current.ymax += (track.target.ymax - track.current.ymax) * LERP_FACTOR;
+
+    track.opacity += (track.targetOpacity - track.opacity) * FADE_FACTOR;
+
+    if (track.targetOpacity === 0 && track.opacity < 0.02) {
+      animatedTracks.delete(key);
+    }
+  }
+
+  for (const [key, p] of animatedPeople.entries()) {
+    p.current.xmin += (p.target.xmin - p.current.xmin) * LERP_FACTOR;
+    p.current.ymin += (p.target.ymin - p.current.ymin) * LERP_FACTOR;
+    p.current.xmax += (p.target.xmax - p.current.xmax) * LERP_FACTOR;
+    p.current.ymax += (p.target.ymax - p.current.ymax) * LERP_FACTOR;
+
+    p.opacity += (p.targetOpacity - p.opacity) * FADE_FACTOR;
+
+    if (p.targetOpacity === 0 && p.opacity < 0.02) {
+      animatedPeople.delete(key);
+    }
+  }
+};
+
+const startAnimationLoop = () => {
+  if (animationFrameId) return;
+  const loop = () => {
+    updateInterpolatedPositions();
+    renderCanvas();
+    animationFrameId = requestAnimationFrame(loop);
+  };
+  animationFrameId = requestAnimationFrame(loop);
+};
+
+const stopAnimationLoop = () => {
+  if (animationFrameId) {
+    cancelAnimationFrame(animationFrameId);
+    animationFrameId = null;
   }
 };
 
@@ -440,7 +564,6 @@ const updateCanvasImage = async (url) => {
       img = await loadImg(null);
     }
     currentLoadedImage.value = img;
-    renderCanvas();
   } catch (err) {
     console.warn('[LiveCanvas] Error cargando fotograma continuo:', err);
   }
@@ -450,24 +573,17 @@ watch(() => canvasImageData.value.imageUrl, (newUrl) => {
   if (newUrl) updateCanvasImage(newUrl);
 });
 
-watch([showQuadrants, showHumans, showBiometry, streamLoaded, streamActive], () => {
-  renderCanvas();
-});
-
-watch(configuredQuadrants, () => {
-  renderCanvas();
-}, { deep: true });
-
-watch(() => canvasImageData.value, () => {
-  renderCanvas();
-}, { deep: true });
+watch(() => canvasImageData.value, (newData) => {
+  syncIncomingTelemetry(newData);
+}, { deep: true, immediate: true });
 
 onMounted(() => {
-  renderCanvas();
+  startAnimationLoop();
   startSnapshotFallback();
 });
 
 onUnmounted(() => {
+  stopAnimationLoop();
   stopSnapshotFallback();
 });
 </script>
