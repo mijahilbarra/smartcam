@@ -12,6 +12,8 @@ services:
           memory: 1024M          # Límite estricto de 1 GB RAM (dispara OOM Killer si se supera)
         reservations:
           memory: 512M
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     # Montar el socket de Docker del host (Sibling Containers) para que funcione la captura Neolink
     # y /tmp para el intercambio de archivos fotográficos con el contenedor Neolink
     volumes:
@@ -19,6 +21,7 @@ services:
       - /tmp:/tmp
       - ./neolink.toml:/opt/camera-catcher/neolink.toml
       - ./src:/opt/camera-catcher/src
+      - ./scripts:/opt/camera-catcher/scripts
       - ${HOME:-~}/.config/gcloud:/root/.config/gcloud:ro
     ports:
       - "8085:8085"
@@ -29,5 +32,6 @@ services:
       - FIREBASE_PROJECT_ID=skip-bigotes
       - STORAGE_BUCKET=skip-bigotes-test
       - PORT=8085
+      - RTSP_STREAM_URL=rtsp://host.docker.internal:8554/barberia/sub
       - GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
-      - NEOLINK_TOML_PATH=${PWD}/neolink.toml
+      - NEOLINK_TOML_PATH=/opt/camera-catcher/neolink.toml

@@ -27,7 +27,7 @@ export class StreamServer {
       "Cache-Control": "no-cache, no-store, must-revalidate",
       "Pragma": "no-cache",
       "Expires": "0",
-      "Connection": "close"
+      "X-Accel-Buffering": "no"
     });
 
     const client = { id: Date.now() + Math.random(), res };
@@ -58,7 +58,9 @@ export class StreamServer {
    */
   startFfmpegStream(persistent = false) {
     if (persistent) this.isPersistent = true;
-    if (this.ffmpegProcess) return;
+    if (this.ffmpegProcess && !this.ffmpegProcess.killed) return;
+    if (this.isStarting) return;
+    this.isStarting = true;
 
     console.log(`[Stream] Iniciando ingesta FFmpeg on-demand desde: ${this.rtspUrl} a ${this.fps} FPS...`);
 
@@ -75,6 +77,7 @@ export class StreamServer {
 
     try {
       this.ffmpegProcess = spawn("ffmpeg", args, { stdio: ["ignore", "pipe", "pipe"] });
+      this.isStarting = false;
       this.isActive = true;
       let lastFrameTime = Date.now();
 
@@ -84,7 +87,11 @@ export class StreamServer {
         if (this.isActive && Date.now() - lastFrameTime > 12000) {
           console.warn("[Stream Watchdog] Inactividad de fotogramas detectada (>12s). Reiniciando ingesta FFmpeg...");
           this.stopFfmpegStream(true);
-          setTimeout(() => this.startFfmpegStream(this.isPersistent), 1000);
+          setTimeout(() => {
+            if (this.isPersistent || this.clients.size > 0) {
+              this.startFfmpegStream(this.isPersistent);
+            }
+          }, 1500);
         }
       }, 5000);
 
@@ -136,6 +143,9 @@ export class StreamServer {
         console.log(`[Stream] Proceso FFmpeg finalizó con código: ${code}`);
         this.ffmpegProcess = null;
         this.isActive = false;
+        if (code !== 0) {
+          this.latestFrameBuffer = null;
+        }
         if (this.watchdogInterval) clearInterval(this.watchdogInterval);
         // Si es persistente o aún hay clientes, reiniciar tras 2 segundos
         if (this.isPersistent || this.clients.size > 0) {
@@ -148,6 +158,7 @@ export class StreamServer {
         this.stopFfmpegStream(true);
       });
     } catch (err) {
+      this.isStarting = false;
       console.error("[Stream] Error al lanzar FFmpeg:", err.message);
       this.stopFfmpegStream(true);
     }
@@ -164,10 +175,18 @@ export class StreamServer {
     if (this.watchdogInterval) clearInterval(this.watchdogInterval);
     if (this.ffmpegProcess) {
       console.log("[Stream] Deteniendo FFmpeg. CPU y Red en reposo.");
-      try {
-        this.ffmpegProcess.kill("SIGTERM");
-      } catch (_) {}
+      const proc = this.ffmpegProcess;
       this.ffmpegProcess = null;
+      try {
+        proc.kill("SIGTERM");
+      } catch (_) {}
+      setTimeout(() => {
+        try {
+          if (!proc.killed) {
+            proc.kill("SIGKILL");
+          }
+        } catch (_) {}
+      }, 500);
     }
     this.isActive = false;
   }

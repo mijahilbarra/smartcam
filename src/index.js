@@ -24,6 +24,7 @@ import { WorkingHoursManager } from "./core/working_hours.js";
 import { CaptureOrchestrator } from "./services/capture_orchestrator.js";
 import { StreamServer } from "./infrastructure/streaming/stream_server.js";
 import { telemetryStream } from "./infrastructure/streaming/telemetry_stream.js";
+import { getSqliteClient } from "./infrastructure/storage/sqlite_client.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -117,6 +118,16 @@ app.get("/api/visits/active", (req, res) => {
   });
 });
 
+app.get(["/api/appointments", "/appointments"], (req, res) => {
+  try {
+    const sqlite = orchestrator.visitService?.sqliteClient || getSqliteClient();
+    const list = sqlite.getAppointments();
+    res.json({ appointments: list, count: list.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message, appointments: [] });
+  }
+});
+
 app.all("/capture", (req, res) => {
   if (orchestrator.isCapturing) {
     return res.status(409).json({
@@ -153,10 +164,10 @@ registerFirestoreListeners({
   onManualCapture: (src) => orchestrator.execute(src)
 });
 
-// 6. Loop de Visión en Tiempo Real
+const DEFAULT_REALTIME_INTERVAL_MS = Number(process.env.REALTIME_INTERVAL_MS) || 1500;
 let realtimeLoopInterval = null;
 
-export function startRealtimeLoop(intervalMs = 2500) {
+export function startRealtimeLoop(intervalMs = DEFAULT_REALTIME_INTERVAL_MS) {
   // Asegurar que el stream esté activo permanentemente para alimentar frames a memoria en 0ms
   streamServer.startFfmpegStream(true);
 
@@ -199,13 +210,24 @@ await startNeolinkDaemon({ tomlPath: TOML_PATH });
 console.log("[Startup] Limpieza y daemon RTSP Neolink completado. Sistema listo.");
 
 // Iniciar bucle continuo de visión y seguimiento en tiempo real
-setTimeout(() => {
-  if (!workingHours.isWorkingNow()) {
+function tryStartRealtimeLoop() {
+  if (workingHours.isWorkingNow()) {
+    console.log(`[Startup] Arrancando bucle de visión y seguimiento continuo en tiempo real (${DEFAULT_REALTIME_INTERVAL_MS}ms)...`);
+    startRealtimeLoop();
+  } else {
     console.log(`[Startup] Fuera de horario laboral. Bucle de visión en espera.`);
-    return;
+    // Programar verificación periódica cada 60 segundos para arrancar en cuanto comience el horario laboral
+    const checkInterval = setInterval(() => {
+      if (workingHours.isWorkingNow()) {
+        console.log(`[Startup] Inicio de horario laboral detectado. Arrancando bucle de visión en tiempo real...`);
+        clearInterval(checkInterval);
+        startRealtimeLoop();
+      }
+    }, 60000);
+    if (typeof checkInterval.unref === "function") checkInterval.unref();
   }
-  console.log("[Startup] Arrancando bucle de visión y seguimiento continuo en tiempo real...");
-  startRealtimeLoop(2500);
-}, 3000);
+}
+
+setTimeout(tryStartRealtimeLoop, 3000);
 
 export { app, workingHours, orchestrator, db, bucket, server, customerService };

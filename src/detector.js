@@ -114,6 +114,8 @@ export function getDefaultQuadrantsArray() {
 let inferenceSession = null;
 let lastFrameThumbnail = null;
 let lastDetectionResult = null;
+let consecutiveStaticSkips = 0;
+const MAX_CONSECUTIVE_STATIC_SKIPS = 5;
 
 /**
  * Compara el fotograma contra el anterior usando un thumbnail escala de grises de 64x36 (~2ms)
@@ -263,11 +265,17 @@ export async function detectObjectsAndQuadrants(imageBuffer, options = {}) {
   const forceRecheck = typeof options === "object" && options.forceRecheck === true;
   const changeThreshold = typeof options === "object" && options.changeThreshold ? options.changeThreshold : 2.5;
   const shouldAnnotate = typeof options === "object" && options.generateAnnotated !== undefined ? options.generateAnnotated : false;
-
   // Comparación contra fotograma previo
   const diff = await checkFrameDifference(imageBuffer, changeThreshold);
-  if (!forceRecheck && !diff.hasChanged && lastDetectionResult) {
-    console.log(`[Detector] Escena estática (variación ${diff.diffPercent}% < umbral ${changeThreshold}%). Reutilizando análisis previo (0% CPU / 0 ms).`);
+  const canSkip = !forceRecheck &&
+    !diff.hasChanged &&
+    lastDetectionResult &&
+    consecutiveStaticSkips < MAX_CONSECUTIVE_STATIC_SKIPS &&
+    (lastDetectionResult.rawDetections?.length > 0);
+
+  if (canSkip) {
+    consecutiveStaticSkips++;
+    console.log(`[Detector] Escena estática (variación ${diff.diffPercent}% < umbral ${changeThreshold}%). Reutilizando análisis previo (0% CPU / 0 ms) [${consecutiveStaticSkips}/${MAX_CONSECUTIVE_STATIC_SKIPS}].`);
     return {
       ...lastDetectionResult,
       inferenceMs: 0,
@@ -275,6 +283,7 @@ export async function detectObjectsAndQuadrants(imageBuffer, options = {}) {
       diffPercent: diff.diffPercent
     };
   }
+  consecutiveStaticSkips = 0;
 
   const session = await getInferenceSession();
   const { tensor, origWidth, origHeight } = await preprocessImage(imageBuffer);

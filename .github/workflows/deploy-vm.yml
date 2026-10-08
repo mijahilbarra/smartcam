@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - 'src/**'
+      - 'scripts/**'
       - 'neolink.toml'
       - 'package.json'
       - 'package-lock.json'
@@ -37,7 +38,7 @@ jobs:
             --exclude '.package-lock.hash' \
             --exclude '.env' \
             --exclude 'daemon.log' \
-            src package.json package-lock.json neolink.toml \
+            src scripts package.json package-lock.json neolink.toml \
             ${{ secrets.VM_USER || 'deploy' }}@${{ secrets.VM_HOST }}:/opt/camera-catcher/
 
       - name: Install Dependencies & Restart Service

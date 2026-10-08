@@ -2,12 +2,16 @@
 # Simula el entorno Ubuntu/Debian x86_64 con Node 20 idéntico al daemon en producción.
 FROM node:20-bookworm-slim
 
-# Instalar cliente Docker (para invocar Neolink como contenedor hermano), procps, curl y certificados
+# Instalar cliente Docker (para invocar Neolink como contenedor hermano), procps, curl, ffmpeg y certificados
 RUN apt-get update && apt-get install -y --no-install-recommends \
     docker.io \
     procps \
     curl \
+    ffmpeg \
     ca-certificates \
+    python3 \
+    make \
+    g++ \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/camera-catcher
@@ -16,8 +20,9 @@ WORKDIR /opt/camera-catcher
 COPY package.json package-lock.json ./
 RUN npm install --omit=dev
 
-# Copiar código fuente, modelos ONNX, tests y configuración Neolink
+# Copiar código fuente, scripts, modelos ONNX, tests y configuración Neolink
 COPY src ./src
+COPY scripts ./scripts
 COPY neolink.toml ./neolink.toml
 COPY test ./test
 

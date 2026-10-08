@@ -1,6 +1,6 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import { doc, onSnapshot } from 'firebase/firestore';
-import { db, resolveStorageUrl, IS_LOCAL_ENV, getEnvironmentInfo } from '@/shared/api/firebase';
+import { db, resolveStorageUrl, IS_LOCAL_ENV, getEnvironmentInfo, normalizeUrl } from '@/shared/api/firebase';
 
 export function useDaemonState() {
   const daemonState = ref(null);
@@ -32,22 +32,28 @@ export function useDaemonState() {
 
   // URL base activa del backend / túnel
   const activeBackendUrl = computed(() => {
-    // 1. URL configurada dinámicamente en Firestore
-    if (firestoreStreamUrl.value) {
-      const u = firestoreStreamUrl.value.trim();
-      return u.endsWith('/') ? u.slice(0, -1) : u;
-    }
-    // 2. URL desde localStorage o variable de entorno
     const env = getEnvironmentInfo();
-    if (env.backendUrl) {
-      const u = env.backendUrl.trim();
-      return u.endsWith('/') ? u.slice(0, -1) : u;
-    }
-    // 3. Si es local, fallback al puerto estándar del daemon local
+
+    // En entorno local (localhost / 127.0.0.1 / dev / simulador E2), priorizar daemon local en 8085
+    // a menos que el operador haya definido una URL personalizada explícita en localStorage
     if (IS_LOCAL_ENV) {
+      if (env.hasCustomUrl && env.backendUrl) {
+        return normalizeUrl(env.backendUrl);
+      }
       return 'http://localhost:8085';
     }
-    // 4. Si es servidor cloud y no hay túnel configurado: null
+
+    // En producción (Cloud / Firebase Hosting): Prioridad 1: URL de túnel configurada en Firestore
+    if (firestoreStreamUrl.value) {
+      return normalizeUrl(firestoreStreamUrl.value);
+    }
+
+    // Prioridad 2 en Cloud: Variable de entorno o localStorage
+    if (env.backendUrl) {
+      return normalizeUrl(env.backendUrl);
+    }
+
+    // Si es servidor cloud y no hay túnel configurado: null
     return null;
   });
 
