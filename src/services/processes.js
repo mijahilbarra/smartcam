@@ -16,7 +16,7 @@ import { isServiceChair, isTransitZone } from "../core/barbershop_rules.js";
  */
 export async function acquireClearFrame({
   localOutputPath,
-  rtspUrl = "rtsp://127.0.0.1:8554/barberia/main",
+  rtspUrl = process.env.RTSP_STREAM_URL ? process.env.RTSP_STREAM_URL.replace(/\/sub$/, '/main') : "rtsp://127.0.0.1:8554/barberia/main",
   timeoutMs = 1500
 } = {}) {
   const outputPath = localOutputPath || `/tmp/snap_clear_${Date.now()}.jpeg`;
@@ -463,7 +463,10 @@ export async function runProcessCycle(context = {}, options = {}) {
 
   // 4b. Adquisición reactiva de fotograma en alta resolución (Stream Clear) bajo demanda
   const acquireClearFn = options.acquireClearFrame || context.acquireClearFrame || acquireClearFrame;
-  const clearRtspUrl = options.clearRtspUrl || context.clearRtspUrl || "rtsp://127.0.0.1:8554/barberia/main";
+  const defaultClearRtspUrl = process.env.RTSP_STREAM_URL
+    ? process.env.RTSP_STREAM_URL.replace(/\/sub$/, '/main')
+    : "rtsp://127.0.0.1:8554/barberia/main";
+  const clearRtspUrl = options.clearRtspUrl || context.clearRtspUrl || defaultClearRtspUrl;
   const now = Date.now();
   const CLEAR_COOLDOWN_MS = 12000; // 12 segundos de enfriamiento por track
 

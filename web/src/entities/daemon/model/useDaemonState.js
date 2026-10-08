@@ -34,11 +34,15 @@ export function useDaemonState() {
   const activeBackendUrl = computed(() => {
     const env = getEnvironmentInfo();
 
-    // En entorno local (localhost / 127.0.0.1 / dev / simulador E2), priorizar daemon local en 8085
-    // a menos que el operador haya definido una URL personalizada explícita en localStorage
+    // En entorno local (localhost / 127.0.0.1 / dev / simulador E2), SIEMPRE usar http://localhost:8085
+    // a menos que la URL personalizada en localStorage sea explícitamente una URL local (localhost o 127.0.0.1).
+    // NUNCA permitir que una URL remota de producción (perrosuelto.com o externa) anule el entorno local.
     if (IS_LOCAL_ENV) {
       if (env.hasCustomUrl && env.backendUrl) {
-        return normalizeUrl(env.backendUrl);
+        const isLocalHost = /^(https?:\/\/)?(localhost|127\.0\.0\.1|0\.0\.0\.0|::1)/i.test(env.backendUrl);
+        if (isLocalHost) {
+          return normalizeUrl(env.backendUrl);
+        }
       }
       return 'http://localhost:8085';
     }
@@ -60,6 +64,11 @@ export function useDaemonState() {
   // Stream URL: direct MJPEG endpoint from stream server (null en cloud sin backend)
   const streamUrl = computed(() => {
     return activeBackendUrl.value ? `${activeBackendUrl.value}/api/stream` : null;
+  });
+
+  // Snapshot URL: fotograma continuo o fallback directo desde el stream server
+  const snapshotUrl = computed(() => {
+    return activeBackendUrl.value ? `${activeBackendUrl.value}/api/snapshot` : null;
   });
 
   // YOLO Telemetry Stream URL (SSE direct from backend, null en cloud sin backend)
@@ -413,6 +422,7 @@ export function useDaemonState() {
     isYoloStreaming,
     statusLabel,
     streamUrl,
+    snapshotUrl,
     yoloStreamUrl,
     activeBackendUrl,
     canvasImageData,

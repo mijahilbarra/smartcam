@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, watch, computed } from 'vue';
+import { ref, onMounted, onUnmounted, watch, computed } from 'vue';
 import AppIcon from '@/shared/ui/atoms/AppIcon.vue';
 import AppButton from '@/shared/ui/atoms/AppButton.vue';
 import AppBadge from '@/shared/ui/atoms/AppBadge.vue';
@@ -19,6 +19,8 @@ const {
   isYoloStreaming,
   statusLabel,
   streamUrl,
+  snapshotUrl,
+  activeBackendUrl,
   canvasImageData,
   clientsInCut,
   clientsWaiting,
@@ -43,12 +45,59 @@ const showBiometry = ref(true);
 // Stream & image loading state
 const streamKey = ref(Date.now());
 const streamActive = ref(true);
-const streamLoaded = ref(true);
+const streamLoaded = ref(false);
 const currentLoadedImage = ref(null);
+let snapshotIntervalId = null;
+let isFetchingSnapshot = false;
+
+const fetchSnapshotFallback = async () => {
+  const backend = activeBackendUrl.value;
+  if (!backend || isFetchingSnapshot) return;
+  isFetchingSnapshot = true;
+  const snapUrl = `${backend}/api/snapshot?t=${Date.now()}`;
+  try {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    await new Promise((resolve, reject) => {
+      img.onload = () => resolve(img);
+      img.onerror = () => {
+        const fallbackImg = new Image();
+        fallbackImg.onload = () => resolve(fallbackImg);
+        fallbackImg.onerror = reject;
+        fallbackImg.src = snapUrl;
+      };
+      img.src = snapUrl;
+    });
+    currentLoadedImage.value = img;
+    renderCanvas();
+  } catch (err) {
+    // Continuar polling silenciosamente si el backend aún no responde
+  } finally {
+    isFetchingSnapshot = false;
+  }
+};
+
+const startSnapshotFallback = () => {
+  if (snapshotIntervalId) return;
+  fetchSnapshotFallback();
+  snapshotIntervalId = setInterval(() => {
+    // Si el stream MJPEG ya está activo y cargado, no saturar la red con polling continuo
+    if (streamActive.value && streamLoaded.value) return;
+    fetchSnapshotFallback();
+  }, 1500);
+};
+
+const stopSnapshotFallback = () => {
+  if (snapshotIntervalId) {
+    clearInterval(snapshotIntervalId);
+    snapshotIntervalId = null;
+  }
+};
 
 const onStreamLoad = () => {
   streamLoaded.value = true;
   streamActive.value = true;
+  renderCanvas();
 };
 
 const reloadStream = () => {
@@ -56,6 +105,7 @@ const reloadStream = () => {
   streamLoaded.value = false;
   streamActive.value = false;
   streamKey.value = Date.now();
+  fetchSnapshotFallback();
   setTimeout(() => {
     if (streamUrl.value) {
       streamActive.value = true;
@@ -66,6 +116,8 @@ const reloadStream = () => {
 const onStreamError = () => {
   streamActive.value = false;
   streamLoaded.value = false;
+  // El fallback de snapshot toma el relevo inmediatamente
+  fetchSnapshotFallback();
   if (!streamUrl.value) return;
   console.info('[LiveStream] Reconectando flujo MJPEG...');
   setTimeout(() => {
@@ -82,6 +134,7 @@ watch(streamUrl, (newUrl) => {
     streamActive.value = true;
     streamLoaded.value = false;
     streamKey.value = Date.now();
+    startSnapshotFallback();
   } else {
     streamActive.value = false;
     streamLoaded.value = false;
@@ -116,8 +169,8 @@ const renderCanvas = () => {
   // Clear canvas
   ctx.clearRect(0, 0, W, H);
 
-  // If live stream is NOT actively loaded, render latest fallback frame or dark grid as background
-  if (!streamActive.value) {
+  // If live stream is NOT actively loaded or playing, render latest fallback frame or dark grid as background
+  if (!streamActive.value || !streamLoaded.value) {
     if (currentLoadedImage.value) {
       ctx.drawImage(currentLoadedImage.value, 0, 0, W, H);
     } else {
@@ -411,6 +464,11 @@ watch(() => canvasImageData.value, () => {
 
 onMounted(() => {
   renderCanvas();
+  startSnapshotFallback();
+});
+
+onUnmounted(() => {
+  stopSnapshotFallback();
 });
 </script>
 
@@ -514,7 +572,7 @@ onMounted(() => {
             <span class="live-dot-pulse-red"></span>
             <span class="font-medium text-white">Transmisión en Vivo</span>
             <span class="text-slate-500">•</span>
-            <span class="font-mono text-slate-400">{{ streamActive && streamLoaded ? 'Stream MJPEG' : 'Fotograma Continuo' }}</span>
+            <span class="font-mono text-slate-400">{{ streamActive && streamLoaded ? 'Stream MJPEG' : 'Fotograma Continuo (Snapshot)' }}</span>
             <span class="text-slate-500">•</span>
             <div class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-mono bg-emerald-950/70 text-emerald-400 border border-emerald-500/30 select-none">
               <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
@@ -576,7 +634,7 @@ onMounted(() => {
 
           <!-- Canvas Overlay for Quadrants, YOLO boxes & Biometry badges -->
           <canvas
-            v-if="streamUrl"
+            v-if="streamUrl || activeBackendUrl"
             ref="canvasRef"
             width="1024"
             height="576"
@@ -585,7 +643,7 @@ onMounted(() => {
 
           <!-- Estado informativo: Túnel HTTPS no configurado en entorno cloud -->
           <div
-            v-if="!streamUrl && !IS_LOCAL_ENV"
+            v-if="!activeBackendUrl && !IS_LOCAL_ENV"
             class="absolute inset-0 flex flex-col items-center justify-center text-center p-6 bg-slate-950/90 text-slate-400 gap-3 z-30"
           >
             <div class="p-3.5 bg-slate-900 rounded-full border border-slate-800 text-amber-400 shadow-lg">

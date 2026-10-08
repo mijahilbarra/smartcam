@@ -56,10 +56,20 @@ export function useSettings() {
         updatedAt: new Date().toISOString()
       }, { merge: true });
 
-      // Actualizar localStorage
+      // Actualizar localStorage (en local, evitar guardar dominios remotos en localStorage)
       if (typeof localStorage !== 'undefined') {
+        const isLocal = typeof window !== 'undefined' && (
+          window.location.hostname === 'localhost' ||
+          window.location.hostname === '127.0.0.1'
+        );
+        const isUrlLocal = normalizedStreamUrl && /^(https?:\/\/)?(localhost|127\.0\.0\.1|0\.0\.0\.0|::1)/i.test(normalizedStreamUrl);
+
         if (normalizedStreamUrl) {
-          localStorage.setItem('CAMERA_CATCHER_API_URL', normalizedStreamUrl);
+          if (!isLocal || isUrlLocal) {
+            localStorage.setItem('CAMERA_CATCHER_API_URL', normalizedStreamUrl);
+          } else {
+            localStorage.removeItem('CAMERA_CATCHER_API_URL');
+          }
         } else {
           localStorage.removeItem('CAMERA_CATCHER_API_URL');
         }

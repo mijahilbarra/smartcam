@@ -53,8 +53,23 @@ export function normalizeUrl(url) {
  */
 export function getEnvironmentInfo() {
   const isLocal = isLocalEnvironment();
+
+  // En entorno local (localhost / 127.0.0.1), purgar proactivamente si apunta a un dominio remoto de producción
+  if (isLocal && typeof localStorage !== 'undefined') {
+    const rawStored = localStorage.getItem('CAMERA_CATCHER_API_URL');
+    if (rawStored) {
+      const isStoredLocal = /^(https?:\/\/)?(localhost|127\.0\.0\.1|0\.0\.0\.0|::1)/i.test(rawStored.trim());
+      if (!isStoredLocal) {
+        console.warn('[Environment] Purgando URL remota guardada en localStorage durante entorno local:', rawStored);
+        localStorage.removeItem('CAMERA_CATCHER_API_URL');
+      }
+    }
+  }
+
   const rawCustomUrl = typeof localStorage !== 'undefined' ? localStorage.getItem('CAMERA_CATCHER_API_URL') : null;
   const customUrl = normalizeUrl(rawCustomUrl);
+  const isCustomLocal = customUrl && /^(https?:\/\/)?(localhost|127\.0\.0\.1|0\.0\.0\.0|::1)/i.test(customUrl);
+
   const envUrl = normalizeUrl(
     typeof import.meta !== 'undefined' && import.meta.env
       ? import.meta.env.VITE_CAMERA_CATCHER_API_URL
@@ -69,19 +84,23 @@ export function getEnvironmentInfo() {
   const storageBucket = customStorage || 'gs://skip-bigotes.firebasestorage.app';
 
   // Resolución prioritaria de backendUrl:
-  // 1. customUrl desde localStorage ('CAMERA_CATCHER_API_URL') si existe
-  // 2. import.meta.env.VITE_CAMERA_CATCHER_API_URL si existe
-  // 3. Si es local (isLocal): 'http://localhost:8085'
-  // 4. Si es servidor cloud y no hay URL configurada: null
+  // - En entorno local (isLocal): SOLO aceptar customUrl si es explícitamente localhost/127.0.0.1, de lo contrario 'http://localhost:8085'
+  // - En producción (Cloud): customUrl > envUrl > null
   let backendUrl = null;
-  if (customUrl) {
-    backendUrl = customUrl;
-  } else if (envUrl) {
-    backendUrl = envUrl;
-  } else if (isLocal) {
-    backendUrl = 'http://localhost:8085';
+  if (isLocal) {
+    if (isCustomLocal) {
+      backendUrl = customUrl;
+    } else {
+      backendUrl = 'http://localhost:8085';
+    }
   } else {
-    backendUrl = null;
+    if (customUrl) {
+      backendUrl = customUrl;
+    } else if (envUrl) {
+      backendUrl = envUrl;
+    } else {
+      backendUrl = null;
+    }
   }
 
   return {
@@ -98,7 +117,7 @@ export function getEnvironmentInfo() {
           ? `Túnel Seguro (${backendUrl}) + Firestore [${databaseId}] + Storage [${storageBucket}]`
           : `Firestore Event Bus [${databaseId}] (camera_catcher/commands)`),
     backendUrl,
-    hasCustomUrl: !!customUrl,
+    hasCustomUrl: isLocal ? !!isCustomLocal : !!customUrl,
     hasCustomDb: !!customDb,
     hasCustomStorage: !!customStorage
   };
