@@ -130,6 +130,23 @@ app.get(["/api/appointments", "/appointments"], (req, res) => {
   }
 });
 
+app.delete(["/api/appointments/:id", "/appointments/:id"], (req, res) => {
+  try {
+    const { id } = req.params;
+    const deleteCustomer = req.query.deleteCustomer === 'true';
+    const customerId = req.query.customerId;
+    const sqlite = orchestrator.visitService?.sqliteClient || getSqliteClient();
+    const deleted = sqlite.deleteAppointment(id);
+    let customerDeleted = false;
+    if (deleteCustomer && customerId) {
+      customerDeleted = sqlite.deleteCustomer(customerId);
+    }
+    res.json({ success: true, deleted, customerDeleted, id });
+  } catch (err) {
+    res.status(500).json({ error: err.message, success: false });
+  }
+});
+
 app.all("/capture", (req, res) => {
   if (orchestrator.isCapturing) {
     return res.status(409).json({
@@ -166,8 +183,9 @@ registerFirestoreListeners({
   onManualCapture: (src) => orchestrator.execute(src)
 });
 
-const DEFAULT_REALTIME_INTERVAL_MS = Number(process.env.REALTIME_INTERVAL_MS) || 1200;
-let realtimeLoopInterval = null;
+const DEFAULT_REALTIME_INTERVAL_MS = Number(process.env.REALTIME_INTERVAL_MS) || 400;
+let isRealtimeLoopRunning = false;
+let realtimeLoopTimeout = null;
 
 const PROD_STREAM_URL = process.env.PROD_STREAM_URL || "https://stream.perrosuelto.com";
 
@@ -205,27 +223,41 @@ export async function checkProductionStream(url = PROD_STREAM_URL, timeoutMs = 6
 }
 
 export function startRealtimeLoop(intervalMs = DEFAULT_REALTIME_INTERVAL_MS) {
-  // Asegurar que el stream esté activo permanentemente para alimentar frames a memoria en 0ms
   streamServer.startFfmpegStream(true);
+  if (isRealtimeLoopRunning) return;
+  isRealtimeLoopRunning = true;
 
-  if (realtimeLoopInterval) clearInterval(realtimeLoopInterval);
-  realtimeLoopInterval = setInterval(async () => {
-    if (!workingHours.isWorkingNow()) return;
-    if (orchestrator.isCapturing) return;
+  const loopStep = async () => {
+    if (!isRealtimeLoopRunning) return;
+    if (!workingHours.isWorkingNow()) {
+      realtimeLoopTimeout = setTimeout(loopStep, 5000);
+      return;
+    }
 
+    const start = Date.now();
     try {
-      await orchestrator.execute("realtime");
+      if (!orchestrator.isCapturing) {
+        await orchestrator.execute("realtime");
+      }
     } catch (err) {
       console.warn("[RealtimeLoop] Aviso en ciclo de visión:", err.message);
     }
-  }, intervalMs);
-  console.log(`[RealtimeLoop] Bucle de visión continua activo cada ${intervalMs / 1000}s (${(1000 / intervalMs).toFixed(1)} FPS).`);
+
+    if (!isRealtimeLoopRunning) return;
+    const elapsed = Date.now() - start;
+    const delay = Math.max(10, intervalMs - elapsed);
+    realtimeLoopTimeout = setTimeout(loopStep, delay);
+  };
+
+  console.log(`[RealtimeLoop] Bucle de visión continua activo cadencia dinámica ~${intervalMs}ms (${(1000 / intervalMs).toFixed(1)} FPS objetivo).`);
+  loopStep();
 }
 
 export function stopRealtimeLoop() {
-  if (realtimeLoopInterval) {
-    clearInterval(realtimeLoopInterval);
-    realtimeLoopInterval = null;
+  isRealtimeLoopRunning = false;
+  if (realtimeLoopTimeout) {
+    clearTimeout(realtimeLoopTimeout);
+    realtimeLoopTimeout = null;
   }
 }
 
