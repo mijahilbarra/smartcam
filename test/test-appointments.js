@@ -181,5 +181,46 @@ assert.ok(createdCustomer, "El nuevo cliente debe estar registrado");
 assert.strictEqual(createdCustomer.appointmentCount, 1, "Nuevo cliente debe tener appointmentCount = 1");
 console.log(`-> Nuevo cliente registrado exitosamente (${createdCustomer.name}) con appointmentCount: 1.`);
 
+console.log("\n[7] Probando sesión de 40 min pero con 0 fotos (sin rostro): debe ser descartada sin generar appointment...");
+const zeroPhotosTrack = {
+  trackId: 204,
+  currentQuadrant: { id: "silla_corte_1", label: "Silla de Corte 1", type: "barber_chair" }
+};
+await service.processTrack(zeroPhotosTrack);
+const zeroPhotosResult = await service.closeSession(204, { durationMinutes: 40 });
+assert.strictEqual(zeroPhotosResult, null, "Sesión sin fotos debe ser descartada a pesar de duración de 40 min");
+console.log("-> Sesión sin fotos descartada exitosamente: previene citas vacías y clientes fantasma.");
+
+console.log("\n[8] Probando que candidatos en confirmación ('Cliente en confirmación') no se guarden como clientes corruptos...");
+const pendingCandidateTrack = {
+  trackId: 205,
+  currentQuadrant: { id: "silla_corte_1", label: "Silla de Corte 1", type: "barber_chair" },
+  identity: {
+    personId: "cand_temp_123",
+    name: "Cliente en confirmación (1/3)",
+    isPendingConfirmation: true
+  }
+};
+await service.processTrack(pendingCandidateTrack);
+const candidateVector = new Array(512).fill(0);
+candidateVector[3] = 1.0;
+await service.addFaceSample(205, {
+  sharpnessScore: 92,
+  thumbnailBase64: "data:image/jpeg;base64,cand_photo",
+  embedding: candidateVector
+});
+const candidateCompletion = await service.closeSession(205, { durationMinutes: 25 });
+assert.ok(candidateCompletion, "Atención legítima de 25 min debe completarse");
+assert.ok(!candidateCompletion.clientName.includes("confirmación"), "El nombre de la atención NO debe incluir 'confirmación'");
+const registeredClient = custService.getCustomerData(candidateCompletion.clientId);
+assert.ok(registeredClient, "Debe registrarse el cliente formal");
+assert.ok(!registeredClient.name.includes("confirmación"), "El cliente formal NO debe llamarse 'Cliente en confirmación'");
+console.log(`-> Candidato provisional filtrado y formalizado limpiamente como: "${registeredClient.name}".`);
+
+console.log("\n[9] Probando valor por defecto de minAppointmentMinutes (debe ser 10 min)...");
+const defaultService = new VisitSessionService();
+assert.strictEqual(defaultService.minAppointmentMinutes, 10, "minAppointmentMinutes debe ser 10 por defecto");
+console.log("-> Umbral por defecto de 10 minutos validado exitosamente.");
+
 sqlite.close();
 console.log("\n🎉 ¡Todas las pruebas del pipeline de Atenciones pasaron al 100%!");
