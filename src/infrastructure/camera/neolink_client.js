@@ -73,6 +73,7 @@ export async function startNeolinkDaemon({ tomlPath, containerName = DEFAULT_DAE
 export async function stopNeolinkDaemon(containerName = DEFAULT_DAEMON_CONTAINER) {
   try {
     await execPromise(`docker rm -f ${containerName} 2>/dev/null || true`);
+    await execPromise(`pkill -9 -f 'neolink rtsp' 2>/dev/null || true`);
   } catch (_) {}
 }
 

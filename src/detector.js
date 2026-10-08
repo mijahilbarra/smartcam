@@ -57,9 +57,9 @@ const __dirname = path.dirname(__filename);
 
 sharp.cache(false);
 
-const DEFAULT_MODEL = fs.existsSync(path.join(__dirname, "models", "yolov8s.onnx"))
-  ? path.join(__dirname, "models", "yolov8s.onnx")
-  : path.join(__dirname, "models", "yolov8n.onnx");
+const DEFAULT_MODEL = fs.existsSync(path.join(__dirname, "models", "yolov8n.onnx"))
+  ? path.join(__dirname, "models", "yolov8n.onnx")
+  : path.join(__dirname, "models", "yolov8s.onnx");
 
 const MODEL_PATH = process.env.ML_MODEL_PATH || DEFAULT_MODEL;
 
@@ -267,9 +267,9 @@ export async function detectObjectsAndQuadrants(imageBuffer, options = {}) {
   const isRealtime = typeof options === "object" && options.isRealtime === true;
   const changeThreshold = typeof options === "object" && options.changeThreshold ? options.changeThreshold : (isRealtime ? 1.0 : 2.5);
   const shouldAnnotate = typeof options === "object" && options.generateAnnotated !== undefined ? options.generateAnnotated : false;
-  // En modo realtime continuo no congelar fotogramas si hay personas seguidas activas
-  const skipAllowed = typeof options === "object" && options.skipStatic !== undefined ? options.skipStatic : !isRealtime;
-  const maxSkips = isRealtime ? 1 : MAX_CONSECUTIVE_STATIC_SKIPS;
+  // En modo realtime continuo permitir reutilizar detecciones si la escena está inmóvil (ahorra CPU en e2-micro)
+  const skipAllowed = typeof options === "object" && options.skipStatic !== undefined ? options.skipStatic : true;
+  const maxSkips = isRealtime ? 3 : MAX_CONSECUTIVE_STATIC_SKIPS;
 
   // Comparación contra fotograma previo
   const diff = await checkFrameDifference(imageBuffer, changeThreshold);
@@ -277,8 +277,7 @@ export async function detectObjectsAndQuadrants(imageBuffer, options = {}) {
     skipAllowed &&
     !diff.hasChanged &&
     lastDetectionResult &&
-    consecutiveStaticSkips < maxSkips &&
-    (lastDetectionResult.rawDetections?.length > 0);
+    consecutiveStaticSkips < maxSkips;
 
   if (canSkip) {
     consecutiveStaticSkips++;

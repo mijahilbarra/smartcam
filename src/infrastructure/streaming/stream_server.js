@@ -14,6 +14,68 @@ export class StreamServer {
     this.ffmpegProcess = null;
     this.latestFrameBuffer = null;
     this.isActive = false;
+    this.isRemoteRelay = false;
+    this.remoteRelayUrl = null;
+    this.remoteRelayInterval = null;
+  }
+
+  /**
+   * Habilita el modo Relay Remoto: consume fotogramas periódicamente desde el servidor de producción
+   * (ej: https://stream.perrosuelto.com) evitando abrir procesos FFmpeg o sesiones P2P locales.
+   * @param {string} remoteUrl
+   * @param {Buffer} [initialBuffer]
+   */
+  enableRemoteRelay(remoteUrl, initialBuffer = null) {
+    this.isRemoteRelay = true;
+    this.remoteRelayUrl = remoteUrl.replace(/\/+$/, "");
+    if (initialBuffer && Buffer.isBuffer(initialBuffer)) {
+      this.latestFrameBuffer = initialBuffer;
+    }
+    console.log(`[Stream] 🔄 Modo Relay Remoto activado hacia: ${this.remoteRelayUrl}`);
+    this.startRemoteRelayLoop();
+  }
+
+  startRemoteRelayLoop() {
+    if (this.remoteRelayInterval) return;
+    this.isActive = true;
+
+    const pollFrame = async () => {
+      if (!this.isRemoteRelay || !this.remoteRelayUrl) return;
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 2000);
+        const res = await fetch(`${this.remoteRelayUrl}/api/snapshot`, {
+          method: "GET",
+          signal: controller.signal,
+          headers: { "Cache-Control": "no-cache" }
+        });
+        clearTimeout(timer);
+        if (res.ok) {
+          const arrayBuffer = await res.arrayBuffer();
+          if (arrayBuffer.byteLength > 1000) {
+            const frame = Buffer.from(arrayBuffer);
+            this.latestFrameBuffer = frame;
+            this.broadcastFrame(frame);
+          }
+        }
+      } catch (_) {
+        // Silencioso ante pérdidas transitorias de red
+      }
+    };
+
+    // Polling a ~2 FPS (500ms) para telemetría y visualización fluida sin sobrecargar red
+    this.remoteRelayInterval = setInterval(pollFrame, 500);
+    pollFrame();
+  }
+
+  disableRemoteRelay() {
+    this.isRemoteRelay = false;
+    this.remoteRelayUrl = null;
+    if (this.remoteRelayInterval) {
+      clearInterval(this.remoteRelayInterval);
+      this.remoteRelayInterval = null;
+    }
+    console.log("[Stream] Modo Relay Remoto desactivado.");
   }
 
   /**
@@ -58,6 +120,10 @@ export class StreamServer {
    */
   startFfmpegStream(persistent = false) {
     if (persistent) this.isPersistent = true;
+    if (this.isRemoteRelay) {
+      this.startRemoteRelayLoop();
+      return;
+    }
     if (this.ffmpegProcess && !this.ffmpegProcess.killed) return;
     if (this.isStarting) return;
     this.isStarting = true;
@@ -170,6 +236,15 @@ export class StreamServer {
    * Detiene el proceso de FFmpeg para ahorrar CPU y ancho de banda
    */
   stopFfmpegStream(force = false) {
+    if (this.isRemoteRelay) {
+      if (!force && this.isPersistent) return;
+      if (this.remoteRelayInterval) {
+        clearInterval(this.remoteRelayInterval);
+        this.remoteRelayInterval = null;
+      }
+      this.isActive = false;
+      return;
+    }
     if (!force && this.isPersistent) {
       // En modo persistente (visión en tiempo real continua), mantener FFmpeg activo para el loop de YOLO
       return;

@@ -14,7 +14,7 @@ import { initLogger } from "./infrastructure/logging/logger.js";
 import { initFirebaseAdmin } from "./infrastructure/firebase/firebase_admin.js";
 import { daemonReporter } from "./daemon_reporter.js";
 import { customerService } from "./services/customer_service.js";
-import { cleanupZombies, startNeolinkDaemon } from "./infrastructure/camera/neolink_client.js";
+import { cleanupZombies, startNeolinkDaemon, stopNeolinkDaemon } from "./infrastructure/camera/neolink_client.js";
 import {
   getDynamicConfig,
   registerFirestoreListeners,
@@ -164,8 +164,37 @@ registerFirestoreListeners({
   onManualCapture: (src) => orchestrator.execute(src)
 });
 
-const DEFAULT_REALTIME_INTERVAL_MS = Number(process.env.REALTIME_INTERVAL_MS) || 450;
+const DEFAULT_REALTIME_INTERVAL_MS = Number(process.env.REALTIME_INTERVAL_MS) || 1200;
 let realtimeLoopInterval = null;
+
+const PROD_STREAM_URL = process.env.PROD_STREAM_URL || "https://stream.perrosuelto.com";
+
+/**
+ * Verifica si existe una transmisión activa en producción consultando /api/snapshot
+ * @param {string} [url]
+ * @param {number} [timeoutMs]
+ * @returns {Promise<{active: boolean, latestBuffer: Buffer|null}>}
+ */
+export async function checkProductionStream(url = PROD_STREAM_URL, timeoutMs = 3000) {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const res = await fetch(`${url}/api/snapshot`, {
+      method: "GET",
+      signal: controller.signal,
+      headers: { "Cache-Control": "no-cache" }
+    });
+    clearTimeout(timer);
+    if (res.ok) {
+      const contentType = res.headers.get("content-type") || "";
+      const arrayBuf = await res.arrayBuffer();
+      if ((contentType.includes("image/jpeg") || contentType.includes("image/jpg")) && arrayBuf.byteLength > 1000) {
+        return { active: true, latestBuffer: Buffer.from(arrayBuf) };
+      }
+    }
+  } catch (_) {}
+  return { active: false, latestBuffer: null };
+}
 
 export function startRealtimeLoop(intervalMs = DEFAULT_REALTIME_INTERVAL_MS) {
   // Asegurar que el stream esté activo permanentemente para alimentar frames a memoria en 0ms
@@ -205,9 +234,31 @@ try {
   console.warn("[Startup] Aviso cargando config:", err.message);
 }
 
-await cleanupZombies();
-await startNeolinkDaemon({ tomlPath: TOML_PATH });
-console.log("[Startup] Limpieza y daemon RTSP Neolink completado. Sistema listo.");
+const isLocalEnvironment = process.env.IS_LOCAL_SIMULATOR === "true" ||
+                           process.env.NODE_ENV !== "production" ||
+                           process.env.CHECK_PROD_STREAM_FIRST === "true" ||
+                           Boolean(process.env.STORAGE_BUCKET && process.env.STORAGE_BUCKET.includes("test"));
+
+if (isLocalEnvironment) {
+  console.log(`[Startup] Verificando si existe transmisión activa en producción (${PROD_STREAM_URL})...`);
+  const prodCheck = await checkProductionStream();
+  if (prodCheck.active) {
+    console.log(`[Startup] 🌐 Transmisión ACTIVA detectada en producción (${PROD_STREAM_URL}).`);
+    console.log(`[Startup] 🔒 Cancelando apertura de transmisión local (neolink-daemon) para evitar colisión P2P en cámara física.`);
+    await stopNeolinkDaemon();
+    streamServer.enableRemoteRelay(PROD_STREAM_URL, prodCheck.latestBuffer);
+    console.log(`[Startup] 🔄 Modo Relay local activado hacia ${PROD_STREAM_URL}. Sistema listo.`);
+  } else {
+    console.log(`[Startup] ℹ️ No se detectó transmisión en producción. Iniciando transmisión local (Neolink RTSP)...`);
+    await cleanupZombies();
+    await startNeolinkDaemon({ tomlPath: TOML_PATH });
+    console.log("[Startup] Limpieza y daemon RTSP Neolink completado. Sistema listo.");
+  }
+} else {
+  await cleanupZombies();
+  await startNeolinkDaemon({ tomlPath: TOML_PATH });
+  console.log("[Startup] Limpieza y daemon RTSP Neolink completado. Sistema listo.");
+}
 
 // Iniciar bucle continuo de visión y seguimiento en tiempo real
 function tryStartRealtimeLoop() {

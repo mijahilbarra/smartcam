@@ -21,6 +21,9 @@ export async function acquireClearFrame({
   rtspUrl = process.env.RTSP_STREAM_URL ? process.env.RTSP_STREAM_URL.replace(/\/sub$/, '/main') : "rtsp://127.0.0.1:8554/barberia/main",
   timeoutMs = 1500
 } = {}) {
+  if (process.env.ENABLE_MAIN_STREAM !== "true") {
+    return null;
+  }
   if (Date.now() < clearStreamDisabledUntil) {
     return null;
   }
@@ -47,6 +50,10 @@ export async function enrichCropsWithClearStream({
   docId,
   localOutputPath
 } = {}) {
+  const isCustomAcquire = Boolean(options.acquireClearFrame || context.acquireClearFrame);
+  if (process.env.ENABLE_MAIN_STREAM !== "true" && !isCustomAcquire) {
+    return;
+  }
   const acquireClearFn = options.acquireClearFrame || context.acquireClearFrame || acquireClearFrame;
   const defaultClearRtspUrl = process.env.RTSP_STREAM_URL
     ? process.env.RTSP_STREAM_URL.replace(/\/sub$/, '/main')
@@ -56,7 +63,6 @@ export async function enrichCropsWithClearStream({
   const now = Date.now();
   const CLEAR_COOLDOWN_MS = 12000; // 12 segundos de enfriamiento por track
 
-  const isCustomAcquire = Boolean(options.acquireClearFrame || context.acquireClearFrame);
   const tracksNeedingClear = (!isCustomAcquire && now < clearStreamDisabledUntil) ? [] : activeTracks.filter(track => {
     if (track.isStaffHint || track.role === "staff") return false;
     const quad = track.currentQuadrant;

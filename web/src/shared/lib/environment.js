@@ -99,7 +99,7 @@ export function getEnvironmentInfo() {
     } else if (envUrl) {
       backendUrl = envUrl;
     } else {
-      backendUrl = null;
+      backendUrl = 'https://stream.perrosuelto.com';
     }
   }
 
