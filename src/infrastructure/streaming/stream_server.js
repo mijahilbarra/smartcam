@@ -6,6 +6,9 @@
 
 import { spawn } from "child_process";
 
+const JPEG_SOI = Buffer.from([0xff, 0xd8]);
+const JPEG_EOI = Buffer.from([0xff, 0xd9]);
+
 export class StreamServer {
   constructor(options = {}) {
     this.rtspUrl = options.rtspUrl || process.env.RTSP_STREAM_URL || "rtsp://127.0.0.1:8554/barberia/sub";
@@ -178,14 +181,14 @@ export class StreamServer {
         chunkBuffer = Buffer.concat([chunkBuffer, data]);
 
         // Descartar bytes corruptos previos al primer SOI (0xFF, 0xD8)
-        const firstSoi = chunkBuffer.indexOf(Buffer.from([0xff, 0xd8]));
+        const firstSoi = chunkBuffer.indexOf(JPEG_SOI);
         if (firstSoi > 0) {
           chunkBuffer = chunkBuffer.slice(firstSoi);
         }
 
         // Delimitador JPEG: SOI (0xFFD8) y EOI (0xFFD9)
-        let startIndex = chunkBuffer.indexOf(Buffer.from([0xff, 0xd8]));
-        let endIndex = chunkBuffer.indexOf(Buffer.from([0xff, 0xd9]));
+        let startIndex = chunkBuffer.indexOf(JPEG_SOI);
+        let endIndex = chunkBuffer.indexOf(JPEG_EOI);
 
         while (startIndex !== -1 && endIndex !== -1 && endIndex > startIndex) {
           const frame = chunkBuffer.slice(startIndex, endIndex + 2);
@@ -196,12 +199,12 @@ export class StreamServer {
           this.latestFrameBuffer = frame;
           this.broadcastFrame(frame);
 
-          const nextSoi = chunkBuffer.indexOf(Buffer.from([0xff, 0xd8]));
+          const nextSoi = chunkBuffer.indexOf(JPEG_SOI);
           if (nextSoi > 0) {
             chunkBuffer = chunkBuffer.slice(nextSoi);
           }
-          startIndex = chunkBuffer.indexOf(Buffer.from([0xff, 0xd8]));
-          endIndex = chunkBuffer.indexOf(Buffer.from([0xff, 0xd9]));
+          startIndex = chunkBuffer.indexOf(JPEG_SOI);
+          endIndex = chunkBuffer.indexOf(JPEG_EOI);
         }
 
         // Si el buffer crece demasiado por datos corruptos, reiniciar

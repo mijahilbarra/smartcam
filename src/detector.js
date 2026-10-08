@@ -63,14 +63,9 @@ const DEFAULT_MODEL = fs.existsSync(path.join(__dirname, "models", "yolov8n.onnx
 
 const MODEL_PATH = process.env.ML_MODEL_PATH || DEFAULT_MODEL;
 
-// Clases de interés COCO
+// Clases de interés COCO (optimizado: detección exclusiva de personas)
 const COCO_CLASSES = {
-  0: "person",
-  2: "car",
-  24: "backpack",
-  56: "chair",
-  62: "tv",
-  67: "cell phone"
+  0: "person"
 };
 
 let dynamicQuadrants = null;
@@ -174,11 +169,12 @@ export async function getInferenceSession() {
  * Preprocesa el buffer a tensor CHW Float32Array [1, 3, 640, 640]
  */
 async function preprocessImage(imageBuffer) {
-  const meta = await sharp(imageBuffer).metadata();
+  const pipeline = sharp(imageBuffer);
+  const meta = await pipeline.metadata();
   const origWidth = meta.width;
   const origHeight = meta.height;
 
-  const { data } = await sharp(imageBuffer)
+  const { data } = await pipeline
     .resize(640, 640, { fit: "fill" })
     .removeAlpha()
     .raw()
@@ -186,11 +182,12 @@ async function preprocessImage(imageBuffer) {
 
   const floatData = new Float32Array(3 * 640 * 640);
   const channelSize = 640 * 640;
+  const INV_255 = 1.0 / 255.0;
 
   for (let i = 0; i < channelSize; i++) {
-    floatData[i] = data[i * 3] / 255.0;                   // R
-    floatData[channelSize + i] = data[i * 3 + 1] / 255.0;   // G
-    floatData[2 * channelSize + i] = data[i * 3 + 2] / 255.0; // B
+    floatData[i] = data[i * 3] * INV_255;
+    floatData[channelSize + i] = data[i * 3 + 1] * INV_255;
+    floatData[2 * channelSize + i] = data[i * 3 + 2] * INV_255;
   }
 
   const tensor = new ort.Tensor("float32", floatData, [1, 3, 640, 640]);
@@ -299,36 +296,21 @@ export async function detectObjectsAndQuadrants(imageBuffer, options = {}) {
   const inferenceMs = Date.now() - t0;
 
   const output = results[session.outputNames[0]].data;
-  const numClasses = 80;
   const numAnchors = 8400;
-
+  const targetThreshold = typeof options === "object" && options.confThreshold !== undefined
+    ? options.confThreshold
+    : Math.min(confThreshold, 0.38);
+  const scaleX = origWidth / 640;
+  const scaleY = origHeight / 640;
   const rawDetections = [];
 
   for (let a = 0; a < numAnchors; a++) {
-    let maxScore = 0;
-    let maxClass = -1;
-
-    for (let c = 0; c < numClasses; c++) {
-      const score = output[(4 + c) * numAnchors + a];
-      if (score > maxScore) {
-        maxScore = score;
-        maxClass = c;
-      }
-    }
-
-    // Umbral adaptativo para personas: permite detectar con fluidez personas inclinadas o de espaldas
-    const targetThreshold = COCO_CLASSES[maxClass] === "person"
-      ? (typeof options === "object" && options.confThreshold !== undefined ? options.confThreshold : Math.min(confThreshold, 0.38))
-      : confThreshold;
-
-    if (maxScore >= targetThreshold && COCO_CLASSES[maxClass]) {
+    const score = output[4 * numAnchors + a];
+    if (score >= targetThreshold) {
       const cx = output[0 * numAnchors + a];
       const cy = output[1 * numAnchors + a];
       const w = output[2 * numAnchors + a];
       const h = output[3 * numAnchors + a];
-
-      const scaleX = origWidth / 640;
-      const scaleY = origHeight / 640;
 
       const x1 = Math.max(0, Math.round((cx - w / 2) * scaleX));
       const y1 = Math.max(0, Math.round((cy - h / 2) * scaleY));
@@ -338,12 +320,11 @@ export async function detectObjectsAndQuadrants(imageBuffer, options = {}) {
       const boxW = x2 - x1;
       const boxH = y2 - y1;
 
-      // Descartar manchas diminutas (<24px ancho o <38px alto) que corresponden a gente a 50m en la calle de enfrente
       if (boxW >= 24 && boxH >= 38) {
         rawDetections.push({
-          class: COCO_CLASSES[maxClass],
-          classId: maxClass,
-          score: Math.round(maxScore * 100) / 100,
+          class: "person",
+          classId: 0,
+          score: Math.round(score * 100) / 100,
           box: [x1, y1, x2, y2]
         });
       }
