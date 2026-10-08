@@ -10,6 +10,8 @@ import { telemetryStream } from "../infrastructure/streaming/telemetry_stream.js
 import { calculateIoU } from "../core/geometry.js";
 import { isServiceChair, isTransitZone } from "../core/barbershop_rules.js";
 
+let clearStreamDisabledUntil = 0;
+
 /**
  * Adquisición bajo demanda del fotograma en alta resolución (Stream Clear / Mainstream 2560x1440).
  * Utiliza captureSnapshotFromRtsp sobre el stream RTSP principal.
@@ -19,11 +21,15 @@ export async function acquireClearFrame({
   rtspUrl = process.env.RTSP_STREAM_URL ? process.env.RTSP_STREAM_URL.replace(/\/sub$/, '/main') : "rtsp://127.0.0.1:8554/barberia/main",
   timeoutMs = 1500
 } = {}) {
+  if (Date.now() < clearStreamDisabledUntil) {
+    return null;
+  }
   const outputPath = localOutputPath || `/tmp/snap_clear_${Date.now()}.jpeg`;
   try {
     return await captureSnapshotFromRtsp({ rtspUrl, localOutputPath: outputPath, timeoutMs });
   } catch (err) {
-    console.warn(`[ClearStream] Aviso al capturar fotograma de alta resolución (${rtspUrl}):`, err.message);
+    clearStreamDisabledUntil = Date.now() + 60000; // 60 segundos de enfriamiento si falla la conexión RTSP
+    console.warn(`[ClearStream] Aviso al capturar fotograma de alta resolución (${rtspUrl}). Cooldown 60s activado:`, err.message);
     return null;
   }
 }
@@ -99,7 +105,7 @@ export async function uploadDiagnosticSnapshot({ bucket, docId, buffer, isManual
  */
 export async function detectScene(buffer, { isRealtime = false } = {}) {
   if (!isRealtime) console.log(`[3/5] Analizando fotograma con Machine Learning local (ONNX Runtime)...`);
-  const mlResult = await detectObjectsAndQuadrants(buffer);
+  const mlResult = await detectObjectsAndQuadrants(buffer, { isRealtime });
   if (!isRealtime) console.log(`[ML] Inferencia completada en ${mlResult.inferenceMs} ms. Cuadrantes detectados: ${mlResult.quadrants.length}`);
 
   if (!isRealtime) {
@@ -181,14 +187,23 @@ export async function reidentifyPeople({ db, clientRecords = [], clientCrops = [
 export function matchIdentitiesToTracks({ tracker, activeTracks = [], identifiedPeople = [], iouThreshold = 0.20 }) {
   if (!tracker) return new Set();
   const matchedTrackIds = new Set();
+  const usedPersonIds = new Set();
 
   for (const person of identifiedPeople) {
+    const personKey = person.personId || person.name;
+    if (personKey && usedPersonIds.has(personKey)) continue;
+
     let bestTrack = null;
     let maxIoU = 0;
 
     if (person.box) {
       for (const track of activeTracks) {
         if (matchedTrackIds.has(track.trackId)) continue;
+        // Evitar asignar un cliente al track del barbero de pie
+        if (!person.isStaff && track.isStaffHint && !track.identity?.isStaff) continue;
+        // Evitar asignar staff al cliente sentado
+        if (person.isStaff && !track.isStaffHint && track.role === "client") continue;
+
         const iou = calculateIoU(person.box, track.box);
         if (iou > maxIoU) {
           maxIoU = iou;
@@ -200,11 +215,14 @@ export function matchIdentitiesToTracks({ tracker, activeTracks = [], identified
     // Coincidencia espacial suficiente
     if (bestTrack && maxIoU >= iouThreshold) {
       matchedTrackIds.add(bestTrack.trackId);
+      if (personKey) usedPersonIds.add(personKey);
       tracker.updateIdentityAndFace(bestTrack.trackId, {
         identity: person,
         faceBuffer: person.faceBuffer,
         faceBoxNorm: person.faceBoxNorm,
-        sharpnessScore: person.sharpnessScore
+        sharpnessScore: person.sharpnessScore,
+        thumbnailBase64: person.thumbnailBase64 || person.faceThumbnailBase64 || null,
+        embedding: person.embedding || null
       });
       console.log(`[Tracker] Identidad "${person.name}" asociada a Track #${bestTrack.trackId} vía IoU (${(maxIoU * 100).toFixed(1)}%).`);
     }
@@ -284,15 +302,21 @@ export function broadcastTelemetry({ docId, mlResult, activeTracks = [], identif
         ],
         centroid: t.centroid,
         confidence: t.confidence,
-        quadrant: t.currentQuadrant?.label || t.currentQuadrant?.name || null,
+        quadrant: t.isStaffHint
+          ? (t.currentQuadrant?.name ? `Atendiendo (${t.currentQuadrant.name})` : "Barbero / Staff")
+          : (t.currentQuadrant?.label || t.currentQuadrant?.name || null),
         quadrantId: t.currentQuadrant?.id || null,
         identity: t.identity ? {
           name: t.identity.name,
-          isStaff: t.identity.isStaff === true,
+          isStaff: t.identity.isStaff === true || t.isStaffHint === true,
           isFrequent: t.identity.isFrequent === true,
           visitCount: t.identity.visitCount || 1,
           confidence: t.identity.confidence || 0
-        } : null,
+        } : (t.isStaffHint ? {
+          name: "Barbero / Staff",
+          isStaff: true,
+          confidence: t.confidence
+        } : null),
         sharpnessScore: t.sharpnessScore || 0,
         missedFrames: t.missedFrames || 0
       })),
@@ -470,7 +494,9 @@ export async function runProcessCycle(context = {}, options = {}) {
   const now = Date.now();
   const CLEAR_COOLDOWN_MS = 12000; // 12 segundos de enfriamiento por track
 
-  const tracksNeedingClear = activeTracks.filter(track => {
+  const isCustomAcquire = Boolean(options.acquireClearFrame || context.acquireClearFrame);
+  const tracksNeedingClear = (!isCustomAcquire && now < clearStreamDisabledUntil) ? [] : activeTracks.filter(track => {
+    if (track.isStaffHint || track.role === "staff") return false;
     const quad = track.currentQuadrant;
     if (!quad) return false;
     const isCaptureZone = quad.capturePerson !== false && (

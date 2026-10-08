@@ -35,3 +35,5 @@ services:
       - RTSP_STREAM_URL=rtsp://host.docker.internal:8554/barberia/sub
       - GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
       - NEOLINK_TOML_PATH=/opt/camera-catcher/neolink.toml
+      - REALTIME_INTERVAL_MS=500
+      - ML_MODEL_PATH=/opt/camera-catcher/src/models/yolov8s.onnx
