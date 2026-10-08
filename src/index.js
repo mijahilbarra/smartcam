@@ -173,26 +173,32 @@ const PROD_STREAM_URL = process.env.PROD_STREAM_URL || "https://stream.perrosuel
  * Verifica si existe una transmisión activa en producción consultando /api/snapshot
  * @param {string} [url]
  * @param {number} [timeoutMs]
+ * @param {number} [maxAttempts]
  * @returns {Promise<{active: boolean, latestBuffer: Buffer|null}>}
  */
-export async function checkProductionStream(url = PROD_STREAM_URL, timeoutMs = 3000) {
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    const res = await fetch(`${url}/api/snapshot`, {
-      method: "GET",
-      signal: controller.signal,
-      headers: { "Cache-Control": "no-cache" }
-    });
-    clearTimeout(timer);
-    if (res.ok) {
-      const contentType = res.headers.get("content-type") || "";
-      const arrayBuf = await res.arrayBuffer();
-      if ((contentType.includes("image/jpeg") || contentType.includes("image/jpg")) && arrayBuf.byteLength > 1000) {
-        return { active: true, latestBuffer: Buffer.from(arrayBuf) };
+export async function checkProductionStream(url = PROD_STREAM_URL, timeoutMs = 6000, maxAttempts = 2) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const res = await fetch(`${url}/api/snapshot`, {
+        method: "GET",
+        signal: controller.signal,
+        headers: { "Cache-Control": "no-cache" }
+      });
+      clearTimeout(timer);
+      if (res.ok) {
+        const contentType = res.headers.get("content-type") || "";
+        const arrayBuf = await res.arrayBuffer();
+        if ((contentType.includes("image/jpeg") || contentType.includes("image/jpg")) && arrayBuf.byteLength > 1000) {
+          return { active: true, latestBuffer: Buffer.from(arrayBuf) };
+        }
       }
+    } catch (_) {}
+    if (attempt < maxAttempts) {
+      await new Promise(r => setTimeout(r, 1000));
     }
-  } catch (_) {}
+  }
   return { active: false, latestBuffer: null };
 }
 
