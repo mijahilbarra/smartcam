@@ -130,6 +130,7 @@ sequenceDiagram
 | **Galería Multi-Ángulo & Sesión Temporal** | ArcFace MobileFaceNet + Sesión Temporal | Fusión de poses faciales por silla/visita y galería multi-embedding (tope 6) sin duplicación | [15-multi-angle-biometric-session-gallery.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/15-multi-angle-biometric-session-gallery.md) |
 | **Almacenamiento Biométrico Dual** | SQLite WAL + RAM Cache + Firebase Asíncrono | Almacenamiento local de ultra-baja latencia (<1ms), caché en RAM y reflejo selectivo a la nube ($0 cuotas) | [16-sqlite-local-biometric-storage.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/16-sqlite-local-biometric-storage.md) |
 | **Túnel HTTPS Seguro & SSE** | Cloudflare Tunnel (`cloudflared`) | Conexión saliente segura sin puertos abiertos para Live Streaming MJPEG y Telemetría SSE en producción | [17-secure-stream-tunnel.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/17-secure-stream-tunnel.md) |
+| **Optimización de RAM & Streaming Resiliente** | Glibc MALLOC_ARENA_MAX=2 + V8 Flags + FFmpeg 3.5 FPS + Self-Healing | Reducción de 84MB RAM, poda de fotos en caché, detección O(1) de personas y auto-recuperación de stream | [18-ram-optimization-and-resilient-stream.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/18-ram-optimization-and-resilient-stream.md) |
 
 ---
 
