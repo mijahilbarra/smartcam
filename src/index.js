@@ -8,6 +8,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import sharp from "sharp";
 
+process.env.MALLOC_ARENA_MAX = process.env.MALLOC_ARENA_MAX || "2";
 sharp.concurrency(1);
 sharp.cache(false);
 
