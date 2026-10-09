@@ -55,7 +55,7 @@ const workingHours = new WorkingHoursManager({
 
 const streamServer = new StreamServer({
   rtspUrl: process.env.RTSP_STREAM_URL || "rtsp://127.0.0.1:8554/barberia/sub",
-  fps: 8
+  fps: Number(process.env.STREAM_FPS) || 3.5
 });
 
 const orchestrator = new CaptureOrchestrator({

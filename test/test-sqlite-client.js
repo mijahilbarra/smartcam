@@ -101,8 +101,14 @@ const elapsed = Date.now() - t0;
 assert.strictEqual(profiles.length, 1);
 assert.strictEqual(profiles[0].id, "client_test_01");
 assert.strictEqual(profiles[0].embeddings.length, 3);
+assert.deepStrictEqual(profiles[0].photos, [], "getAllComparisonProfiles debe retornar photos: [] para ligereza de RAM");
+assert.strictEqual(profiles[0].thumbnailBase64, null, "getAllComparisonProfiles debe retornar thumbnailBase64: null");
+assert.strictEqual(profiles[0].thumbnailPath, null, "getAllComparisonProfiles debe retornar thumbnailPath: null");
+const fullCustomer = client.getCustomerById("client_test_01");
+assert.strictEqual(fullCustomer.photos.length, 1, "getCustomerById sí debe entregar las fotos completas desde SQLite");
+assert.ok(fullCustomer.thumbnailBase64, "getCustomerById sí debe entregar thumbnailBase64");
 assert.ok(elapsed < 10, `Debe ejecutarse en tiempo despreciable (tardó ${elapsed} ms)`);
-console.log(`-> getAllComparisonProfiles entregó ${profiles.length} perfil(es) en ${elapsed} ms.`);
+console.log(`-> getAllComparisonProfiles entregó ${profiles.length} perfil(es) en ${elapsed} ms (RAM optimizada sin base64).`);
 
 // 7. Eliminación en cascada con deleteCustomer
 console.log("\n[7] Probando eliminación en cascada con deleteCustomer...");

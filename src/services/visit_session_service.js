@@ -292,6 +292,14 @@ export class VisitSessionService {
       finalClient.appointmentCount = (finalClient.appointmentCount || finalClient.visitCount || 1) + 1;
       finalClient.lastSeen = new Date(now).toISOString();
 
+      // Si finalClient provino de comparación biométrica (RAM podada sin fotos),
+      // hidratar fotos existentes desde SQLite antes de acumular:
+      const fullExisting = this.customerService?.getCustomerData?.(finalClient.id) ||
+                           this.sqliteClient?.getCustomerById?.(finalClient.id);
+      if (fullExisting && Array.isArray(fullExisting.photos) && fullExisting.photos.length > 0) {
+        finalClient.photos = fullExisting.photos;
+      }
+
       // Acumular fotos de la sesión en el perfil del cliente (soportando 40+ fotos)
       if (session.photos.length > 0) {
         finalClient.photos = this.mergeCustomerPhotos(finalClient.photos, session.photos);

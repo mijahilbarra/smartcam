@@ -94,8 +94,8 @@ export class CustomerService {
               role: staff.role || "barber",
               embedding: staff.embedding,
               embeddings: staff.embeddings || (staff.embedding ? [staff.embedding] : []),
-              photos: staff.photos || [],
-              thumbnailBase64: staff.thumbnailBase64 || null,
+              photos: [],
+              thumbnailBase64: null,
               bestFaceScore: staff.bestFaceScore || 0
             };
             this.sqliteClient.upsertCustomer(staffProfile);
@@ -141,7 +141,8 @@ export class CustomerService {
         if (id) {
           const profile = { id, ...data };
           this.sqliteClient.upsertCustomer(profile);
-          this.profilesCache.set(id, profile);
+          const cachedForComparison = { ...profile, photos: [], thumbnailBase64: null };
+          this.profilesCache.set(id, cachedForComparison);
           loaded.push(profile);
         }
       });
@@ -176,14 +177,13 @@ export class CustomerService {
    * @returns {Object|null}
    */
   getCustomerData(id) {
-    if (this.profilesCache.has(id)) {
-      return this.profilesCache.get(id);
+    if (this.sqliteClient) {
+      const customer = this.sqliteClient.getCustomerById(id);
+      if (customer) {
+        return customer;
+      }
     }
-    const customer = this.sqliteClient.getCustomerById(id);
-    if (customer) {
-      this.profilesCache.set(id, customer);
-    }
-    return customer;
+    return this.profilesCache.get(id) || null;
   }
 
   /**
@@ -251,8 +251,13 @@ export class CustomerService {
 
     // 2. Actualizar caché en memoria RAM inmediatamente
     const current = this.profilesCache.get(customerData.id) || {};
-    const updated = { ...current, ...customerData };
-    this.profilesCache.set(customerData.id, updated);
+    const persisted = { ...current, ...customerData };
+    const cachedForComparison = {
+      ...persisted,
+      photos: [],
+      thumbnailBase64: null
+    };
+    this.profilesCache.set(persisted.id, cachedForComparison);
 
     // 3. Determinar si requiere reflejo a Firebase
     const shouldReflectToFirebase = Boolean(
@@ -267,22 +272,22 @@ export class CustomerService {
     );
 
     if (shouldReflectToFirebase) {
-      const syncPromise = this._syncToFirebase(updated, options).catch(err => {
-        console.warn(`[CustomerService] Error sincronizando a Firebase para "${updated.name}" (${updated.id}):`, err.message);
+      const syncPromise = this._syncToFirebase(persisted, options).catch(err => {
+        console.warn(`[CustomerService] Error sincronizando a Firebase para "${persisted.name}" (${persisted.id}):`, err.message);
       });
 
       this.pendingSyncs.add(syncPromise);
       syncPromise.finally(() => this.pendingSyncs.delete(syncPromise));
 
       if (options.backgroundSync) {
-        return { id: updated.id, localSaved: true, queuedSync: true, syncPromise };
+        return { id: persisted.id, localSaved: true, queuedSync: true, syncPromise };
       }
 
       await syncPromise;
-      return { id: updated.id, localSaved: true, synced: true };
+      return { id: persisted.id, localSaved: true, synced: true };
     }
 
-    return { id: updated.id, localSaved: true, synced: false };
+    return { id: persisted.id, localSaved: true, synced: false };
   }
 
   /**

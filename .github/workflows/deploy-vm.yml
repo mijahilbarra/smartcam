@@ -58,6 +58,9 @@ jobs:
             echo '🧹 Limpiando contenedores Neolink colgados...' && \
             docker rm -f \$(docker ps -q --filter ancestor=quantumentangledandy/neolink:latest) 2>/dev/null || true && \
             docker rm -f neolink-capture 2>/dev/null || true && \
+            sudo mkdir -p /etc/systemd/system/camera-catcher.service.d && \
+            printf '[Service]\nEnvironment=\"MALLOC_ARENA_MAX=2\"\n' | sudo tee /etc/systemd/system/camera-catcher.service.d/allocator.conf > /dev/null && \
+            sudo systemctl daemon-reload && \
             sudo systemctl restart camera-catcher.service && \
             sudo systemctl is-active camera-catcher.service
           "

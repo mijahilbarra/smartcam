@@ -84,7 +84,12 @@ const loadedProfiles = await customerService.loadProfilesIntoMemory({ db: mockFi
 assert.strictEqual(loadedProfiles.length, 2, "Debe cargar staff y cliente Carlos");
 assert.ok(customerService.hasProfile("staff_alex"), "Debe tener en caché a staff_alex");
 assert.ok(customerService.hasProfile("client_carlos"), "Debe tener en caché a client_carlos");
-console.log("-> loadProfilesIntoMemory pobló SQLite y RAM desde Firestore exitosamente.");
+assert.deepStrictEqual(customerService.profilesCache.get("staff_alex").photos, [], "Staff en RAM debe tener photos: []");
+assert.strictEqual(customerService.profilesCache.get("staff_alex").thumbnailBase64, null, "Staff en RAM debe tener thumbnailBase64: null");
+assert.deepStrictEqual(customerService.profilesCache.get("client_carlos").photos, [], "Cliente en RAM debe tener photos: []");
+assert.strictEqual(customerService.profilesCache.get("client_carlos").thumbnailBase64, null, "Cliente en RAM debe tener thumbnailBase64: null");
+assert.strictEqual(customerService.getCustomerData("client_carlos").photos.length, 1, "getCustomerData sí debe entregar fotos desde SQLite");
+console.log("-> loadProfilesIntoMemory pobló SQLite y RAM desde Firestore exitosamente (RAM podada sin fotos base64).");
 
 // 4. Latencia de getComparisonProfiles (<1ms en RAM)
 console.log("\n[3] Verificando rendimiento ultra-rápido de getComparisonProfiles (<1ms)...");
@@ -119,9 +124,12 @@ const saveResult = await customerService.saveOrUpdateCustomer(newCustomer, {
 assert.strictEqual(saveResult.localSaved, true);
 assert.strictEqual(saveResult.synced, true);
 assert.ok(customerService.hasProfile("client_diego"), "Debe estar en RAM");
+assert.deepStrictEqual(customerService.profilesCache.get("client_diego").photos, [], "Caché de cliente en RAM no debe retener fotos base64");
+assert.strictEqual(customerService.profilesCache.get("client_diego").thumbnailBase64, null, "Caché de cliente en RAM debe tener thumbnailBase64: null");
+assert.strictEqual(customerService.getCustomerData("client_diego").photos.length, 1, "getCustomerData debe entregar fotos desde SQLite");
 assert.ok(memoryDb.getCustomerById("client_diego"), "Debe estar en SQLite");
 assert.ok(firestoreStorage.has("client_diego"), "Debe estar reflejado en Firestore");
-console.log("-> Nuevo cliente persistido localmente y reflejado en Firestore.");
+console.log("-> Nuevo cliente persistido localmente y reflejado en Firestore (RAM limpia sin fotos base64).");
 
 // 6. Actualización menor sin cambios significativos (no debe llamar a Firestore)
 console.log("\n[5] Probando actualización menor sin banderas de sincronización...");
