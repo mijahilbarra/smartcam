@@ -55,7 +55,8 @@ export async function startNeolinkDaemon({ tomlPath, containerName = DEFAULT_DAE
     try {
       const res = await execPromise(`docker ps -q --filter name=${containerName}`);
       stdout = res.stdout;
-    } catch (_) {
+    } catch (err) {
+      console.warn(`[Neolink] Error verificando estado de docker ps:`, err.message);
       return false;
     }
     if (stdout.trim().length > 0) {
@@ -65,10 +66,11 @@ export async function startNeolinkDaemon({ tomlPath, containerName = DEFAULT_DAE
     try { await execPromise(`docker rm -f ${containerName} 2>/dev/null || true`); } catch (_) {}
     const cmd = `docker run -d --name ${containerName} --restart unless-stopped -v "${tomlPath}":/etc/neolink.toml -p 8554:8554 quantumentangledandy/neolink:latest neolink rtsp -c /etc/neolink.toml`;
     try {
-      await execPromise(cmd);
-      console.log(`[Neolink] Daemon RTSP iniciado exitosamente en puerto 8554.`);
+      const runRes = await execPromise(cmd);
+      console.log(`[Neolink] Daemon RTSP iniciado exitosamente en puerto 8554 (ID: ${runRes.stdout.trim()}).`);
       return true;
-    } catch (_) {
+    } catch (runErr) {
+      console.error(`[Neolink] Error al ejecutar docker run para ${containerName}:`, runErr.message, runErr.stderr || "");
       return false;
     }
   } catch (err) {

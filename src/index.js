@@ -56,7 +56,10 @@ const workingHours = new WorkingHoursManager({
 
 const streamServer = new StreamServer({
   rtspUrl: process.env.RTSP_STREAM_URL || "rtsp://127.0.0.1:8554/barberia/sub",
-  fps: Number(process.env.STREAM_FPS) || 3.5
+  fps: Number(process.env.STREAM_FPS) || 3.5,
+  onEnsureRtspSource: async () => {
+    await startNeolinkDaemon({ tomlPath: TOML_PATH });
+  }
 });
 
 const orchestrator = new CaptureOrchestrator({
