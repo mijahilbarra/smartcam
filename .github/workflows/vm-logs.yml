@@ -34,7 +34,7 @@ jobs:
           echo "=================================================="
           $SSH_CMD "
             echo 'Eliminando contenedores de captura huérfanos...'
-            docker rm -f \$(docker ps -q --filter ancestor=quantumentangledandy/neolink:latest) 2>/dev/null || true
+            docker ps -a -q --filter name=neolink-capture | xargs -r docker rm -f 2>/dev/null || true
             docker rm -f neolink-capture 2>/dev/null || true
           "
 

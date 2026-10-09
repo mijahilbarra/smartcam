@@ -15,6 +15,7 @@ export class StreamServer {
   constructor(options = {}) {
     this.rtspUrl = options.rtspUrl || process.env.RTSP_STREAM_URL || "rtsp://127.0.0.1:8554/barberia/sub";
     this.fps = options.fps || Number(process.env.STREAM_FPS) || 3.5;
+    this.onEnsureRtspSource = options.onEnsureRtspSource || null;
     this.clients = new Set();
     this.ffmpegProcess = null;
     this.latestFrameBuffer = null;
@@ -195,7 +196,7 @@ export class StreamServer {
   /**
    * Inicia el proceso de lectura RTSP con FFmpeg
    */
-  startFfmpegStream(persistent = false) {
+  async startFfmpegStream(persistent = false) {
     if (persistent) this.isPersistent = true;
     if (this.isRemoteRelay) {
       this.startRemoteRelayLoop();
@@ -210,18 +211,24 @@ export class StreamServer {
       this.reconnectTimer = null;
     }
 
+    if (typeof this.onEnsureRtspSource === "function") {
+      try {
+        await this.onEnsureRtspSource();
+      } catch (err) {
+        console.warn("[Stream] Aviso al verificar daemon RTSP:", err.message);
+      }
+    }
+
     console.log(`[Stream] Iniciando ingesta FFmpeg on-demand desde: ${this.rtspUrl} a ${this.fps} FPS...`);
 
     const args = [
       "-rtsp_transport", "tcp",
-      "-analyzeduration", "1000000",
-      "-probesize", "200000",
-      "-fflags", "nobuffer",
-      "-flags", "low_delay",
-      "-threads", "1",
+      "-analyzeduration", "15000000",
+      "-probesize", "1000000",
       "-i", this.rtspUrl,
       "-an",
       "-r", String(this.fps),
+      "-threads", "1",
       "-f", "image2pipe",
       "-q:v", "5",
       "-vcodec", "mjpeg",
@@ -243,10 +250,12 @@ export class StreamServer {
         }
       }, 5000);
 
+      let stderrBuffer = "";
       this.ffmpegProcess.stderr.on("data", (data) => {
-        const msg = data.toString().trim();
-        if (msg.includes("Error") || msg.includes("failed") || msg.includes("refused")) {
-          console.warn("[Stream FFmpeg]", msg);
+        const msg = data.toString();
+        stderrBuffer = (stderrBuffer + msg).slice(-2000);
+        if (msg.includes("Error") || msg.includes("failed") || msg.includes("refused") || msg.includes("Invalid")) {
+          console.warn("[Stream FFmpeg]", msg.trim());
         }
       });
 
@@ -290,11 +299,11 @@ export class StreamServer {
 
       this.ffmpegProcess.on("exit", (code) => {
         console.log(`[Stream] Proceso FFmpeg finalizó con código: ${code}`);
+        if (code !== 0 && stderrBuffer.trim().length > 0) {
+          console.warn(`[Stream FFmpeg Último Detalle]:\n${stderrBuffer.trim()}`);
+        }
         this.ffmpegProcess = null;
         this.isActive = false;
-        if (code !== 0) {
-          this.latestFrameBuffer = null;
-        }
         if (this.watchdogInterval) clearInterval(this.watchdogInterval);
         if (this.reconnectTimer) {
           clearTimeout(this.reconnectTimer);
