@@ -1,6 +1,6 @@
 /**
  * Listeners en Tiempo Real de Firestore
- * Escucha cambios de configuración (prompt/intervalos), comandos manuales de captura y calibración de cuadrantes.
+ * Escucha cambios de configuración (prompt/horario laboral) y calibración de cuadrantes.
  */
 
 import { setCustomQuadrants } from "../../detector.js";
@@ -55,9 +55,8 @@ export async function getDynamicConfig(db, defaultPrompt = "Describe what do you
  * @param {Object} options
  * @param {Object} options.db
  * @param {Object} options.workingHours
- * @param {Function} options.onManualCapture
  */
-export function registerFirestoreListeners({ db, workingHours, onManualCapture }) {
+export function registerFirestoreListeners({ db, workingHours }) {
   // 1. Listener de configuración (horario laboral y prompt)
   db.doc("camera_catcher/prompt").onSnapshot(async (snapshot) => {
     const data = snapshot.data();
@@ -84,25 +83,7 @@ export function registerFirestoreListeners({ db, workingHours, onManualCapture }
     console.warn(`[Config] Error escuchando camera_catcher/prompt:`, err.message);
   });
 
-  // 2. Listener de comandos manuales ("Capturar Ahora")
-  let lastTriggerHandled = Date.now();
-  console.log(`[Listener] Escuchando comandos en tiempo real de Firestore: camera_catcher/commands...`);
-  db.doc("camera_catcher/commands").onSnapshot((snapshot) => {
-    const data = snapshot.data();
-    if (data && data.action === "capture" && data.requestedAt > lastTriggerHandled) {
-      lastTriggerHandled = data.requestedAt;
-      console.log(`[Listener] Disparo manual recibido desde la web a las ${new Date(data.requestedAt).toLocaleTimeString()}`);
-      if (typeof onManualCapture === "function") {
-        onManualCapture("manual").catch(err => {
-          console.error(`[Listener] Error procesando captura manual:`, err.message);
-        });
-      }
-    }
-  }, (err) => {
-    console.warn(`[Listener] Error en snapshot listener de commands:`, err.message);
-  });
-
-  // 3. Listener de cuadrantes dinámicos
+  // 2. Listener de cuadrantes dinámicos
   console.log(`[Quadrants] Escuchando configuración de cuadrantes en tiempo real: camera_catcher/quadrants...`);
   db.doc("camera_catcher/quadrants").onSnapshot((snapshot) => {
     if (!snapshot.exists) {

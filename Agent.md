@@ -118,7 +118,7 @@ El repositorio utiliza GitHub Actions con filtros por ruta (`paths:`):
 > 1. **Prohibición Total de Servir como API Web o Backend CRUD**: Queda terminantemente prohibido utilizar el servidor para servir endpoints de consulta, creación, modificación o eliminación de datos de negocio (como atenciones/appointments, perfiles de clientes, fotos o configuraciones).
 > 2. **Todo el Proceso de Datos Vive en el Frontend**: Toda la gestión de lectura, escritura y borrado de citas, clientes y configuraciones debe realizarse directamente desde el frontend (`web/`) comunicándose de forma serverless con Firebase (Cloud Firestore y Storage).
 > 3. **Cero Sobrecarga Extra en la Máquina Virtual**: La VM de cómputo (`e2-micro` o hardware de borde) debe dedicar el 100% de su capacidad a la inferencia neuronal y flujo de imágenes sin sobrecargas de peticiones HTTP de datos.
-> 4. **Comunicación Asíncrona vía Firestore**: Cualquier comando operativo desde el frontend hacia el daemon (como disparar una captura manual) se transmite exclusivamente mediante el bus de eventos de Firestore (`camera_catcher/commands`), el cual es escuchado en tiempo real por el daemon.
+> 4. **Flujo Continuo en Tiempo Real**: El sistema opera de forma continua y autónoma con bucle en tiempo real (`startRealtimeLoop`). La telemetría y métricas se transmiten vía Server-Sent Events (SSE) hacia la interfaz web.
 
 ---
 
@@ -130,7 +130,6 @@ El repositorio utiliza GitHub Actions con filtros por ruta (`paths:`):
    - Servicio systemd 24/7 (`camera-catcher.service`) que coordina Neolink, captura de fotogramas, inferencia local ONNX y túnel Cloudflare.
    - Configurado con `MALLOC_ARENA_MAX=2` y flags de Node.js `--optimize-for-size --max-old-space-size=192` para operar de forma ultra-ligera en 1 GB de RAM (~210 MB RSS en prod).
 3. **Firestore**:
-   - `camera_catcher/commands`: Bus de comandos en tiempo real para disparos manuales (`action: "capture"`).
    - `camera_catcher/prompt`: Configuración viva de horario laboral (workStartTime, workEndTime, timezone) y prompt para Gemini.
    - `camera_catcher/photos/photos/<id>`: Metadatos y descripciones analíticas de cada foto.
 4. **Firebase Storage**:

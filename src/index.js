@@ -134,8 +134,7 @@ const server = app.listen(PORT, () => {
 // 5. Registrar Listeners en Tiempo Real de Firestore
 registerFirestoreListeners({
   db,
-  workingHours,
-  onManualCapture: (src) => orchestrator.execute(src)
+  workingHours
 });
 
 const DEFAULT_REALTIME_INTERVAL_MS = Number(process.env.REALTIME_INTERVAL_MS) || 400;

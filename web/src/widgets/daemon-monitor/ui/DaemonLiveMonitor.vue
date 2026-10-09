@@ -6,7 +6,6 @@ import AppBadge from '@/shared/ui/atoms/AppBadge.vue';
 import StatusPill from '@/shared/ui/molecules/StatusPill.vue';
 import StatPill from '@/shared/ui/molecules/StatPill.vue';
 import { useDaemonState } from '@/entities/daemon/model/useDaemonState';
-import { useTriggerCapture } from '@/features/trigger-capture/model/useTriggerCapture';
 import { useQuadrants } from '@/entities/quadrant/model/useQuadrants';
 import { hexToRgba, toPointObject, ensureNorm01, boxNormToPolygonNorm } from '@/shared/lib/geometry';
 import { IS_LOCAL_ENV } from '@/shared/api/firebase';
@@ -30,7 +29,6 @@ const {
   addLog
 } = useDaemonState();
 
-const { isTriggering, triggerCapture } = useTriggerCapture();
 const { quadrants: configuredQuadrants } = useQuadrants();
 
 // Viewport & canvas refs
@@ -140,10 +138,6 @@ watch(streamUrl, (newUrl) => {
     streamLoaded.value = false;
   }
 });
-
-const onTriggerClick = () => {
-  triggerCapture(addLog);
-};
 
 const toggleFullscreen = () => {
   if (!viewportRef.value) return;
@@ -615,15 +609,6 @@ onUnmounted(() => {
           :active="isConnected"
           :text="statusLabel"
         />
-        <AppButton
-          variant="primary"
-          icon="photo_camera"
-          :loading="isTriggering"
-          @click="onTriggerClick"
-          title="Disparar análisis y captura inmediata en el Daemon"
-        >
-          <span>Disparar Análisis Manual</span>
-        </AppButton>
       </div>
     </div>
 
