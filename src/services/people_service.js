@@ -522,7 +522,8 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
       const result = identifyFace(embedding, clientProfiles, 0.65);
 
       if (result.matched && result.profile) {
-        const p = result.profile;
+        const fullCustomer = custService?.getCustomerData?.(result.profile.id);
+        const p = fullCustomer || result.profile;
 
         // Comprobar ausencia de ambigüedad con el barbero
         const isAmbiguousWithStaff = (result.similarity - staffMatch.maxStaffSim < 0.10);

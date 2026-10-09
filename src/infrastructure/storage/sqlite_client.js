@@ -247,7 +247,8 @@ export class SQLiteClient {
     `);
 
     this.stmtGetAllCustomers = this.db.prepare(`
-      SELECT * FROM customers ORDER BY id ASC
+      SELECT id, name, is_staff, role, first_seen, last_seen, visit_count, appointment_count, best_face_score
+      FROM customers
     `);
 
     this.stmtGetAllEmbeddings = this.db.prepare(`
@@ -430,14 +431,6 @@ export class SQLiteClient {
 
     return customers.map(row => {
       const vectors = embeddingsByCustomer.get(row.id) || [];
-      let photos = [];
-      if (row.photos_json) {
-        try {
-          photos = JSON.parse(row.photos_json);
-        } catch (_) {
-          photos = [];
-        }
-      }
 
       return {
         id: row.id,
@@ -449,9 +442,9 @@ export class SQLiteClient {
         visitCount: row.visit_count,
         appointmentCount: row.appointment_count,
         bestFaceScore: row.best_face_score,
-        thumbnailBase64: row.thumbnail_base64,
-        thumbnailPath: row.thumbnail_path,
-        photos,
+        thumbnailBase64: null,
+        thumbnailPath: null,
+        photos: [],
         embeddings: vectors,
         embedding: vectors[0] || null
       };

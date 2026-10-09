@@ -14,7 +14,7 @@ const JPEG_EOI = Buffer.from([0xff, 0xd9]);
 export class StreamServer {
   constructor(options = {}) {
     this.rtspUrl = options.rtspUrl || process.env.RTSP_STREAM_URL || "rtsp://127.0.0.1:8554/barberia/sub";
-    this.fps = options.fps || 8;
+    this.fps = options.fps || Number(process.env.STREAM_FPS) || 3.5;
     this.clients = new Set();
     this.ffmpegProcess = null;
     this.latestFrameBuffer = null;
@@ -214,8 +214,11 @@ export class StreamServer {
 
     const args = [
       "-rtsp_transport", "tcp",
-      "-analyzeduration", "15000000",
-      "-probesize", "1000000",
+      "-analyzeduration", "1000000",
+      "-probesize", "200000",
+      "-fflags", "nobuffer",
+      "-flags", "low_delay",
+      "-threads", "1",
       "-i", this.rtspUrl,
       "-an",
       "-r", String(this.fps),
