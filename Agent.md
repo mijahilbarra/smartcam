@@ -127,7 +127,8 @@ El repositorio utiliza GitHub Actions con filtros por ruta (`paths:`):
 1. **Captura P2P (Neolink)**:
    - Comunicación UDP con protocolo Baichuan propietario de Reolink para atravesar CGNAT sin IP pública.
 2. **Daemon Host (GCP VM `e2-micro`)**:
-   - Servicio systemd 24/7 (`camera-catcher.service`) que coordina Neolink, captura de fotogramas e integración con APIs de Google.
+   - Servicio systemd 24/7 (`camera-catcher.service`) que coordina Neolink, captura de fotogramas, inferencia local ONNX y túnel Cloudflare.
+   - Configurado con `MALLOC_ARENA_MAX=2` y flags de Node.js `--optimize-for-size --max-old-space-size=192` para operar de forma ultra-ligera en 1 GB de RAM (~210 MB RSS en prod).
 3. **Firestore**:
    - `camera_catcher/commands`: Bus de comandos en tiempo real para disparos manuales (`action: "capture"`).
    - `camera_catcher/prompt`: Configuración viva de horario laboral (workStartTime, workEndTime, timezone) y prompt para Gemini.
@@ -137,6 +138,8 @@ El repositorio utiliza GitHub Actions con filtros por ruta (`paths:`):
 5. **Gemini Vision AI (`gemini-flash-latest`)**:
    - Inferencia multimodal sobre el fotograma capturado según el prompt dinámico configurado.
 6. **Frontend Web Dashboard (`web/`)**:
-   - Vue 3 + Tailwind CSS + Vite y Firebase SDK para monitoreo y control en tiempo real desde navegadores.
+   - Vue 3 + Tailwind CSS + Vite y Firebase SDK para monitoreo y control en tiempo real desde navegadores con badge de memoria RAM en vivo.
 7. **Pipeline Funcional Core (`src/services/processes.js`, `src/services/pipeline/` & `agent/PROCESSES.md`)**:
-   - **Pipeline Core del Sistema**: Orquestador lineal de alto nivel (`src/services/processes.js`, < 110 líneas) descompuesto en etapas puras y declarativas bajo `src/services/pipeline/` para adquisición de fotogramas (0ms RAM en tiempo real o Stream Clear 2560x1440 reactivo en `clear_stream_step.js`), inferencia local YOLOv8 (`detection_step.js`), seguimiento continuo de personas (`tracking_step.js`), biometría gobernada por sesión con galería multi-ángulo (`biometrics_step.js` + `VisitSessionService` + ArcFace MobileFaceNet), gestión de visitas (`visits_step.js`), cálculo funcional de ocupación (`occupancy_step.js`), emisión SSE de telemetría (`telemetry_step.js`) y persistencia atómica (`persistence_step.js`). Especificación canónica y guía de extensión detalladas en [`agent/PROCESSES.md`](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/PROCESSES.md).
+   - **Pipeline Core del Sistema**: Orquestador lineal de alto nivel (`src/services/processes.js`, < 110 líneas) descompuesto en etapas puras y declarativas bajo `src/services/pipeline/` para adquisición de fotogramas (0ms RAM en tiempo real o Stream Clear 2560x1440 reactivo en `clear_stream_step.js`), inferencia local YOLOv8 con acceso $O(1)$ a personas y modo centinela de 25 skips estáticos (`detection_step.js`), seguimiento continuo de personas (`tracking_step.js`), biometría gobernada por sesión con galería multi-ángulo y caché podada de fotos en RAM (`biometrics_step.js` + `VisitSessionService` + ArcFace MobileFaceNet), gestión de visitas (`visits_step.js`), cálculo funcional de ocupación (`occupancy_step.js`), emisión SSE de telemetría y métricas de RAM (`telemetry_step.js`) y persistencia atómica (`persistence_step.js`). Especificación canónica y guía de extensión detalladas en [`agent/PROCESSES.md`](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/PROCESSES.md).
+8. **Live Streaming MJPEG Resiliente & Túnel Seguro (ADR 17 & ADR 18)**:
+   - Streaming on-demand a 3.5 FPS con 1 hilo (`-threads 1`), retención de último fotograma para `/api/snapshot` y auto-recuperación (`onEnsureRtspSource`) que levanta el contenedor `neolink-daemon` si se encuentra apagado. Conectado a producción vía Cloudflare Tunnel en `https://stream.perrosuelto.com`.

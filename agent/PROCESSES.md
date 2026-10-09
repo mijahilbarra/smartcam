@@ -69,6 +69,7 @@ flowchart TD
 * **`acquireFrame({ streamServer, tomlPath, docId, isRealtime, triggerSource, localOutputPath })`**:
   * En modo `realtime`: Recupera en **0 ms** el buffer JPEG más reciente almacenado en memoria RAM por el stream RTSP continuo (`streamServer.getLatestFrame()`). Si el stream aún no ha decodificado el primer fotograma, retorna `null` y el ciclo suspende gracefully (`waiting_for_frame`).
   * En modo `manual`: Realiza la invocación P2P UDP directa mediante el binario Neolink (`captureSnapshotAdaptive`).
+  * **Resiliencia & Auto-recuperación**: El servidor de streaming (`StreamServer`) incorpora el hook `onEnsureRtspSource` para levantar automáticamente el contenedor `neolink-daemon` en el puerto 8554 si se apaga, y retiene `latestFrameBuffer` para evitar errores 503 en `/api/snapshot`.
 * **`uploadDiagnosticSnapshot({ bucket, docId, buffer, isManual })`**:
   * Registra el fotograma completo en Firebase Storage únicamente si `isManual === true` (disparos manuales o arranque). En modo tiempo real 24/7 no se sube la foto completa para prevenir costos y saturación de cuota.
 
@@ -87,8 +88,10 @@ flowchart TD
 
 ### 3. `detection_step.js`
 * **`detectScene(buffer, { isRealtime })`**:
-  * Aplica Frame Differencing: Si la variación respecto al fotograma previo es `< 2.5%`, reutiliza el análisis anterior a **0% CPU / 0 ms**.
-  * Ejecuta YOLOv8n (`yolov8n.onnx`) en CPU mono-hilo con ONNX Runtime y Non-Maximum Suppression (NMS).
+  * **Detección Exclusiva de Personas ($O(1)$)**: YOLOv8n accede directamente a la clase 0 (`person`), eliminando el escaneo de las 79 clases restantes en los 8,400 anchors (ahorro de 660,000 iteraciones por ciclo).
+  * **Modo Centinela Dinámico de Saltos Estáticos**:
+    * Si la variación respecto al frame anterior es `< 1%` y **no hay personas en la escena**, permite hasta **25 saltos consecutivos (~30s a 0% CPU / 0 ms)**.
+    * Si hay personas presentes, limita a 5 saltos para mantener reactividad en el tracking.
   * Mapea detecciones a los polígonos/cuadrantes configurados en Firestore (`camera_catcher/quadrants`).
 
 ### 4. `tracking_step.js`
@@ -102,7 +105,7 @@ flowchart TD
   * Procesa recortes de personas en zonas de atención; si es disparo manual, genera la subida correspondiente a Storage.
 * **`reidentifyPeople({ db, clientRecords, clientCrops, activeSessions, isRealtime, backgroundSync })`**:
   * Filtro de calidad facial RFB-320 (frontalidad y nitidez) + ArcFace MobileFaceNet ONNX (embedding 512D en ~15 ms).
-  * Almacenamiento Biométrico Dual (`CustomerService` en RAM 0ms + SQLite WAL local `data/barberia.db`).
+  * **Almacenamiento Biométrico Podado en RAM**: `getAllComparisonProfiles()` almacena únicamente embeddings en memoria (0 Base64). `getCustomerData(id)` hidrata la información completa bajo demanda desde SQLite local (`data/barberia.db`) únicamente al consolidar la sesión.
   * Gobernanza por sesión temporal: previene perfiles espurios en sillas activas y fusiona ángulos complementarios en la galería del cliente (hasta 20 fotos/embeddings).
 
 ### 6. `visits_step.js`
@@ -116,7 +119,7 @@ flowchart TD
 ### 8. `telemetry_step.js`
 * **`broadcastTelemetry({ docId, mlResult, activeTracks, identifiedPeople, occupancy })`**:
   * Emisión SSE en tiempo real hacia `/api/yolo/stream` (frontend web).
-  * Soporta emisión temprana inmediata (< 50 ms) tras el tracking y emisión final enriquecida con biometría y ocupación.
+  * Emisión temprana inmediata (< 50 ms) y emisión final enriquecida con biometría, ocupación y **métricas de memoria RAM del sistema** (`rssMB`, `heapUsedMB`, `heapTotalMB`, `osFreeMB`).
 
 ### 9. `persistence_step.js`
 * **`persistCycleData({ db, docId, timestamp, storagePath, clientRecords, identifiedPeople, mlResult, visitService, activeTracks, occupancy, isRealtime })`**:
