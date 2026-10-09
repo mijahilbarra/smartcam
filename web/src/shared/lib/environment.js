@@ -115,7 +115,7 @@ export function getEnvironmentInfo() {
       ? `HTTP Directo (${backendUrl || 'http://localhost:8085'}) + Firestore [${databaseId}] + Storage [${storageBucket}]`
       : (backendUrl
           ? `Túnel Seguro (${backendUrl}) + Firestore [${databaseId}] + Storage [${storageBucket}]`
-          : `Firestore Event Bus [${databaseId}] (camera_catcher/commands)`),
+          : `Firestore Event Bus [${databaseId}]`),
     backendUrl,
     hasCustomUrl: isLocal ? !!isCustomLocal : !!customUrl,
     hasCustomDb: !!customDb,
