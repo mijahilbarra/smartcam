@@ -11,6 +11,10 @@ on:
         description: 'Trigger a manual capture via port 8085 (/capture)?'
         required: false
         default: 'false'
+      restart_services:
+        description: 'Restart neolink-daemon and camera-catcher service?'
+        required: false
+        default: 'false'
 
 jobs:
   inspect:
@@ -24,6 +28,19 @@ jobs:
           echo "${{ secrets.VM_SSH_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H ${{ secrets.VM_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Restart Services if Requested
+        if: ${{ inputs.restart_services == 'true' }}
+        run: |
+          SSH_CMD="ssh -o StrictHostKeyChecking=accept-new ${{ secrets.VM_USER || 'deploy' }}@${{ secrets.VM_HOST }}"
+          echo "=================================================="
+          echo "=== REINICIANDO SERVICIOS EN VM ==="
+          echo "=================================================="
+          $SSH_CMD "
+            docker restart neolink-daemon 2>/dev/null || docker rm -f neolink-daemon 2>/dev/null || true
+            sudo systemctl restart camera-catcher.service
+            sudo systemctl is-active camera-catcher.service
+          "
 
       - name: Run Diagnostics on VM
         run: |
@@ -50,6 +67,10 @@ jobs:
             ps aux | grep -E 'node|neolink|docker' | grep -v grep || true
             echo '--- Docker Containers ---'
             docker ps -a 2>/dev/null || echo 'Sin permisos directos de docker CLI'
+            echo '--- Neolink Daemon Docker Logs ---'
+            docker logs --tail 60 neolink-daemon 2>&1 || true
+            echo '--- Eventos Stream y Watchdog en daemon.log ---'
+            grep -E 'Stream|FFmpeg|Neolink|Watchdog' /opt/camera-catcher/daemon.log 2>/dev/null | tail -n 60 || true
           "
 
           echo "=================================================="

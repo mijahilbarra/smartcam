@@ -12,6 +12,7 @@ export function initLogger(daemonLogPath, tmpLogPath = "/tmp/camera-catcher.log"
   isInitialized = true;
 
   const origLog = console.log;
+  const origWarn = console.warn;
   const origErr = console.error;
 
   function appendToLog(prefix, args) {
@@ -30,6 +31,11 @@ export function initLogger(daemonLogPath, tmpLogPath = "/tmp/camera-catcher.log"
   console.log = (...args) => {
     origLog(...args);
     appendToLog("[INFO]", args);
+  };
+
+  console.warn = (...args) => {
+    origWarn(...args);
+    appendToLog("[WARN]", args);
   };
 
   console.error = (...args) => {

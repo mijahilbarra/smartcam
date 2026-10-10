@@ -19,6 +19,7 @@ export class StreamServer {
     this.clients = new Set();
     this.ffmpegProcess = null;
     this.latestFrameBuffer = null;
+    this.latestFrameTimestamp = null;
     this.isActive = false;
     this.isRemoteRelay = false;
     this.remoteRelayUrl = null;
@@ -41,6 +42,7 @@ export class StreamServer {
     this.remoteRelayUrl = remoteUrl.replace(/\/+$/, "");
     if (initialBuffer && Buffer.isBuffer(initialBuffer)) {
       this.latestFrameBuffer = initialBuffer;
+      this.latestFrameTimestamp = Date.now();
     }
     console.log(`[Stream] 🔄 Modo Relay Remoto activado hacia: ${this.remoteRelayUrl}`);
     this.startRemoteRelayLoop();
@@ -86,6 +88,7 @@ export class StreamServer {
             chunkBuffer = chunkBuffer.slice(endIndex + 2);
 
             lastFrameTime = Date.now();
+            this.latestFrameTimestamp = Date.now();
             this.latestFrameBuffer = frame;
             this.broadcastFrame(frame);
 
@@ -174,9 +177,10 @@ export class StreamServer {
     this.clients.add(client);
     console.log(`[Stream] Nuevo cliente web conectado. Clientes activos: ${this.clients.size}`);
 
-    // Si había un fotograma reciente, enviarlo inmediatamente
-    if (this.latestFrameBuffer) {
-      this.sendFrameToClient(client, this.latestFrameBuffer);
+    // Si había un fotograma reciente y fresco (< 15s), enviarlo inmediatamente
+    const freshFrame = this.getLatestFrame();
+    if (freshFrame) {
+      this.sendFrameToClient(client, freshFrame);
     }
 
     // Iniciar ffmpeg si es el primer cliente
@@ -211,33 +215,36 @@ export class StreamServer {
       this.reconnectTimer = null;
     }
 
-    if (typeof this.onEnsureRtspSource === "function") {
-      try {
-        await this.onEnsureRtspSource();
-      } catch (err) {
-        console.warn("[Stream] Aviso al verificar daemon RTSP:", err.message);
-      }
-    }
-
-    console.log(`[Stream] Iniciando ingesta FFmpeg on-demand desde: ${this.rtspUrl} a ${this.fps} FPS...`);
-
-    const args = [
-      "-rtsp_transport", "tcp",
-      "-analyzeduration", "15000000",
-      "-probesize", "1000000",
-      "-i", this.rtspUrl,
-      "-an",
-      "-r", String(this.fps),
-      "-threads", "1",
-      "-f", "image2pipe",
-      "-q:v", "5",
-      "-vcodec", "mjpeg",
-      "pipe:1"
-    ];
-
     try {
+      if (typeof this.onEnsureRtspSource === "function") {
+        try {
+          if (this.reconnectAttempts >= 3) {
+            await this.onEnsureRtspSource({ forceRestart: true });
+          } else {
+            await this.onEnsureRtspSource();
+          }
+        } catch (err) {
+          console.warn("[Stream] Aviso al verificar daemon RTSP:", err.message);
+        }
+      }
+
+      console.log(`[Stream] Iniciando ingesta FFmpeg on-demand desde: ${this.rtspUrl} a ${this.fps} FPS...`);
+
+      const args = [
+        "-rtsp_transport", "tcp",
+        "-analyzeduration", "15000000",
+        "-probesize", "1000000",
+        "-i", this.rtspUrl,
+        "-an",
+        "-r", String(this.fps),
+        "-threads", "1",
+        "-f", "image2pipe",
+        "-q:v", "5",
+        "-vcodec", "mjpeg",
+        "pipe:1"
+      ];
+
       this.ffmpegProcess = spawn("ffmpeg", args, { stdio: ["ignore", "pipe", "pipe"] });
-      this.isStarting = false;
       this.isActive = true;
       let lastFrameTime = Date.now();
 
@@ -279,6 +286,7 @@ export class StreamServer {
           chunkBuffer = chunkBuffer.slice(endIndex + 2);
 
           lastFrameTime = Date.now();
+          this.latestFrameTimestamp = Date.now();
           this.reconnectAttempts = 0;
           this.latestFrameBuffer = frame;
           this.broadcastFrame(frame);
@@ -315,6 +323,9 @@ export class StreamServer {
           let delayMs = 2000;
           if (code !== 0) {
             this.reconnectAttempts = (this.reconnectAttempts || 0) + 1;
+            if (this.reconnectAttempts >= 3) {
+              console.warn(`[Stream] Múltiples fallos consecutivos (#${this.reconnectAttempts}). Forzando reciclaje de daemon RTSP en próximo intento...`);
+            }
             // Backoff exponencial: 2s, 4s, 8s, 16s, máx 30s
             delayMs = Math.min(2000 * Math.pow(2, this.reconnectAttempts - 1), 30000);
             console.warn(`[Stream] Reintento de ingesta FFmpeg programado en ${delayMs / 1000}s (fallo #${this.reconnectAttempts})...`);
@@ -333,9 +344,10 @@ export class StreamServer {
         this.stopFfmpegStream(true);
       });
     } catch (err) {
-      this.isStarting = false;
       console.error("[Stream] Error al lanzar FFmpeg:", err.message);
       this.stopFfmpegStream(true);
+    } finally {
+      this.isStarting = false;
     }
   }
 
@@ -343,6 +355,10 @@ export class StreamServer {
    * Detiene el proceso de FFmpeg para ahorrar CPU y ancho de banda
    */
   stopFfmpegStream(force = false) {
+    if (force) {
+      this.latestFrameBuffer = null;
+      this.latestFrameTimestamp = null;
+    }
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -396,9 +412,14 @@ export class StreamServer {
   }
 
   /**
-   * Retorna el fotograma más reciente en memoria
+   * Retorna el fotograma más reciente en memoria si no está obsoleto
+   * @param {number} [maxAgeMs=15000]
+   * @returns {Buffer|null}
    */
-  getLatestFrame() {
+  getLatestFrame(maxAgeMs = 15000) {
+    if (this.latestFrameTimestamp && (Date.now() - this.latestFrameTimestamp > maxAgeMs)) {
+      return null;
+    }
     return this.latestFrameBuffer;
   }
 }
