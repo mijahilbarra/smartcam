@@ -67,6 +67,10 @@ jobs:
             ps aux | grep -E 'node|neolink|docker' | grep -v grep || true
             echo '--- Docker Containers ---'
             docker ps -a 2>/dev/null || echo 'Sin permisos directos de docker CLI'
+            echo '--- Neolink Daemon Docker Logs ---'
+            docker logs --tail 60 neolink-daemon 2>&1 || true
+            echo '--- Eventos Stream y Watchdog en daemon.log ---'
+            grep -E 'Stream|FFmpeg|Neolink|Watchdog' /opt/camera-catcher/daemon.log 2>/dev/null | tail -n 60 || true
           "
 
           echo "=================================================="
