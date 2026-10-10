@@ -78,10 +78,11 @@ export function getEnvironmentInfo() {
   const customDb = typeof localStorage !== 'undefined' ? localStorage.getItem('CAMERA_CATCHER_FIRESTORE_DB') : null;
   const customStorage = typeof localStorage !== 'undefined' ? localStorage.getItem('CAMERA_CATCHER_STORAGE_BUCKET') : null;
 
-  // Base de datos oficial con datos reales de la barbería.
-  // Permite override si el usuario selecciona explícitamente otra base en la configuración.
-  const databaseId = customDb || '(default)';
-  const storageBucket = customStorage || 'gs://skip-bigotes.firebasestorage.app';
+  // En local por defecto se utiliza la base de datos "test" y el bucket "gs://skip-bigotes-test".
+  // En producción (GCP / Hosting) se utiliza "(default)" y "gs://skip-bigotes.firebasestorage.app".
+  // Permite override si el usuario selecciona explícitamente otra base en la configuración (localStorage).
+  const databaseId = customDb || (isLocal ? 'test' : '(default)');
+  const storageBucket = customStorage || (isLocal ? 'gs://skip-bigotes-test' : 'gs://skip-bigotes.firebasestorage.app');
 
   // Resolución prioritaria de backendUrl:
   // - En entorno local (isLocal): SOLO aceptar customUrl si es explícitamente localhost/127.0.0.1, de lo contrario 'http://localhost:8085'

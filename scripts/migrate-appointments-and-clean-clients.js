@@ -19,7 +19,7 @@ function parseArgs() {
   const apply = args.includes("--apply");
   const dryRun = args.includes("--dry-run") || !apply;
 
-  let databaseId = "(default)";
+  let databaseId = "test";
   const dbArg = args.find(a => a.startsWith("--database="));
   if (dbArg) {
     databaseId = dbArg.split("=")[1].replace(/^["']|["']$/g, "").trim();
