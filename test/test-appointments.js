@@ -376,5 +376,207 @@ assert.strictEqual(seatedSession.status, "en_corte");
 assert.strictEqual(debounceApptService.activeSessions.has(402), true);
 console.log("-> Cliente con permanencia confirmada (>= 6 fotogramas) inicia atención exitosamente.");
 
+console.log("\n[13] Probando filtro canónico Anti-Nuca / Anti-Espalda (similitud < 0.45)...");
+const antiNucaService = new VisitSessionService({
+  db: mockDb,
+  sqliteClient: sqlite,
+  customerService: custService,
+  minAppointmentMinutes: 10
+});
+
+const nucaTrack = {
+  trackId: 501,
+  consecutiveChairFrames: 6,
+  currentQuadrant: { id: "silla_corte_nuca", label: "Silla Nuca", type: "barber_chair" }
+};
+await antiNucaService.processTrack(nucaTrack);
+
+// Muestra 1: Rostro canónico frontal legítimo (dimensión 10 = 1.0)
+const canonicalClientVec = new Array(512).fill(0);
+canonicalClientVec[10] = 1.0;
+const addedCanonical = await antiNucaService.addFaceSample(501, {
+  sharpnessScore: 75,
+  embedding: canonicalClientVec,
+  thumbnailBase64: "data:image/jpeg;base64,canonical_face",
+  pose: "frontal",
+  poseLabel: "Frontal"
+});
+assert.strictEqual(addedCanonical, true, "Debe aceptar el primer rostro canónico");
+const nucaSession = antiNucaService.activeSessions.get(501);
+assert.strictEqual(nucaSession.photos.length, 1);
+assert.strictEqual(nucaSession.embeddings.length, 1);
+
+// Muestra 2: Nuca / espalda sin rostro compatible (dimensión 20 = 1.0 -> Similitud 0.0 < 0.45)
+const napeVec = new Array(512).fill(0);
+napeVec[20] = 1.0;
+const addedNape = await antiNucaService.addFaceSample(501, {
+  sharpnessScore: 85,
+  embedding: napeVec,
+  thumbnailBase64: "data:image/jpeg;base64,nape_crop",
+  pose: "frontal",
+  poseLabel: "Frontal"
+});
+assert.strictEqual(addedNape, false, "Debe rechazar muestra con similitud < 0.45 contra canónico (anti-nuca)");
+assert.strictEqual(nucaSession.photos.length, 1, "No debe incorporar nuca a la galería");
+assert.strictEqual(nucaSession.embeddings.length, 1);
+
+// Muestra 3: Rostro compatible (similitud 0.85 >= 0.45)
+const compatibleClientVec = new Array(512).fill(0);
+compatibleClientVec[10] = 0.85;
+compatibleClientVec[11] = Math.sqrt(1 - 0.85 * 0.85);
+const addedCompatible = await antiNucaService.addFaceSample(501, {
+  sharpnessScore: 82,
+  embedding: compatibleClientVec,
+  thumbnailBase64: "data:image/jpeg;base64,semi_face",
+  pose: "semi_left",
+  poseLabel: "Semi Perfil Izquierdo",
+  skipCooldown: true
+});
+assert.strictEqual(addedCompatible, true, "Debe aceptar muestra facial compatible");
+assert.strictEqual(nucaSession.photos.length, 2);
+console.log("-> Filtro canónico anti-nuca/espalda validado exitosamente.");
+
+console.log("\n[14] Probando protección de miniatura por orientación de pose...");
+// Muestra 4: Mayor nitidez (98 > 82) pero pose no frontal/semi (perfil o nuca)
+const profileVec = new Array(512).fill(0);
+profileVec[10] = 0.80;
+profileVec[12] = Math.sqrt(1 - 0.80 * 0.80);
+await antiNucaService.addFaceSample(501, {
+  sharpnessScore: 98,
+  embedding: profileVec,
+  thumbnailBase64: "data:image/jpeg;base64,profile_photo",
+  pose: "profile_left",
+  poseLabel: "Perfil Izquierdo",
+  skipCooldown: true
+});
+assert.strictEqual(nucaSession.bestFaceScore, 82, "NO debe reemplazar miniatura con pose de perfil aunque tenga mayor nitidez");
+assert.strictEqual(nucaSession.thumbnailBase64, "data:image/jpeg;base64,semi_face", "Debe mantener miniatura frontal/semi");
+
+// Muestra 5: Mayor nitidez (95 > 82) con pose semi_right válida
+const validSemiVec = new Array(512).fill(0);
+validSemiVec[10] = 0.82;
+validSemiVec[13] = Math.sqrt(1 - 0.82 * 0.82);
+await antiNucaService.addFaceSample(501, {
+  sharpnessScore: 95,
+  embedding: validSemiVec,
+  thumbnailBase64: "data:image/jpeg;base64,valid_semi_photo",
+  pose: "semi_right",
+  poseLabel: "Semi Perfil Derecho",
+  skipCooldown: true
+});
+assert.strictEqual(nucaSession.bestFaceScore, 95, "DEBE reemplazar miniatura con pose frontal o semi-frontal");
+assert.strictEqual(nucaSession.thumbnailBase64, "data:image/jpeg;base64,valid_semi_photo");
+console.log("-> Protección de miniatura por pose (frontal / semi) validada exitosamente.");
+
+console.log("\n[15] Probando Set-to-Set staff Hard Delete al cierre de atención...");
+const staffDeleteService = new VisitSessionService({
+  db: mockDb,
+  sqliteClient: sqlite,
+  customerService: custService,
+  minAppointmentMinutes: 10
+});
+
+// Registrar un perfil temporal simulado en estado 'to_verify'
+const tempStaffCustId = "to_verify_staff_sitting";
+await custService.saveOrUpdateCustomer({
+  id: tempStaffCustId,
+  name: "Cliente por verificar",
+  status: "to_verify",
+  isStaff: false,
+  role: "client"
+});
+assert.ok(custService.getCustomerData(tempStaffCustId), "El perfil temporal debe existir antes del cierre");
+
+// Iniciar sesión con fotos que en Set-to-Set pertenecen al barbero (sim >= 0.46)
+const staffChairTrack = {
+  trackId: 601,
+  consecutiveChairFrames: 6,
+  identity: { personId: tempStaffCustId, name: "Cliente por verificar" },
+  currentQuadrant: { id: "silla_corte_staff_test", label: "Silla Staff Test", type: "barber_chair" }
+};
+const staffSession = await staffDeleteService.processTrack(staffChairTrack);
+staffSession.personId = tempStaffCustId;
+
+// Inyectar cluster de fotos del barbero en la sesión (barberVector tiene sim 1.0 >= 0.46)
+staffSession.embeddings.push(barberVector);
+staffSession.photos.push({
+  thumbnailBase64: "data:image/jpeg;base64,barber_face",
+  sharpnessScore: 88,
+  capturedAt: new Date().toISOString(),
+  pose: "frontal"
+});
+
+// Cerrar sesión con duración legítima de 15 minutos
+const staffCloseResult = await staffDeleteService.closeSession(601, { durationMinutes: 15 });
+assert.strictEqual(staffCloseResult, null, "La atención debe ser descartada si el cluster pertenece al Barbero/Staff");
+
+// Verificar Hard Delete físico en SQLite y RAM
+const deletedCustomer = custService.getCustomerData(tempStaffCustId);
+assert.strictEqual(deletedCustomer, null, "El perfil temporal debe haber sido eliminado físicamente (Hard Delete)");
+console.log("-> Hard Delete del Barbero/Staff y descarte de atención validados exitosamente.");
+
+console.log("\n[16] Probando ciclo de vida de status ('to_verify' -> 'new' / 'frequent')...");
+const lifecycleService = new VisitSessionService({
+  db: mockDb,
+  sqliteClient: sqlite,
+  customerService: custService,
+  minAppointmentMinutes: 10
+});
+
+// Caso A: Cliente nuevo legítimo -> status = 'new'
+const newClientTrack = {
+  trackId: 701,
+  consecutiveChairFrames: 6,
+  currentQuadrant: { id: "silla_corte_lifecycle_1", label: "Silla 1", type: "barber_chair" }
+};
+await lifecycleService.processTrack(newClientTrack);
+const newClientVec = new Array(512).fill(0);
+newClientVec[30] = 1.0;
+await lifecycleService.addFaceSample(701, {
+  sharpnessScore: 80,
+  embedding: newClientVec,
+  thumbnailBase64: "data:image/jpeg;base64,new_client_face",
+  pose: "frontal"
+});
+const newAppt = await lifecycleService.closeSession(701, { durationMinutes: 20 });
+assert.ok(newAppt, "Debe generar atención para cliente nuevo");
+assert.ok(newAppt.clientId, "Debe asignar id de cliente");
+const createdNewCustomer = custService.getCustomerData(newAppt.clientId);
+assert.ok(createdNewCustomer, "El nuevo cliente debe estar persistido");
+assert.strictEqual(createdNewCustomer.status, "new", "El estado inicial de cliente nuevo debe ser 'new'");
+console.log("-> Creación de cliente con status: 'new' validada exitosamente.");
+
+// Caso B: Cliente recurrente existente -> status = 'frequent' y borrado de id temporal
+const tempFrequentId = "to_verify_recurring_temp";
+await custService.saveOrUpdateCustomer({
+  id: tempFrequentId,
+  name: "Cliente temporal",
+  status: "to_verify",
+  isStaff: false
+});
+
+const recurringTrack = {
+  trackId: 702,
+  consecutiveChairFrames: 6,
+  currentQuadrant: { id: "silla_corte_lifecycle_2", label: "Silla 2", type: "barber_chair" }
+};
+const recSession = await lifecycleService.processTrack(recurringTrack);
+recSession.personId = tempFrequentId;
+recSession.embeddings.push(client141Vector); // Coincide con client_141 existente
+recSession.photos.push({
+  thumbnailBase64: "data:image/jpeg;base64,recurring_face",
+  sharpnessScore: 85,
+  capturedAt: new Date().toISOString(),
+  pose: "frontal"
+});
+
+const recAppt = await lifecycleService.closeSession(702, { durationMinutes: 25 });
+assert.ok(recAppt, "Debe generar atención para cliente recurrente");
+assert.strictEqual(recAppt.clientId, "client_141", "Debe vincular a client_141");
+const updatedClient141 = custService.getCustomerData("client_141");
+assert.strictEqual(updatedClient141.status, "frequent", "El cliente recurrente debe tener status: 'frequent'");
+assert.strictEqual(custService.getCustomerData(tempFrequentId), null, "El ID temporal 'to_verify' debe haber sido borrado físicamente");
+console.log("-> Transición a status: 'frequent' y limpieza de ID temporal validadas exitosamente.");
+
 sqlite.close();
 console.log("\n🎉 ¡Todas las pruebas del pipeline de Atenciones pasaron al 100%!");

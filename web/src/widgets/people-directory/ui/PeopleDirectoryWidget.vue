@@ -464,9 +464,11 @@ const confirmMerge = async () => {
               ? 'ring-2 ring-sky-400/80 border-sky-400 shadow-sky-950/50 bg-slate-900'
               : (person.isStaff
                 ? 'bg-slate-900/90 border-sky-500/50 hover:border-sky-400 shadow-sky-950/20'
-                : (person.visitCount > 1
-                  ? 'bg-slate-950/70 border-amber-500/40 hover:border-amber-400/70'
-                  : 'bg-slate-950/50 border-slate-800 hover:border-slate-700'))
+                : (person.status === 'to_verify'
+                  ? 'bg-slate-950/70 border-purple-500/40 hover:border-purple-400/70'
+                  : ((person.status === 'frequent' || person.visitCount > 1)
+                    ? 'bg-slate-950/70 border-amber-500/40 hover:border-amber-400/70'
+                    : 'bg-slate-950/50 border-slate-800 hover:border-slate-700')))
           ]"
         >
           <!-- Top Row: Selection Checkbox, Avatar & Role Badge -->
@@ -494,9 +496,11 @@ const confirmMerge = async () => {
                   'w-12 h-12 rounded-xl flex items-center justify-center font-bold text-sm shrink-0 border overflow-hidden relative shadow-md transition-all cursor-pointer hover:scale-105 hover:ring-2 hover:ring-sky-400 hover:shadow-sky-500/20',
                   person.isStaff
                     ? 'bg-sky-950 text-sky-300 border-sky-500/50 shadow-sky-950/40'
-                    : (person.visitCount > 1
-                      ? 'bg-amber-950 text-amber-300 border-amber-500/40'
-                      : 'bg-emerald-950 text-emerald-300 border-emerald-500/30')
+                    : (person.status === 'to_verify'
+                      ? 'bg-purple-950 text-purple-300 border-purple-500/40'
+                      : ((person.status === 'frequent' || person.visitCount > 1)
+                        ? 'bg-amber-950 text-amber-300 border-amber-500/40'
+                        : 'bg-emerald-950 text-emerald-300 border-emerald-500/30'))
                 ]"
                 title="Ver fotos y ángulos biométricos"
               >
@@ -572,7 +576,14 @@ const confirmMerge = async () => {
                 Barbero
               </span>
               <span
-                v-else-if="person.visitCount > 1"
+                v-else-if="person.status === 'to_verify'"
+                class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-purple-950/80 text-purple-300 border border-purple-500/40"
+              >
+                <AppIcon name="pending" :size="12" />
+                Por verificar
+              </span>
+              <span
+                v-else-if="person.status === 'frequent' || person.visitCount > 1"
                 class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-950/80 text-amber-300 border border-amber-500/40"
               >
                 Frecuente

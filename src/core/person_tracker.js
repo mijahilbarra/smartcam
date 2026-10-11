@@ -323,32 +323,18 @@ export class PersonTracker {
 
     for (const [qId, tracksInChair] of chairTracksMap.entries()) {
       if (tracksInChair.length > 1) {
-        // Si uno ya está identificado como staff/barbero, ese es el barbero
-        const staffTrack = tracksInChair.find(t => t.identity?.isStaff === true);
-        const nonStaffTracks = tracksInChair.filter(t => t.identity?.isStaff !== true);
+        // En una silla de corte con 2 personas:
+        // Ordenar por altura: box[1] menor es la cabeza más alta (persona de pie = Barbero)
+        tracksInChair.sort((a, b) => a.box[1] - b.box[1]);
+        const standingBarber = tracksInChair[0];
+        standingBarber.isStaffHint = true;
+        standingBarber.role = "staff";
 
-        if (staffTrack && nonStaffTracks.length > 0) {
-          staffTrack.isStaffHint = true;
-          staffTrack.role = "staff";
-          for (const nonStaff of nonStaffTracks) {
-            nonStaff.isStaffHint = false;
-            nonStaff.role = "client";
-          }
-        } else {
-          // Si ninguno está formalizado aún:
-          // El barbero de pie tiene su cabeza más alta (y1 menor / ymin menor) o mayor altura total.
-          // El cliente sentado tiene la cabeza más baja (y1 mayor).
-          tracksInChair.sort((a, b) => a.box[1] - b.box[1]);
-          const standingBarber = tracksInChair[0];
-          if (standingBarber.identity?.role !== "client" && standingBarber.identity?.isStaff !== false) {
-            standingBarber.isStaffHint = true;
-            standingBarber.role = "staff";
-          }
-
-          for (let i = 1; i < tracksInChair.length; i++) {
-            tracksInChair[i].isStaffHint = false;
-            tracksInChair[i].role = "client";
-          }
+        // La persona sentada (cabeza más baja) es el cliente
+        for (let i = 1; i < tracksInChair.length; i++) {
+          const clientInChair = tracksInChair[i];
+          clientInChair.isStaffHint = false;
+          clientInChair.role = "client";
         }
       } else if (tracksInChair.length === 1) {
         const singleTrack = tracksInChair[0];

@@ -138,6 +138,7 @@ export class SQLiteClient {
         name TEXT DEFAULT 'Cliente',
         is_staff INTEGER DEFAULT 0,
         role TEXT DEFAULT 'client',
+        status TEXT DEFAULT 'new',
         first_seen TEXT,
         last_seen TEXT,
         visit_count INTEGER DEFAULT 1,
@@ -186,9 +187,14 @@ export class SQLiteClient {
       CREATE INDEX IF NOT EXISTS idx_appointments_started_at ON appointments(started_at);
     `);
 
-    // Asegurar compatibilidad si la tabla customers ya existía sin appointment_count
+    // Asegurar compatibilidad si la tabla customers ya existía sin appointment_count o status
     try {
       this.db.exec(`ALTER TABLE customers ADD COLUMN appointment_count INTEGER DEFAULT 0;`);
+    } catch (_) {
+      // La columna ya existe
+    }
+    try {
+      this.db.exec(`ALTER TABLE customers ADD COLUMN status TEXT DEFAULT 'new';`);
     } catch (_) {
       // La columna ya existe
     }
@@ -201,16 +207,17 @@ export class SQLiteClient {
   _prepareStatements() {
     this.stmtUpsertCustomer = this.db.prepare(`
       INSERT INTO customers (
-        id, name, is_staff, role, first_seen, last_seen, visit_count, appointment_count,
+        id, name, is_staff, role, status, first_seen, last_seen, visit_count, appointment_count,
         best_face_score, thumbnail_base64, thumbnail_path, photos_json, updated_at
       ) VALUES (
-        @id, @name, @isStaff, @role, @firstSeen, @lastSeen, @visitCount, @appointmentCount,
+        @id, @name, @isStaff, @role, @status, @firstSeen, @lastSeen, @visitCount, @appointmentCount,
         @bestFaceScore, @thumbnailBase64, @thumbnailPath, @photosJson, datetime('now')
       )
       ON CONFLICT(id) DO UPDATE SET
         name = COALESCE(excluded.name, customers.name),
         is_staff = COALESCE(excluded.is_staff, customers.is_staff),
         role = COALESCE(excluded.role, customers.role),
+        status = COALESCE(excluded.status, customers.status),
         first_seen = COALESCE(customers.first_seen, excluded.first_seen),
         last_seen = COALESCE(excluded.last_seen, customers.last_seen),
         visit_count = COALESCE(excluded.visit_count, customers.visit_count),
@@ -247,7 +254,7 @@ export class SQLiteClient {
     `);
 
     this.stmtGetAllCustomers = this.db.prepare(`
-      SELECT id, name, is_staff, role, first_seen, last_seen, visit_count, appointment_count, best_face_score
+      SELECT id, name, is_staff, role, status, first_seen, last_seen, visit_count, appointment_count, best_face_score
       FROM customers
     `);
 
@@ -314,11 +321,13 @@ export class SQLiteClient {
     const nowIso = new Date().toISOString();
 
     const tx = this.db.transaction(() => {
+      const resolvedStatus = customer.status || ((customer.visitCount || 0) > 1 ? "frequent" : "new");
       this.stmtUpsertCustomer.run({
         id: customer.id,
         name: customer.name || null,
         isStaff: isStaffInt,
         role: customer.role || null,
+        status: resolvedStatus,
         firstSeen: customer.firstSeen || null,
         lastSeen: customer.lastSeen || nowIso,
         visitCount: typeof customer.visitCount === "number" ? customer.visitCount : null,
@@ -396,6 +405,7 @@ export class SQLiteClient {
       name: row.name,
       isStaff: row.is_staff === 1,
       role: row.role,
+      status: row.status || (row.visit_count > 1 ? "frequent" : "new"),
       firstSeen: row.first_seen,
       lastSeen: row.last_seen,
       visitCount: row.visit_count,
@@ -437,6 +447,7 @@ export class SQLiteClient {
         name: row.name,
         isStaff: row.is_staff === 1,
         role: row.role,
+        status: row.status || (row.visit_count > 1 ? "frequent" : "new"),
         firstSeen: row.first_seen,
         lastSeen: row.last_seen,
         visitCount: row.visit_count,
@@ -452,11 +463,14 @@ export class SQLiteClient {
   }
 
   /**
-   * Elimina un cliente y todos sus embeddings en cascada
+   * Elimina un cliente y todos sus embeddings en cascada (Hard Delete)
    * @param {string} id
    * @returns {boolean}
    */
   deleteCustomer(id) {
+    try {
+      this.stmtDeleteCustomerEmbeddings.run(id);
+    } catch (_) {}
     const result = this.stmtDeleteCustomer.run(id);
     return result.changes > 0;
   }

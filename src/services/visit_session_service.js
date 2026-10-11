@@ -270,7 +270,7 @@ export class VisitSessionService {
     const trackId = session.trackId;
     const { faceBuffer, sharpnessScore = 0, embedding, thumbnailBase64, isStaff, pose, poseLabel, skipCooldown } = sample;
 
-    // 1. Exclusión estricta del barbero/staff (umbral 0.58):
+    // 1. Exclusión estricta del barbero/staff (umbral 0.46 sensible):
     if (isStaff) {
       console.log(`[Appointment] Rostro en ${session.chairName} pertenece a Staff. Excluido de atención.`);
       return false;
@@ -278,10 +278,26 @@ export class VisitSessionService {
 
     if (embedding) {
       const knownProfiles = this.customerService?.getComparisonProfiles?.() || [];
-      const staffCheck = matchStaffFace(embedding, knownProfiles, 0.58);
-      if (staffCheck.isStaffMatch || staffCheck.maxStaffSim >= 0.58) {
-        console.log(`[Appointment] Rostro en ${session.chairName} coincide con Barbero/Staff (Sim: ${staffCheck.maxStaffSim.toFixed(3)} >= 0.58). Excluido de atención.`);
+      const staffCheck = matchStaffFace(embedding, knownProfiles, 0.46);
+      if (staffCheck.isStaffMatch || staffCheck.maxStaffSim >= 0.46) {
+        console.log(`[Appointment] Rostro en ${session.chairName} coincide con Barbero/Staff (Sim: ${staffCheck.maxStaffSim.toFixed(3)} >= 0.46). Excluido de atención.`);
         return false;
+      }
+    }
+
+    // Filtro Canónico Anti-Nuca / Anti-Espalda:
+    // Si la sesión ya tiene muestras, calcular similitud con el rostro canónico original (embeddings[0])
+    // Si similitud < 0.45 (nuca o espalda), RECHAZAR la muestra
+    if (embedding && session.photos.length > 0 && session.embeddings.length > 0) {
+      const canonicalVector = Array.isArray(session.embeddings[0])
+        ? session.embeddings[0]
+        : (session.embeddings[0]?.vector || null);
+      if (canonicalVector) {
+        const canonicalSim = computeCosineSimilarity(embedding, canonicalVector);
+        if (canonicalSim < 0.45) {
+          console.warn(`[Appointment] Muestra descartada por incompatibilidad con rostro canónico (similitud: ${canonicalSim.toFixed(3)} < 0.45). Excluye posible nuca o espalda.`);
+          return false;
+        }
       }
     }
 
@@ -307,6 +323,7 @@ export class VisitSessionService {
     const now = sample.timestamp || sample.capturedAtEpoch || Date.now();
     const incomingPose = pose || 'frontal';
     const incomingPoseLabel = poseLabel || (incomingPose === 'frontal' ? 'Frontal' : incomingPose);
+    const isFrontalOrSemi = ['frontal', 'semi_left', 'semi_right'].includes(sample.pose || 'frontal');
 
     const photoItem = {
       thumbnailBase64: finalThumbnailBase64,
@@ -347,7 +364,7 @@ export class VisitSessionService {
           session.photos[duplicateIdx] = photoItem;
           session.embeddings[duplicateIdx] = embedding;
           session.lastPhotoAt = now;
-          if (sharpnessScore > (session.bestFaceScore || 0)) {
+          if (sharpnessScore > (session.bestFaceScore || 0) && isFrontalOrSemi) {
             session.bestFaceScore = sharpnessScore;
             session.thumbnailBase64 = finalThumbnailBase64;
           }
@@ -369,7 +386,7 @@ export class VisitSessionService {
           session.embeddings[updateIdx] = embedding;
         }
         session.lastPhotoAt = now;
-        if (sharpnessScore > (session.bestFaceScore || 0)) {
+        if (sharpnessScore > (session.bestFaceScore || 0) && isFrontalOrSemi) {
           session.bestFaceScore = sharpnessScore;
           session.thumbnailBase64 = finalThumbnailBase64;
         }
@@ -401,8 +418,8 @@ export class VisitSessionService {
 
     session.lastPhotoAt = now;
 
-    // Actualizar bestFaceScore y miniatura
-    if (sharpnessScore > (session.bestFaceScore || 0)) {
+    // Actualizar bestFaceScore y miniatura con Protección de Miniatura (solo frontal o semi-frontal)
+    if (sharpnessScore > (session.bestFaceScore || 0) && isFrontalOrSemi) {
       session.bestFaceScore = sharpnessScore;
       session.thumbnailBase64 = finalThumbnailBase64;
 
@@ -457,9 +474,14 @@ export class VisitSessionService {
 
     // 1. Si es personal/barbero, no se registra como atención de cliente
     if (session.isStaff) {
+      if (session.personId && !session.personId.startsWith("staff_")) {
+        await this.customerService?.deleteCustomer?.(session.personId, { db: this.db });
+      }
       this.logVerbal(`Atención descartada para Barbero/Staff: ${session.personName || `Track #${trackId}`}.`, "info");
       return null;
     }
+
+    session.status = "to_verify";
 
     // 2. Comprobar umbral de permanencia mínima obligatoria (mínimo 10 min)
     const minMinutes = options.minMinutes !== undefined ? options.minMinutes : this.minAppointmentMinutes;
@@ -488,11 +510,65 @@ export class VisitSessionService {
       return null;
     }
 
+    // Verificación Set-to-Set contra el Barbero / Staff:
+    // Si la similitud máxima o promedio del cluster contra el staff es >= 0.46, es el barbero
+    if (session.embeddings && session.embeddings.length > 0) {
+      const knownProfiles = this.customerService?.getComparisonProfiles?.() || [];
+      const staffProfiles = knownProfiles.filter(p => {
+        if (p.name && /^Cliente\s*#\d+/i.test(p.name)) return false;
+        if (p.role === "client" || p.isStaff === false) return false;
+        return (p.isStaff === true && p.role !== "client") || p.role === "barber" || (String(p.id).startsWith("staff_") && p.role !== "client" && p.isStaff !== false);
+      });
+
+      if (staffProfiles.length > 0) {
+        let maxStaffSim = 0;
+        let sumStaffSim = 0;
+        let staffSimCount = 0;
+
+        for (const sItem of session.embeddings) {
+          const sVec = Array.isArray(sItem) ? sItem : (sItem?.vector || null);
+          if (!sVec) continue;
+
+          for (const staff of staffProfiles) {
+            const staffVectors = [];
+            if (Array.isArray(staff.embeddings)) {
+              for (const item of staff.embeddings) {
+                if (Array.isArray(item)) staffVectors.push(item);
+                else if (item && Array.isArray(item.vector)) staffVectors.push(item.vector);
+              }
+            }
+            if (staffVectors.length === 0 && Array.isArray(staff.embedding)) {
+              staffVectors.push(staff.embedding);
+            }
+
+            for (const v of staffVectors) {
+              const sim = computeCosineSimilarity(sVec, v);
+              if (sim > maxStaffSim) maxStaffSim = sim;
+              sumStaffSim += sim;
+              staffSimCount++;
+            }
+          }
+        }
+
+        const avgStaffSim = staffSimCount > 0 ? (sumStaffSim / staffSimCount) : 0;
+        if (maxStaffSim >= 0.46 || avgStaffSim >= 0.46) {
+          if (session.personId) {
+            await this.customerService?.deleteCustomer?.(session.personId, { db: this.db });
+          }
+          if (session.clientId && session.clientId !== session.personId) {
+            await this.customerService?.deleteCustomer?.(session.clientId, { db: this.db });
+          }
+          console.log("[Appointment] 🗑️ Atención descartada: el cluster de fotos pertenece al Barbero/Staff. Perfil eliminado físicamente.");
+          return null;
+        }
+      }
+    }
+
     // 4. Set-to-Set matching si no tenía identidad previa confirmada
     this.logVerbal(`🔍 Analizando biometría acumulada de atención (${session.photos.length} fotos contra base de clientes)...`, "process");
 
     let finalClient = null;
-    if (session.personId && !session.personId.startsWith("unidentified_") && !session.personId.startsWith("cand_")) {
+    if (session.personId && !session.personId.startsWith("unidentified_") && !session.personId.startsWith("cand_") && !session.personId.startsWith("to_verify_")) {
       const existing = this.customerService?.getCustomerData?.(session.personId);
       if (existing && !existing.name?.includes("confirmación")) {
         finalClient = existing;
@@ -504,6 +580,7 @@ export class VisitSessionService {
         finalClient = {
           id: session.personId,
           name: session.personName,
+          status: "frequent",
           visitCount: session.visitCount || 1,
           appointmentCount: session.visitCount || 1,
           photos: session.photos,
@@ -520,13 +597,20 @@ export class VisitSessionService {
     }
 
     if (finalClient) {
+      // Si session.personId era un ID temporal to_verify distinto del cliente existente, borrar físicamente el ID temporal
+      const tempIdToDelete = (session.personId && session.personId !== finalClient.id) ? session.personId : null;
+      if (tempIdToDelete) {
+        await this.customerService?.deleteCustomer?.(tempIdToDelete, { db: this.db });
+      }
+
       session.personId = finalClient.id;
       session.personName = finalClient.name;
       session.clientId = finalClient.id;
       session.clientName = finalClient.name;
       session.visitCount = (finalClient.visitCount || 1) + 1;
       finalClient.visitCount = session.visitCount;
-      finalClient.appointmentCount = (finalClient.appointmentCount || finalClient.visitCount || 1) + 1;
+      finalClient.appointmentCount = (finalClient.appointmentCount || (finalClient.visitCount - 1) || 1) + 1;
+      finalClient.status = "frequent";
       finalClient.lastSeen = new Date(now).toISOString();
 
       this.logVerbal(`✅ Cliente identificado como recurrente: "${finalClient.name}" (Visita #${finalClient.visitCount}). Atención vinculada exitosamente.`, "success");
@@ -555,13 +639,14 @@ export class VisitSessionService {
         });
       }
     } else {
-      // Registrar nuevo cliente formal desde esta atención legítima (>= 10 min y con fotos)
+      // Registrar nuevo cliente formal desde esta atención legítima (>= 10 min y con fotos, status = "new")
       const newClientId = `person_${now}_${trackId}`;
       const allKnown = this.customerService?.getComparisonProfiles?.() || [];
       const clientCount = allKnown.filter(p => !p.isStaff && !p.name?.includes("confirmación")).length;
       finalClient = {
         id: newClientId,
         name: `Cliente #${clientCount + 1}`,
+        status: "new",
         isStaff: false,
         role: "client",
         firstSeen: session.startedAt,
@@ -575,6 +660,11 @@ export class VisitSessionService {
         embeddings: session.embeddings,
         embedding: session.embeddings[0] || null
       };
+
+      const prevTempId = (session.personId && session.personId !== newClientId) ? session.personId : null;
+      if (prevTempId) {
+        await this.customerService?.deleteCustomer?.(prevTempId, { db: this.db });
+      }
 
       session.personId = finalClient.id;
       session.personName = finalClient.name;
@@ -610,6 +700,7 @@ export class VisitSessionService {
       endedAt: new Date(now).toISOString(),
       durationMinutes,
       status: "completed",
+      clientStatus: finalClient.status,
       bestFaceStoragePath: session.bestFaceStoragePath,
       bestFaceScore: session.bestFaceScore,
       thumbnailPath: session.bestFaceStoragePath || null,
