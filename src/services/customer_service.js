@@ -31,6 +31,7 @@ export class CustomerService {
    */
   constructor(options = {}) {
     this.databaseId = options.databaseId || null;
+    this.db = options.db || null;
     this.customClientProvided = Boolean(options.sqliteClient);
     this.sqliteClient = options.sqliteClient || (this.databaseId ? getSqliteClient(this.databaseId) : defaultSqliteClient);
     this.profilesCache = new Map();
@@ -47,6 +48,7 @@ export class CustomerService {
   initForDatabase(databaseId, options = {}) {
     const resolvedId = databaseId || getResolvedDatabaseId(options);
     this.databaseId = resolvedId;
+    if (options.db) this.db = options.db;
     this.sqliteClient = options.sqliteClient || getSqliteClient(resolvedId, options);
     this.customClientProvided = Boolean(options.sqliteClient);
     this.clearMemoryCache();
@@ -173,9 +175,11 @@ export class CustomerService {
           const isClientName = /^Cliente #\d+$/i.test(data.name?.trim() || "");
           const isClientExplicit = isClientName || data.role === "client" || data.isStaff === false;
           const isStaff = !isClientExplicit && (data.isStaff === true || data.role === "barber" || String(id).startsWith("staff_"));
+          const status = data.status || ((data.visitCount || 0) > 1 ? "frequent" : "new");
           const profile = {
             id,
             ...data,
+            status,
             isStaff,
             role: isStaff ? (data.role || "barber") : "client"
           };
@@ -222,17 +226,20 @@ export class CustomerService {
             const isClientExplicit = isClientName || docData?.role === "client" || docData?.isStaff === false;
             const isStaff = !isClientExplicit && ((docData?.isStaff === true && docData?.role === "barber") || (String(id).startsWith("staff_") && docData?.isStaff !== false && docData?.role !== "client"));
             const role = isStaff ? "barber" : "client";
+            const visitCount = docData?.visitCount || 1;
+            const status = docData?.status || (visitCount > 1 ? "frequent" : "new");
             const profile = {
               id,
               name: docData?.name || "Cliente",
               isStaff,
               role,
+              status,
               embedding: docData?.embedding || (docData?.embeddings?.[0] ? (Array.isArray(docData.embeddings[0]) ? docData.embeddings[0] : docData.embeddings[0].vector) : null),
               embeddings: docData?.embeddings || (docData?.embedding ? [docData.embedding] : []),
               photos: docData?.photos || [],
               thumbnailBase64: docData?.thumbnailBase64 || null,
               bestFaceScore: docData?.bestFaceScore || 0,
-              visitCount: docData?.visitCount || 1,
+              visitCount,
               appointmentCount: docData?.appointmentCount || docData?.visitCount || 1
             };
             this.sqliteClient.upsertCustomer(profile);
@@ -271,13 +278,27 @@ export class CustomerService {
    * @returns {Object|null}
    */
   getCustomerData(id) {
+    let customer = null;
     if (this.sqliteClient) {
-      const customer = this.sqliteClient.getCustomerById(id);
-      if (customer) {
-        return customer;
-      }
+      customer = this.sqliteClient.getCustomerById(id);
     }
-    return this.profilesCache.get(id) || null;
+    const cached = this.profilesCache.get(id);
+    if (!customer) {
+      return cached || null;
+    }
+    if (cached) {
+      return {
+        ...customer,
+        ...cached,
+        embeddings: (cached.embeddings && cached.embeddings.length > (customer.embeddings?.length || 0))
+          ? cached.embeddings
+          : customer.embeddings,
+        photos: (cached.photos && cached.photos.length > (customer.photos?.length || 0))
+          ? cached.photos
+          : customer.photos
+      };
+    }
+    return customer;
   }
 
   /**
@@ -341,11 +362,20 @@ export class CustomerService {
     }
 
     // 1. Persistir en SQLite local
-    this.sqliteClient.upsertCustomer(customerData);
+    const current = this.profilesCache.get(customerData.id) || {};
+    const visitCount = typeof customerData.visitCount === "number"
+      ? customerData.visitCount
+      : (typeof current.visitCount === "number" ? current.visitCount : 1);
+    const resolvedStatus = customerData.status || current.status || (visitCount > 1 ? "frequent" : "new");
+    const dataToSave = {
+      ...customerData,
+      status: resolvedStatus
+    };
+
+    this.sqliteClient.upsertCustomer(dataToSave);
 
     // 2. Actualizar caché en memoria RAM inmediatamente
-    const current = this.profilesCache.get(customerData.id) || {};
-    const persisted = { ...current, ...customerData };
+    const persisted = { ...current, ...dataToSave };
     const cachedForComparison = {
       ...persisted,
       photos: [],
@@ -425,6 +455,7 @@ export class CustomerService {
       name: customer.name || "Cliente",
       isStaff: isActuallyStaff,
       role: isActuallyStaff ? "barber" : "client",
+      status: customer.status || (customer.visitCount > 1 ? "frequent" : "new"),
       firstSeen: customer.firstSeen || new Date().toISOString(),
       lastSeen: customer.lastSeen || new Date().toISOString(),
       visitCount: customer.visitCount || 1,
@@ -459,25 +490,71 @@ export class CustomerService {
   }
 
   /**
-   * Elimina un cliente de SQLite, RAM y opcionalmente Firestore
+   * Elimina un cliente de forma física completa (Hard Delete) de SQLite, Firestore y RAM.
+   * 1) En SQLite local: DELETE FROM customers WHERE id = ?, DELETE FROM customer_embeddings WHERE customer_id = ?
+   * 2) En Firestore si db o this.db está disponible: await db.collection("camera_catcher_people").doc(id).delete()
+   * 3) Eliminar de la caché en memoria RAM: this.profilesCache.delete(id)
    * @param {string} id
    * @param {Object} [options]
+   * @returns {Promise<boolean>}
    */
   async deleteCustomer(id, options = {}) {
-    const firestoreDbId = options.databaseId || extractDatabaseIdFromFirestore(options.db);
+    if (!id) return false;
+
+    const firestoreDbId = options.databaseId || extractDatabaseIdFromFirestore(options.db || this.db);
     if (firestoreDbId && !this.customClientProvided && firestoreDbId !== this.databaseId) {
       this.initForDatabase(firestoreDbId, options);
     }
 
-    this.profilesCache.delete(id);
-    this.sqliteClient.deleteCustomer(id);
-
-    if (options.db) {
-      try {
-        await options.db.doc(`camera_catcher_people/${id}`).delete();
-      } catch (err) {
-        console.warn(`[CustomerService] Error eliminando de Firestore:`, err.message);
+    try {
+      // 1. En SQLite local: Borrado físico completo (Hard Delete)
+      if (this.sqliteClient) {
+        if (typeof this.sqliteClient.deleteCustomer === "function") {
+          this.sqliteClient.deleteCustomer(id);
+        } else if (this.sqliteClient.db) {
+          try {
+            this.sqliteClient.db.prepare("DELETE FROM customer_embeddings WHERE customer_id = ?").run(id);
+            this.sqliteClient.db.prepare("DELETE FROM customers WHERE id = ?").run(id);
+          } catch (sqlErr) {
+            console.warn(`[CustomerService] Error eliminando cliente ${id} en SQLite:`, sqlErr.message);
+          }
+        }
       }
+
+      // 2. En Firestore si db o this.db está disponible:
+      const firestoreInstance = options.db || this.db;
+      if (firestoreInstance) {
+        try {
+          let deleted = false;
+          if (typeof firestoreInstance.collection === "function") {
+            const col = firestoreInstance.collection("camera_catcher_people");
+            if (col && typeof col.doc === "function") {
+              const docRef = col.doc(id);
+              if (docRef && typeof docRef.delete === "function") {
+                await docRef.delete();
+                deleted = true;
+              }
+            }
+          }
+          if (!deleted && typeof firestoreInstance.doc === "function") {
+            const docRef = firestoreInstance.doc(`camera_catcher_people/${id}`);
+            if (docRef && typeof docRef.delete === "function") {
+              await docRef.delete();
+              deleted = true;
+            }
+          }
+        } catch (fsErr) {
+          console.warn(`[CustomerService] Error eliminando cliente ${id} de Firestore:`, fsErr.message);
+        }
+      }
+
+      // 3. Eliminar de la caché en memoria RAM
+      this.profilesCache.delete(id);
+      console.log(`[CustomerService] 🗑️ Borrado físico completo (Hard Delete) para "${id}" (SQLite, RAM y Firestore).`);
+      return true;
+    } catch (err) {
+      console.error(`[CustomerService] Error en deleteCustomer para "${id}":`, err.message);
+      return false;
     }
   }
 }

@@ -15,6 +15,7 @@ export class StreamServer {
   constructor(options = {}) {
     this.rtspUrl = options.rtspUrl || process.env.RTSP_STREAM_URL || "rtsp://127.0.0.1:8554/barberia/sub";
     this.fps = options.fps || Number(process.env.STREAM_FPS) || 3.5;
+    this.mockVideoPath = options.mockVideoPath || process.env.MOCK_VIDEO_PATH || null;
     this.onEnsureRtspSource = options.onEnsureRtspSource || null;
     this.clients = new Set();
     this.ffmpegProcess = null;
@@ -216,7 +217,7 @@ export class StreamServer {
     }
 
     try {
-      if (typeof this.onEnsureRtspSource === "function") {
+      if (!this.mockVideoPath && typeof this.onEnsureRtspSource === "function") {
         try {
           if (this.reconnectAttempts >= 3) {
             await this.onEnsureRtspSource({ forceRestart: true });
@@ -228,21 +229,38 @@ export class StreamServer {
         }
       }
 
-      console.log(`[Stream] Iniciando ingesta FFmpeg on-demand desde: ${this.rtspUrl} a ${this.fps} FPS...`);
+      const args = this.mockVideoPath
+        ? [
+            "-re",
+            "-stream_loop", "-1",
+            "-i", this.mockVideoPath,
+            "-an",
+            "-r", String(this.fps),
+            "-threads", "1",
+            "-f", "image2pipe",
+            "-q:v", "5",
+            "-vcodec", "mjpeg",
+            "pipe:1"
+          ]
+        : [
+            "-rtsp_transport", "tcp",
+            "-analyzeduration", "15000000",
+            "-probesize", "1000000",
+            "-i", this.rtspUrl,
+            "-an",
+            "-r", String(this.fps),
+            "-threads", "1",
+            "-f", "image2pipe",
+            "-q:v", "5",
+            "-vcodec", "mjpeg",
+            "pipe:1"
+          ];
 
-      const args = [
-        "-rtsp_transport", "tcp",
-        "-analyzeduration", "15000000",
-        "-probesize", "1000000",
-        "-i", this.rtspUrl,
-        "-an",
-        "-r", String(this.fps),
-        "-threads", "1",
-        "-f", "image2pipe",
-        "-q:v", "5",
-        "-vcodec", "mjpeg",
-        "pipe:1"
-      ];
+      if (this.mockVideoPath) {
+        console.log(`[Stream] 🎬 Iniciando ingesta FFmpeg en modo MOCK VIDEO desde: ${this.mockVideoPath} a ${this.fps} FPS (bucle continuo 1x)...`);
+      } else {
+        console.log(`[Stream] Iniciando ingesta FFmpeg on-demand desde: ${this.rtspUrl} a ${this.fps} FPS...`);
+      }
 
       this.ffmpegProcess = spawn("ffmpeg", args, { stdio: ["ignore", "pipe", "pipe"] });
       this.isActive = true;

@@ -113,5 +113,37 @@ if (fs.existsSync(tmpLog)) {
   console.log("-> Intercepción de [WARN] validada exitosamente en disco.");
 }
 
-console.log("\n🎉 ¡Todas las pruebas de resiliencia de stream y recuperación Neolink pasaron al 100%!");
+// 7. Probar StreamServer con archivo de Mock Video
+console.log("\n[7] Probando StreamServer con archivo de Mock Video (data/recordings/mock_stream.mp4)...");
+const mockVideoPath = "data/recordings/mock_stream.mp4";
+if (fs.existsSync(mockVideoPath)) {
+  const mockServer = new StreamServer({
+    mockVideoPath,
+    fps: 3.5
+  });
+
+  assert.strictEqual(mockServer.mockVideoPath, mockVideoPath, "mockVideoPath debe coincidir con el path asignado");
+  await mockServer.startFfmpegStream(true);
+
+  // Esperar a que el proceso FFmpeg decodifique el primer frame
+  let frame = null;
+  for (let attempt = 0; attempt < 25; attempt++) {
+    await new Promise(r => setTimeout(r, 100));
+    frame = mockServer.getLatestFrame();
+    if (frame) break;
+  }
+
+  assert.ok(frame, "StreamServer debe generar fotograma válido en RAM desde el mock video");
+  assert.ok(Buffer.isBuffer(frame), "El fotograma debe ser un Buffer de Node.js");
+  assert.ok(frame.length > 1000, "El fotograma debe contener datos JPEG válidos");
+  assert.strictEqual(frame[0], 0xff, "Primer byte del frame debe ser 0xFF (SOI JPEG)");
+  assert.strictEqual(frame[1], 0xd8, "Segundo byte del frame debe ser 0xD8 (SOI JPEG)");
+
+  mockServer.stopFfmpegStream(true);
+  console.log(`-> Fotograma de Mock Video decodificado exitosamente (${frame.length} bytes, formato JPEG verificado).`);
+} else {
+  console.log("-> Archivo mock_stream.mp4 no encontrado en disco, prueba omitida.");
+}
+
+console.log("\n🎉 ¡Todas las pruebas de resiliencia de stream, recuperación Neolink y Mock Video pasaron al 100%!");
 process.exit(0);

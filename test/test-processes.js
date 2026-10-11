@@ -517,18 +517,19 @@ assert.strictEqual(recognizedSession1[0].personId, "client_enrique", "Debe gober
 assert.strictEqual(recognizedSession1[0].sessionGoverned, true, "Debe marcar sessionGoverned: true");
 assert.strictEqual(recognizedSession1[0].name, "Enrique Gómez");
 
-// Verificar que se haya acumulado el nuevo ángulo en la galería de Enrique
-const updatedClientDoc = firestoreStorage.get("client_enrique");
+// Verificar que se haya acumulado el nuevo ángulo en la galería de Enrique en memoria RAM (sin persistir en Firestore cuadro a cuadro)
+const updatedClientDoc = customerService.getCustomerData("client_enrique") || customerService.profilesCache.get("client_enrique");
 assert.ok(Array.isArray(updatedClientDoc.embeddings), "Debe tener galería de embeddings");
-assert.ok(updatedClientDoc.embeddings.length >= 2, "Debe haber anexado el nuevo ángulo a la galería");
+assert.ok(updatedClientDoc.embeddings.length >= 2, "Debe haber anexado el nuevo ángulo a la galería en RAM");
 assert.ok(updatedClientDoc.embeddings.length <= 20, "No debe exceder el límite de 20 ángulos");
 assert.ok(Array.isArray(updatedClientDoc.photos), "Debe tener galería de photos");
 assert.ok(updatedClientDoc.photos.length >= 1, "Debe haber anexado la foto a la galería de photos");
 assert.ok(updatedClientDoc.photos.length <= 20, "No debe exceder el límite de 20 fotos");
+assert.strictEqual(firestoreStorage.get("client_enrique").embeddings.length, 1, "NO debe haber persistido a Firestore en el streaming en vivo");
 console.log(`-> Sesión activa gobernó detección: asignado a ${updatedClientDoc.name} con ${updatedClientDoc.embeddings.length} ángulos en galería.`);
 
 // Verificación de tope máximo de 20 ángulos en galería
-const currentDoc = firestoreStorage.get("client_enrique");
+const currentDoc = { ...updatedClientDoc };
 currentDoc.embeddings = [canonicalEnrique];
 currentDoc.photos = [currentDoc.photos[0]];
 for (let k = 1; k < 19; k++) {
@@ -542,7 +543,9 @@ for (let k = 1; k < 19; k++) {
   });
 }
 currentDoc.bestFaceScore = 10; // score bajo para que la captura con score 67 active incorporación
-customerService.saveOrUpdateCustomer(currentDoc);
+delete currentDoc.lastPhotoAtEpoch;
+delete currentDoc.lastPhotoAt;
+customerService.profilesCache.set("client_enrique", currentDoc);
 
 await processPeopleRecognition(
   mockDb,
@@ -550,18 +553,22 @@ await processPeopleRecognition(
   [sampleClientCrop],
   activeSessions
 );
-assert.strictEqual(firestoreStorage.get("client_enrique").embeddings.length, 20, "Debe alcanzar el tope de 20 ángulos");
+const inMemoryEnrique = customerService.getCustomerData("client_enrique") || customerService.profilesCache.get("client_enrique");
+assert.strictEqual(inMemoryEnrique.embeddings.length, 20, "Debe alcanzar el tope de 20 ángulos");
 
 // Un nuevo ángulo no debe sobrepasar 20
-firestoreStorage.get("client_enrique").bestFaceScore = 10;
-customerService.saveOrUpdateCustomer(firestoreStorage.get("client_enrique"));
+inMemoryEnrique.bestFaceScore = 10;
+delete inMemoryEnrique.lastPhotoAtEpoch;
+delete inMemoryEnrique.lastPhotoAt;
+customerService.profilesCache.set("client_enrique", inMemoryEnrique);
 await processPeopleRecognition(
   mockDb,
   [{ id: "crop_silla_1", storagePath: null }],
   [sampleClientCrop],
   activeSessions
 );
-assert.strictEqual(firestoreStorage.get("client_enrique").embeddings.length, 20, "La galería debe mantenerse estrictamente acotada a máximo 20 ángulos");
+const inMemoryEnriqueAfter = customerService.getCustomerData("client_enrique") || customerService.profilesCache.get("client_enrique");
+assert.strictEqual(inMemoryEnriqueAfter.embeddings.length, 20, "La galería debe mantenerse estrictamente acotada a máximo 20 ángulos");
 console.log("-> Límite máximo de galería de 20 embeddings verificado exitosamente.");
 
 // Caso E: Creación de nuevo cliente inicializa embeddings: [candidate.embedding]

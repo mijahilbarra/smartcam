@@ -243,4 +243,43 @@ const outsidePerson = mappedQuads.find(q => q.label === "Persona fuera de zonas"
 assert.strictEqual(outsidePerson, undefined, "El cliente sentado NO debe catalogarse como 'Persona fuera de zonas'");
 console.log("-> Geometría de producción validada: Cliente reconocido como 'Cliente (Silla de barbero (Frente))' y silla [ocupada/en_corte].");
 
+// [8] Discriminación Robusta Barbero vs Cliente ante agachadas y chairEnteredAt
+console.log("\n[8] Probando Discriminación Robusta Barbero agachado vs Cliente y chairEnteredAt...");
+const bendTracker = new PersonTracker({ minChairFrames: 6 });
+const bendChairZone = {
+  id: "silla_bend_test",
+  name: "Silla Bend Test",
+  type: "barber_chair",
+  box: [50, 50, 400, 500]
+};
+
+// Cliente sentado solo durante 6 frames
+const sittingClientDet = [{ class: "person", score: 0.90, box: [100, 180, 250, 380] }]; // h = 200, y1 = 180
+const tEntered = 1700000000000;
+bendTracker.update(sittingClientDet, [bendChairZone], 1024, 576);
+let clientTrackBend = bendTracker.getTrack(1);
+assert.ok(clientTrackBend.chairEnteredAt, "chairEnteredAt debe fijarse en el primer fotograma en la silla");
+
+for (let i = 2; i <= 6; i++) {
+  bendTracker.update(sittingClientDet, [bendChairZone], 1024, 576);
+}
+assert.strictEqual(clientTrackBend.isFormallySeated, true, "Cliente debe estar formalmente sentado tras 6 frames");
+assert.strictEqual(clientTrackBend.role, "client");
+
+// Ahora el barbero entra y se agacha: su cabeza (y1 = 200) queda más baja que la del cliente (y1 = 180)
+const bendFrameDets = [
+  { class: "person", score: 0.90, box: [100, 180, 250, 380] }, // Cliente: y1=180, h=200
+  { class: "person", score: 0.92, box: [220, 200, 350, 490] }  // Barbero agachado: y1=200 (cabeza más baja), h=290
+];
+const updatedTracks = bendTracker.update(bendFrameDets, [bendChairZone], 1024, 576);
+assert.strictEqual(updatedTracks.length, 2);
+
+const cTrack = updatedTracks.find(t => t.trackId === 1);
+const bTrack = updatedTracks.find(t => t.trackId === 2);
+assert.strictEqual(cTrack.role, "client", "Cliente formalmente sentado debe preservarse como cliente");
+assert.strictEqual(cTrack.isStaffHint, false);
+assert.strictEqual(bTrack.role, "staff", "Barbero agachado debe ser identificado como staff incondicionalmente");
+assert.strictEqual(bTrack.isStaffHint, true);
+console.log("-> Discriminación robusta con barbero agachado y chairEnteredAt validada exitosamente.");
+
 console.log("\n🎉 ¡Todos los tests de PersonTracker pasaron exitosamente!");

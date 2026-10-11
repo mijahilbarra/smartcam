@@ -95,6 +95,37 @@ export class VisitSessionService {
     }
 
     if (session) {
+      // Detección de rotación rápida de clientes (< 30s):
+      // Si la sesión está en 'esperando_liberacion' y entra una persona nueva con trackId distinto:
+      if (session.status === "esperando_liberacion" && session.trackId !== track.trackId) {
+        let isDifferentClient = false;
+        const newEmbedding = track.bestFace?.embedding;
+        if (newEmbedding && session.embeddings && session.embeddings.length > 0) {
+          const canonicalVector = Array.isArray(session.embeddings[0])
+            ? session.embeddings[0]
+            : (session.embeddings[0]?.vector || null);
+          if (canonicalVector) {
+            const sim = computeCosineSimilarity(newEmbedding, canonicalVector);
+            if (sim < 0.45) {
+              isDifferentClient = true;
+              this.logVerbal(`🔄 Rotación rápida en ${session.chairName}: nuevo cliente (Track #${track.trackId}) difiere del previo (similitud: ${sim.toFixed(3)} < 0.45). Cerrando atención anterior...`, "process");
+            }
+          }
+        }
+
+        if (isDifferentClient) {
+          const endedAt = session.emptySinceEpoch || now;
+          const durationMin = Math.max(1, Math.round((endedAt - session.startedAtEpoch) / 60000));
+          await this.closeSession(session.trackId, {
+            endedAtEpoch: endedAt,
+            durationMinutes: durationMin
+          });
+          session = null;
+        }
+      }
+    }
+
+    if (session) {
       // Re-indexar si el trackId cambió por saltos transitorios de YOLO
       if (session.trackId !== track.trackId) {
         this.activeSessions.delete(session.trackId);
@@ -157,6 +188,7 @@ export class VisitSessionService {
                           (track.identity?.name && (track.identity.name.includes("confirmación") || track.identity.name === "Cliente"));
     const validIdentity = isPendingInit ? null : track.identity;
     const visitId = `appt_${now}_${track.trackId}`;
+    const startedAt = track.chairEnteredAt || now;
     session = {
       id: visitId,
       visitId,
@@ -164,8 +196,8 @@ export class VisitSessionService {
       trackId: track.trackId,
       chairId,
       chairName,
-      startedAt: new Date(now).toISOString(),
-      startedAtEpoch: now,
+      startedAt: new Date(startedAt).toISOString(),
+      startedAtEpoch: startedAt,
       lastSeenEpoch: now,
       emptySinceEpoch: null,
       lastPresenceLogAt: now,
@@ -213,6 +245,9 @@ export class VisitSessionService {
     const closed = [];
     for (const session of Array.from(this.activeSessions.values())) {
       const trackInChair = activeTracks.find(t => {
+        if (t.role === "staff" || t.isStaffHint === true || t.identity?.isStaff === true) {
+          return false;
+        }
         const qId = t.currentQuadrant?.id;
         const qName = t.currentQuadrant?.name || t.currentQuadrant?.label;
         const sChairIdClean = session.chairId?.replace(/^person_/, "");
@@ -222,6 +257,27 @@ export class VisitSessionService {
 
       if (trackInChair) {
         if (session.status === "esperando_liberacion") {
+          // Si entra una persona nueva con trackId distinto y rostro diferente antes de 30s:
+          if (trackInChair.trackId !== session.trackId && trackInChair.bestFace?.embedding && session.embeddings?.length > 0) {
+            const canonicalVector = Array.isArray(session.embeddings[0])
+              ? session.embeddings[0]
+              : (session.embeddings[0]?.vector || null);
+            if (canonicalVector) {
+              const sim = computeCosineSimilarity(trackInChair.bestFace.embedding, canonicalVector);
+              if (sim < 0.45) {
+                const endedAt = session.emptySinceEpoch || now;
+                const durationMin = Math.max(1, Math.round((endedAt - session.startedAtEpoch) / 60000));
+                this.logVerbal(`🔄 Rotación rápida en ${session.chairName}: nuevo cliente detectado antes de 30s (similitud: ${sim.toFixed(3)} < 0.45). Finalizando atención previa...`, "process");
+                const appt = await this.closeSession(session.trackId, {
+                  endedAtEpoch: endedAt,
+                  durationMinutes: durationMin
+                });
+                if (appt) closed.push(appt);
+                await this.processTrack(trackInChair, { now });
+                continue;
+              }
+            }
+          }
           session.status = "en_corte";
           session.emptySinceEpoch = null;
           this.logVerbal(`🔄 Persona retomó la silla ${session.chairName}. Reanudando atención.`, "process");
@@ -270,7 +326,7 @@ export class VisitSessionService {
     const trackId = session.trackId;
     const { faceBuffer, sharpnessScore = 0, embedding, thumbnailBase64, isStaff, pose, poseLabel, skipCooldown } = sample;
 
-    // 1. Exclusión estricta del barbero/staff (umbral 0.58):
+    // 1. Exclusión estricta del barbero/staff (umbral 0.46 sensible):
     if (isStaff) {
       console.log(`[Appointment] Rostro en ${session.chairName} pertenece a Staff. Excluido de atención.`);
       return false;
@@ -278,10 +334,26 @@ export class VisitSessionService {
 
     if (embedding) {
       const knownProfiles = this.customerService?.getComparisonProfiles?.() || [];
-      const staffCheck = matchStaffFace(embedding, knownProfiles, 0.58);
-      if (staffCheck.isStaffMatch || staffCheck.maxStaffSim >= 0.58) {
-        console.log(`[Appointment] Rostro en ${session.chairName} coincide con Barbero/Staff (Sim: ${staffCheck.maxStaffSim.toFixed(3)} >= 0.58). Excluido de atención.`);
+      const staffCheck = matchStaffFace(embedding, knownProfiles, 0.46);
+      if (staffCheck.isStaffMatch || staffCheck.maxStaffSim >= 0.46) {
+        console.log(`[Appointment] Rostro en ${session.chairName} coincide con Barbero/Staff (Sim: ${staffCheck.maxStaffSim.toFixed(3)} >= 0.46). Excluido de atención.`);
         return false;
+      }
+    }
+
+    // Filtro Canónico Anti-Nuca / Anti-Espalda:
+    // Si la sesión ya tiene muestras, calcular similitud con el rostro canónico original (embeddings[0])
+    // Si similitud < 0.45 (nuca o espalda), RECHAZAR la muestra
+    if (embedding && session.photos.length > 0 && session.embeddings.length > 0) {
+      const canonicalVector = Array.isArray(session.embeddings[0])
+        ? session.embeddings[0]
+        : (session.embeddings[0]?.vector || null);
+      if (canonicalVector) {
+        const canonicalSim = computeCosineSimilarity(embedding, canonicalVector);
+        if (canonicalSim < 0.45) {
+          console.warn(`[Appointment] Muestra descartada por incompatibilidad con rostro canónico (similitud: ${canonicalSim.toFixed(3)} < 0.45). Excluye posible nuca o espalda.`);
+          return false;
+        }
       }
     }
 
@@ -307,6 +379,7 @@ export class VisitSessionService {
     const now = sample.timestamp || sample.capturedAtEpoch || Date.now();
     const incomingPose = pose || 'frontal';
     const incomingPoseLabel = poseLabel || (incomingPose === 'frontal' ? 'Frontal' : incomingPose);
+    const isFrontalOrSemi = ['frontal', 'semi_left', 'semi_right'].includes(sample.pose || 'frontal');
 
     const photoItem = {
       thumbnailBase64: finalThumbnailBase64,
@@ -347,7 +420,7 @@ export class VisitSessionService {
           session.photos[duplicateIdx] = photoItem;
           session.embeddings[duplicateIdx] = embedding;
           session.lastPhotoAt = now;
-          if (sharpnessScore > (session.bestFaceScore || 0)) {
+          if (sharpnessScore > (session.bestFaceScore || 0) && isFrontalOrSemi) {
             session.bestFaceScore = sharpnessScore;
             session.thumbnailBase64 = finalThumbnailBase64;
           }
@@ -369,7 +442,7 @@ export class VisitSessionService {
           session.embeddings[updateIdx] = embedding;
         }
         session.lastPhotoAt = now;
-        if (sharpnessScore > (session.bestFaceScore || 0)) {
+        if (sharpnessScore > (session.bestFaceScore || 0) && isFrontalOrSemi) {
           session.bestFaceScore = sharpnessScore;
           session.thumbnailBase64 = finalThumbnailBase64;
         }
@@ -401,8 +474,8 @@ export class VisitSessionService {
 
     session.lastPhotoAt = now;
 
-    // Actualizar bestFaceScore y miniatura
-    if (sharpnessScore > (session.bestFaceScore || 0)) {
+    // Actualizar bestFaceScore y miniatura con Protección de Miniatura (solo frontal o semi-frontal)
+    if (sharpnessScore > (session.bestFaceScore || 0) && isFrontalOrSemi) {
       session.bestFaceScore = sharpnessScore;
       session.thumbnailBase64 = finalThumbnailBase64;
 
@@ -457,9 +530,14 @@ export class VisitSessionService {
 
     // 1. Si es personal/barbero, no se registra como atención de cliente
     if (session.isStaff) {
+      if (session.personId && !session.personId.startsWith("staff_")) {
+        await this.customerService?.deleteCustomer?.(session.personId, { db: this.db });
+      }
       this.logVerbal(`Atención descartada para Barbero/Staff: ${session.personName || `Track #${trackId}`}.`, "info");
       return null;
     }
+
+    session.status = "to_verify";
 
     // 2. Comprobar umbral de permanencia mínima obligatoria (mínimo 10 min)
     const minMinutes = options.minMinutes !== undefined ? options.minMinutes : this.minAppointmentMinutes;
@@ -488,11 +566,69 @@ export class VisitSessionService {
       return null;
     }
 
+    // Verificación Set-to-Set contra el Barbero / Staff:
+    // Si la similitud máxima o promedio del cluster contra el staff es >= 0.46, es el barbero
+    if (session.embeddings && session.embeddings.length > 0) {
+      const knownProfiles = this.customerService?.getComparisonProfiles?.() || [];
+      const staffProfiles = knownProfiles.filter(p => {
+        if (p.name && /^Cliente\s*#\d+/i.test(p.name)) return false;
+        if (p.role === "client" || p.isStaff === false) return false;
+        return (p.isStaff === true && p.role !== "client") || p.role === "barber" || (String(p.id).startsWith("staff_") && p.role !== "client" && p.isStaff !== false);
+      });
+
+      if (staffProfiles.length > 0) {
+        const sampleStaffSims = [];
+
+        for (const sItem of session.embeddings) {
+          const sVec = Array.isArray(sItem) ? sItem : (sItem?.vector || null);
+          if (!sVec) continue;
+
+          let bestSimForSample = 0;
+          for (const staff of staffProfiles) {
+            const staffVectors = [];
+            if (Array.isArray(staff.embeddings)) {
+              for (const item of staff.embeddings) {
+                if (Array.isArray(item)) staffVectors.push(item);
+                else if (item && Array.isArray(item.vector)) staffVectors.push(item.vector);
+              }
+            }
+            if (staffVectors.length === 0 && Array.isArray(staff.embedding)) {
+              staffVectors.push(staff.embedding);
+            }
+
+            for (const v of staffVectors) {
+              const sim = computeCosineSimilarity(sVec, v);
+              if (sim > bestSimForSample) bestSimForSample = sim;
+            }
+          }
+          sampleStaffSims.push(bestSimForSample);
+        }
+
+        if (sampleStaffSims.length > 0) {
+          const avgStaffSim = sampleStaffSims.reduce((a, b) => a + b, 0) / sampleStaffSims.length;
+          const staffMatchesCount = sampleStaffSims.filter(sim => sim >= 0.50).length;
+          const ratioStaff = staffMatchesCount / sampleStaffSims.length;
+
+          // Exigir consenso del cluster: similitud promedio >= 0.50 O más del 50% de las fotos >= 0.50 con el staff
+          if (avgStaffSim >= 0.50 || ratioStaff > 0.5) {
+            if (session.personId) {
+              await this.customerService?.deleteCustomer?.(session.personId, { db: this.db });
+            }
+            if (session.clientId && session.clientId !== session.personId) {
+              await this.customerService?.deleteCustomer?.(session.clientId, { db: this.db });
+            }
+            console.log("[Appointment] 🗑️ Atención descartada: el cluster de fotos pertenece al Barbero/Staff. Perfil eliminado físicamente.");
+            return null;
+          }
+        }
+      }
+    }
+
     // 4. Set-to-Set matching si no tenía identidad previa confirmada
     this.logVerbal(`🔍 Analizando biometría acumulada de atención (${session.photos.length} fotos contra base de clientes)...`, "process");
 
     let finalClient = null;
-    if (session.personId && !session.personId.startsWith("unidentified_") && !session.personId.startsWith("cand_")) {
+    if (session.personId && !session.personId.startsWith("unidentified_") && !session.personId.startsWith("cand_") && !session.personId.startsWith("to_verify_")) {
       const existing = this.customerService?.getCustomerData?.(session.personId);
       if (existing && !existing.name?.includes("confirmación")) {
         finalClient = existing;
@@ -504,6 +640,7 @@ export class VisitSessionService {
         finalClient = {
           id: session.personId,
           name: session.personName,
+          status: "frequent",
           visitCount: session.visitCount || 1,
           appointmentCount: session.visitCount || 1,
           photos: session.photos,
@@ -520,13 +657,20 @@ export class VisitSessionService {
     }
 
     if (finalClient) {
+      // Si session.personId era un ID temporal to_verify distinto del cliente existente, borrar físicamente el ID temporal
+      const tempIdToDelete = (session.personId && session.personId !== finalClient.id) ? session.personId : null;
+      if (tempIdToDelete) {
+        await this.customerService?.deleteCustomer?.(tempIdToDelete, { db: this.db });
+      }
+
       session.personId = finalClient.id;
       session.personName = finalClient.name;
       session.clientId = finalClient.id;
       session.clientName = finalClient.name;
       session.visitCount = (finalClient.visitCount || 1) + 1;
       finalClient.visitCount = session.visitCount;
-      finalClient.appointmentCount = (finalClient.appointmentCount || finalClient.visitCount || 1) + 1;
+      finalClient.appointmentCount = (finalClient.appointmentCount || (finalClient.visitCount - 1) || 1) + 1;
+      finalClient.status = "frequent";
       finalClient.lastSeen = new Date(now).toISOString();
 
       this.logVerbal(`✅ Cliente identificado como recurrente: "${finalClient.name}" (Visita #${finalClient.visitCount}). Atención vinculada exitosamente.`, "success");
@@ -555,13 +699,14 @@ export class VisitSessionService {
         });
       }
     } else {
-      // Registrar nuevo cliente formal desde esta atención legítima (>= 10 min y con fotos)
+      // Registrar nuevo cliente formal desde esta atención legítima (>= 10 min y con fotos, status = "new")
       const newClientId = `person_${now}_${trackId}`;
       const allKnown = this.customerService?.getComparisonProfiles?.() || [];
       const clientCount = allKnown.filter(p => !p.isStaff && !p.name?.includes("confirmación")).length;
       finalClient = {
         id: newClientId,
         name: `Cliente #${clientCount + 1}`,
+        status: "new",
         isStaff: false,
         role: "client",
         firstSeen: session.startedAt,
@@ -575,6 +720,11 @@ export class VisitSessionService {
         embeddings: session.embeddings,
         embedding: session.embeddings[0] || null
       };
+
+      const prevTempId = (session.personId && session.personId !== newClientId) ? session.personId : null;
+      if (prevTempId) {
+        await this.customerService?.deleteCustomer?.(prevTempId, { db: this.db });
+      }
 
       session.personId = finalClient.id;
       session.personName = finalClient.name;
@@ -596,6 +746,7 @@ export class VisitSessionService {
 
     const appointmentRecord = {
       id: session.appointmentId || session.visitId,
+      trackId: session.trackId,
       personId: finalClient.id,
       personName: finalClient.name,
       clientId: finalClient.id,
@@ -610,6 +761,7 @@ export class VisitSessionService {
       endedAt: new Date(now).toISOString(),
       durationMinutes,
       status: "completed",
+      clientStatus: finalClient.status,
       bestFaceStoragePath: session.bestFaceStoragePath,
       bestFaceScore: session.bestFaceScore,
       thumbnailPath: session.bestFaceStoragePath || null,
@@ -652,7 +804,7 @@ export class VisitSessionService {
    * @param {number} [threshold=0.65]
    * @returns {Object|null}
    */
-  matchSessionAgainstClients(sessionEmbeddings, threshold = 0.65) {
+  matchSessionAgainstClients(sessionEmbeddings, threshold = 0.60) {
     if (!sessionEmbeddings || sessionEmbeddings.length === 0) return null;
     const profiles = (this.customerService?.getComparisonProfiles?.() || []).filter(p => !p.isStaff);
     if (profiles.length === 0) return null;
@@ -668,9 +820,7 @@ export class VisitSessionService {
 
       if (profileVectors.length === 0) continue;
 
-      let maxSim = -1;
-      let sumSim = 0;
-      let count = 0;
+      const sampleBestSims = [];
 
       for (const sVec of sessionEmbeddings) {
         let bestForS = -1;
@@ -678,15 +828,22 @@ export class VisitSessionService {
           const sim = computeCosineSimilarity(sVec, pVec);
           if (sim > bestForS) bestForS = sim;
         }
-        if (bestForS > maxSim) maxSim = bestForS;
-        if (bestForS > 0) {
-          sumSim += bestForS;
-          count++;
+        if (bestForS >= 0) {
+          sampleBestSims.push(bestForS);
         }
       }
 
-      const avgSim = count > 0 ? (sumSim / count) : 0;
-      const combinedScore = (maxSim * 0.7) + (avgSim * 0.3);
+      if (sampleBestSims.length === 0) continue;
+
+      sampleBestSims.sort((a, b) => b - a);
+      const maxSim = sampleBestSims[0];
+
+      // topAvgSim es el promedio de las muestras con mejor similitud (o el 50% superior)
+      const topCount = Math.max(1, Math.ceil(sampleBestSims.length * 0.5));
+      const topSims = sampleBestSims.slice(0, topCount);
+      const topAvgSim = topSims.reduce((a, b) => a + b, 0) / topCount;
+
+      const combinedScore = (maxSim * 0.45) + (topAvgSim * 0.55);
 
       if (combinedScore > highestScore) {
         secondScore = highestScore;
@@ -697,7 +854,7 @@ export class VisitSessionService {
       }
     }
 
-    if (highestScore >= threshold && (highestScore - secondScore >= 0.04 || secondScore < 0.60)) {
+    if (highestScore >= threshold && (highestScore - secondScore >= 0.05 || secondScore < 0.55)) {
       return bestMatch;
     }
     return null;
@@ -846,11 +1003,17 @@ export class VisitSessionService {
   }
 
   /**
-   * Unifica fotos de la nueva sesión a la galería del cliente sin duplicados (soporta 40+ fotos)
+   * Unifica fotos y embeddings asegurando correspondencia estricta 1:1,
+   * deduplicación con similitud >= 0.88 y protección inmutable de la foto canónica inicial (index 0).
    */
-  mergeCustomerPhotos(existingPhotos = [], newSessionPhotos = [], existingEmbeddings = [], newSessionEmbeddings = []) {
+  _mergePhotosAndEmbeddings(existingPhotos = [], newSessionPhotos = [], existingEmbeddings = [], newSessionEmbeddings = []) {
     const list = Array.isArray(existingPhotos) ? [...existingPhotos] : [];
     const embList = Array.isArray(existingEmbeddings) ? [...existingEmbeddings] : [];
+
+    while (embList.length < list.length) embList.push(null);
+    if (embList.length > list.length) embList.length = list.length;
+
+    const hasCanonicalPhoto = existingPhotos && existingPhotos.length > 0;
 
     for (let k = 0; k < newSessionPhotos.length; k++) {
       const ph = newSessionPhotos[k];
@@ -859,9 +1022,12 @@ export class VisitSessionService {
       // 1. Verificación por miniatura idéntica
       const exactIdx = list.findIndex(e => e.thumbnailBase64 && ph.thumbnailBase64 && e.thumbnailBase64 === ph.thumbnailBase64);
       if (exactIdx !== -1) {
-        if ((ph.sharpnessScore || 0) > (list[exactIdx].sharpnessScore || 0)) {
-          list[exactIdx] = ph;
-          if (emb && embList[exactIdx]) embList[exactIdx] = emb;
+        // La foto canónica inicial (index 0) de prevPhotos es inmutable y nunca se reemplaza por visitas posteriores
+        if (!(hasCanonicalPhoto && exactIdx === 0)) {
+          if ((ph.sharpnessScore || 0) > (list[exactIdx].sharpnessScore || 0)) {
+            list[exactIdx] = ph;
+            if (emb) embList[exactIdx] = emb;
+          }
         }
         continue;
       }
@@ -883,40 +1049,35 @@ export class VisitSessionService {
       }
 
       if (dupIdx !== -1) {
-        if ((ph.sharpnessScore || 0) > (list[dupIdx].sharpnessScore || 0)) {
-          list[dupIdx] = ph;
-          if (emb && embList[dupIdx]) embList[dupIdx] = emb;
+        // La foto canónica inicial (index 0) de prevPhotos es inmutable y nunca se reemplaza por visitas posteriores
+        if (!(hasCanonicalPhoto && dupIdx === 0)) {
+          if ((ph.sharpnessScore || 0) > (list[dupIdx].sharpnessScore || 0)) {
+            list[dupIdx] = ph;
+            if (emb) embList[dupIdx] = emb;
+          }
         }
         continue;
       }
 
       list.push(ph);
-      if (emb) embList.push(emb);
+      embList.push(emb);
     }
 
-    return list;
+    return { photos: list, embeddings: embList };
   }
 
   /**
-   * Unifica embeddings de la nueva sesión a la galería del cliente en paralelo con las fotos
+   * Unifica fotos de la nueva sesión a la galería del cliente sin duplicados (soporta 40+ fotos)
+   */
+  mergeCustomerPhotos(existingPhotos = [], newSessionPhotos = [], existingEmbeddings = [], newSessionEmbeddings = []) {
+    return this._mergePhotosAndEmbeddings(existingPhotos, newSessionPhotos, existingEmbeddings, newSessionEmbeddings).photos;
+  }
+
+  /**
+   * Unifica embeddings de la nueva sesión a la galería del cliente en paralelo con las fotos conservadas
    */
   mergeCustomerEmbeddings(existingEmbeddings = [], newSessionEmbeddings = [], existingPhotos = [], newSessionPhotos = []) {
-    const list = Array.isArray(existingEmbeddings) ? [...existingEmbeddings] : [];
-    for (let k = 0; k < newSessionEmbeddings.length; k++) {
-      const emb = newSessionEmbeddings[k];
-      const ph = newSessionPhotos?.[k];
-      if (ph && Array.isArray(existingPhotos)) {
-        const exactIdx = existingPhotos.findIndex(e => e.thumbnailBase64 && ph.thumbnailBase64 && e.thumbnailBase64 === ph.thumbnailBase64);
-        if (exactIdx !== -1) {
-          if ((ph.sharpnessScore || 0) > (existingPhotos[exactIdx]?.sharpnessScore || 0)) {
-            list[exactIdx] = emb;
-          }
-          continue;
-        }
-      }
-      list.push(emb);
-    }
-    return list;
+    return this._mergePhotosAndEmbeddings(existingPhotos, newSessionPhotos, existingEmbeddings, newSessionEmbeddings).embeddings;
   }
 
   /**

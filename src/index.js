@@ -54,11 +54,16 @@ const workingHours = new WorkingHoursManager({
   defaultTz: "America/Lima"
 });
 
+const mockVideoPath = process.env.MOCK_VIDEO_PATH ? path.resolve(PROJECT_ROOT, process.env.MOCK_VIDEO_PATH) : null;
+
 const streamServer = new StreamServer({
   rtspUrl: process.env.RTSP_STREAM_URL || "rtsp://127.0.0.1:8554/barberia/sub",
   fps: Number(process.env.STREAM_FPS) || 3.5,
+  mockVideoPath,
   onEnsureRtspSource: async ({ forceRestart = false } = {}) => {
-    await startNeolinkDaemon({ tomlPath: TOML_PATH, forceRestart });
+    if (!mockVideoPath) {
+      await startNeolinkDaemon({ tomlPath: TOML_PATH, forceRestart });
+    }
   }
 });
 
@@ -236,7 +241,10 @@ const isLocalEnvironment = process.env.IS_LOCAL_SIMULATOR === "true" ||
                            process.env.CHECK_PROD_STREAM_FIRST === "true" ||
                            Boolean(process.env.STORAGE_BUCKET && process.env.STORAGE_BUCKET.includes("test"));
 
-if (isLocalEnvironment) {
+if (mockVideoPath) {
+  console.log(`[Startup] 🎬 Modo Simulación Offline activado con video local: ${mockVideoPath}`);
+  console.log(`[Startup] 🔒 Omitiendo conexión a producción y daemon Neolink. Sistema listo.`);
+} else if (isLocalEnvironment) {
   console.log(`[Startup] Verificando si existe transmisión activa en producción (${PROD_STREAM_URL})...`);
   const prodCheck = await checkProductionStream();
   if (prodCheck.active) {

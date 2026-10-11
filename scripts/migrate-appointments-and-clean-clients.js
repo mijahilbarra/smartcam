@@ -3,11 +3,12 @@
  * - Depura atenciones fantasma (< 10 min, 0 fotos, sin cliente identificado, o en confirmación)
  * - Sanea y deduplica fotos dentro de las atenciones legítimas (elimina las 15+ fotos repetidas)
  * - Registra formalmente al Barbero real con sus fotos y embeddings en staff_barbero
- * - Purgar perfiles falsos creados a partir del barbero (Cliente #578-#582, Cliente #112, etc.)
+ * - Purgar perfiles falsos creados a partir del barbero (similitud >= 0.46)
  * - Recalcula appointmentCount real para cada cliente legítimo
  *
  * Uso:
  *   node scripts/migrate-appointments-and-clean-clients.js --dry-run
+ *   node scripts/migrate-appointments-and-clean-clients.js --apply --database=test
  *   node scripts/migrate-appointments-and-clean-clients.js --apply --all-databases
  *   node scripts/migrate-appointments-and-clean-clients.js --database="(default)" --apply
  */
@@ -59,15 +60,24 @@ async function runCleanup() {
   let realBarberEmbeddings = [];
   try {
     const fbDef = initFirebaseAdmin({ databaseId: "(default)" });
-    const snap25 = await fbDef.db.collection("camera_catcher_people").doc("person_1791417553339_2").get();
-    if (snap25.exists) {
-      const data25 = snap25.data();
-      realBarberPhotos = Array.isArray(data25.photos) ? data25.photos.filter(isValidPhoto) : [];
-      realBarberEmbeddings = Array.isArray(data25.embeddings) ? data25.embeddings : [];
-      console.log(`💈 Perfil del verdadero Barbero recuperado (person_1791417553339_2): ${realBarberPhotos.length} fotos, ${realBarberEmbeddings.length} embeddings.`);
+    let snapStaff = await fbDef.db.collection("camera_catcher_people").doc("staff_barbero").get();
+    if (!snapStaff.exists) {
+      snapStaff = await fbDef.db.collection("camera_catcher_people").doc("person_1791417553339_2").get();
+    }
+    if (snapStaff.exists) {
+      const dataStaff = snapStaff.data();
+      realBarberPhotos = Array.isArray(dataStaff.photos) ? dataStaff.photos.filter(isValidPhoto) : [];
+      realBarberEmbeddings = Array.isArray(dataStaff.embeddings) ? dataStaff.embeddings : [];
+      if (realBarberPhotos.length === 0 && dataStaff.thumbnailBase64) {
+        realBarberPhotos.push({
+          thumbnailBase64: dataStaff.thumbnailBase64,
+          capturedAt: dataStaff.firstSeen || new Date().toISOString()
+        });
+      }
+      console.log(`💈 Perfil del verdadero Barbero recuperado (${snapStaff.id} en '(default)'): ${realBarberPhotos.length} fotos, ${realBarberEmbeddings.length} embeddings.`);
     }
   } catch (e) {
-    console.warn(`[BarberBootstrap] Aviso leyendo perfil base del barbero:`, e.message);
+    console.warn(`[BarberBootstrap] Aviso leyendo perfil base del barbero en '(default)':`, e.message);
   }
 
   const targets = allDatabases ? ["(default)", "test"] : [databaseId];
@@ -87,12 +97,63 @@ async function runCleanup() {
       console.warn(`[Firestore] No se pudo conectar a Firebase para '${dbId}':`, err.message);
     }
 
-    // 0. Preparar vectores del Barbero para exclusión
+    // 0. Preparar vectores del Barbero para exclusión y detección de contaminación
     const staffVectors = [];
     for (const e of realBarberEmbeddings) {
       const v = Array.isArray(e) ? e : (e?.vector || null);
       if (v) staffVectors.push(v);
     }
+
+    // Complementar con staff_barbero local en SQLite si existe
+    const localSqliteProfiles = sqliteClient.getAllComparisonProfiles ? sqliteClient.getAllComparisonProfiles() : [];
+    const localSqliteStaff = localSqliteProfiles.find(p => p.id === "staff_barbero" || p.isStaff);
+    if (localSqliteStaff?.embeddings) {
+      for (const e of localSqliteStaff.embeddings) {
+        const v = Array.isArray(e) ? e : (e?.vector || null);
+        if (v && !staffVectors.some(sv => computeCosineSimilarity(v, sv) > 0.999)) {
+          staffVectors.push(v);
+        }
+      }
+    }
+    if (localSqliteStaff?.photos && realBarberPhotos.length === 0) {
+      realBarberPhotos = localSqliteStaff.photos.filter(isValidPhoto);
+    }
+
+    // Complementar con staff_barbero local en Firestore si existe
+    if (firestoreDb) {
+      try {
+        const snapLocalStaff = await firestoreDb.collection("camera_catcher_people").doc("staff_barbero").get();
+        if (snapLocalStaff.exists) {
+          const d = snapLocalStaff.data();
+          if (Array.isArray(d.embeddings)) {
+            for (const e of d.embeddings) {
+              const v = Array.isArray(e) ? e : (e?.vector || null);
+              if (v && !staffVectors.some(sv => computeCosineSimilarity(v, sv) > 0.999)) {
+                staffVectors.push(v);
+              }
+            }
+          }
+          if (Array.isArray(d.photos) && realBarberPhotos.length === 0) {
+            realBarberPhotos = d.photos.filter(isValidPhoto);
+          }
+        }
+      } catch (_) {}
+    }
+
+    console.log(`💈 [Staff / Barbero] Base de vectores cargada: ${staffVectors.length} vectores para detección del barbero.`);
+
+    // Función de cálculo de similitud máxima con el Barbero
+    const computeBarberSimilarity = (emb) => {
+      if (!emb || staffVectors.length === 0) return 0;
+      const v = Array.isArray(emb) ? emb : (emb?.vector || null);
+      if (!v) return 0;
+      let maxSim = 0;
+      for (const sv of staffVectors) {
+        const sim = computeCosineSimilarity(v, sv);
+        if (sim > maxSim) maxSim = sim;
+      }
+      return maxSim;
+    };
 
     const officialBarberProfile = {
       id: "staff_barbero",
@@ -106,12 +167,12 @@ async function runCleanup() {
       bestFaceScore: Math.max(...realBarberPhotos.map(p => Number(p.sharpnessScore || 0)), 96),
       thumbnailBase64: realBarberPhotos[0]?.thumbnailBase64 || null,
       photos: realBarberPhotos,
-      embeddings: realBarberEmbeddings,
-      embedding: Array.isArray(realBarberEmbeddings[0]) ? realBarberEmbeddings[0] : (realBarberEmbeddings[0]?.vector || null)
+      embeddings: realBarberEmbeddings.length > 0 ? realBarberEmbeddings : staffVectors,
+      embedding: Array.isArray(realBarberEmbeddings[0]) ? realBarberEmbeddings[0] : (realBarberEmbeddings[0]?.vector || staffVectors[0] || null)
     };
 
-    if (apply && realBarberPhotos.length > 0) {
-      console.log(`💈 [Staff / Barbero] Sincronizando perfil oficial 'staff_barbero' (${realBarberPhotos.length} fotos)...`);
+    if (apply && (realBarberPhotos.length > 0 || staffVectors.length > 0)) {
+      console.log(`💈 [Staff / Barbero] Sincronizando perfil oficial 'staff_barbero' (${realBarberPhotos.length} fotos, ${staffVectors.length} vectores)...`);
       if (sqliteClient.upsertCustomer) {
         try { sqliteClient.upsertCustomer(officialBarberProfile); } catch (e) {}
       }
@@ -121,6 +182,67 @@ async function runCleanup() {
         } catch (e) {}
       }
     }
+
+    // 0.1 Pre-escanear perfiles de clientes para detectar contaminación por el Barbero
+    // Criterio: similitud con el barbero >= 0.46 en foto canónica o más del 50% de sus fotos
+    const firestoreClientsMap = new Map();
+    if (firestoreDb) {
+      try {
+        const snap = await firestoreDb.collection("camera_catcher_people").get();
+        snap.docs.forEach(d => firestoreClientsMap.set(d.id, { id: d.id, ...d.data() }));
+      } catch (err) {
+        console.warn(`[Firestore] Error leyendo people:`, err.message);
+      }
+    }
+    const allClientIds = new Set([...localSqliteProfiles.map(c => c.id), ...firestoreClientsMap.keys()]);
+    const barberContaminatedClientIds = new Set();
+
+    for (const cId of allClientIds) {
+      if (cId === "staff_barbero") continue;
+      if (cId === "person_1791417553339_2") {
+        barberContaminatedClientIds.add(cId);
+        continue;
+      }
+      const client = firestoreClientsMap.get(cId) || localSqliteProfiles.find(c => c.id === cId);
+      if (!client || client.isStaff || client.role === "barber") continue;
+
+      const clientName = String(client.name || "");
+      const origEmbeddings = Array.isArray(client.embeddings) ? client.embeddings : [];
+      const validPhotos = Array.isArray(client.photos) ? client.photos.filter(isValidPhoto) : [];
+
+      const canonicalEmb = client.embedding || (origEmbeddings.length > 0 ? origEmbeddings[0] : null) || (validPhotos[0]?.embedding || null);
+      const canonicalSim = computeBarberSimilarity(canonicalEmb);
+
+      let staffPhotoMatches = 0;
+      let totalEmbeddingsChecked = 0;
+      for (const e of origEmbeddings) {
+        totalEmbeddingsChecked++;
+        if (computeBarberSimilarity(e) >= 0.46) {
+          staffPhotoMatches++;
+        }
+      }
+      if (totalEmbeddingsChecked === 0 && validPhotos.length > 0) {
+        for (const p of validPhotos) {
+          if (p.embedding) {
+            totalEmbeddingsChecked++;
+            if (computeBarberSimilarity(p.embedding) >= 0.46) {
+              staffPhotoMatches++;
+            }
+          }
+        }
+      }
+
+      const staffRatio = totalEmbeddingsChecked > 0 ? (staffPhotoMatches / totalEmbeddingsChecked) : 0;
+      const isCanonicalBarber = canonicalSim >= 0.46;
+      const isMajorityBarber = totalEmbeddingsChecked > 0 && staffRatio >= 0.5;
+
+      if (isCanonicalBarber || isMajorityBarber) {
+        barberContaminatedClientIds.add(cId);
+        console.log(`   💈 ⚠️  [Detectado Perfil Contaminado por Barbero] ID: ${cId} | "${clientName}" | Similitud Canónica: ${canonicalSim.toFixed(3)} | Fotos Barbero: ${staffPhotoMatches}/${totalEmbeddingsChecked} (${(staffRatio * 100).toFixed(0)}%)`);
+      }
+    }
+
+    console.log(`💈 Perfiles de clientes contaminados por el Barbero detectados: ${barberContaminatedClientIds.size}`);
 
     // ==========================================
     // 1. SANEAMIENTO Y DEDUPLICACIÓN DE ATENCIONES (APPOINTMENTS)
@@ -162,10 +284,12 @@ async function runCleanup() {
       const hasNoPhotos = rawPhotos.length === 0;
       const isUnidentified = !clientId || clientId.startsWith("unidentified_") || clientName.includes("sin identificar");
       const isPending = clientName.includes("confirmación");
+      const isBarberAppt = clientId === "staff_barbero" || clientId === "person_1791417553339_2" || barberContaminatedClientIds.has(clientId);
 
-      if (isEphemeral || hasNoPhotos || isUnidentified || isPending) {
+      if (isEphemeral || hasNoPhotos || isUnidentified || isPending || isBarberAppt) {
         apptsToDelete.add(apptId);
-        console.log(`   🗑️  [Atención Fantasma] ID: ${apptId} | Cliente: "${clientName}" | Duración: ${duration}m | Fotos: ${rawPhotos.length}`);
+        const reason = isBarberAppt ? "perfil-barbero" : (isEphemeral ? "duracion<10m" : (hasNoPhotos ? "sin-fotos" : (isUnidentified ? "no-identificado" : "en-confirmacion")));
+        console.log(`   🗑️  [Atención Fantasma/Purgada] ID: ${apptId} | Cliente: "${clientName}" (${clientId}) | Duración: ${duration}m | Razón: ${reason}`);
       } else {
         // DEDUPLICACIÓN DE FOTOS DENTRO DE LA ATENCIÓN
         const cleanPhotos = [];
@@ -249,24 +373,11 @@ async function runCleanup() {
     const clientsToDelete = new Set();
     const legitimateClients = [];
 
-    const sqliteCustomers = sqliteClient.getAllComparisonProfiles ? sqliteClient.getAllComparisonProfiles() : [];
-    console.log(`[SQLite] Clientes encontrados: ${sqliteCustomers.length}`);
-
-    const firestoreClientsMap = new Map();
-    if (firestoreDb) {
-      try {
-        const snap = await firestoreDb.collection("camera_catcher_people").get();
-        console.log(`[Firestore] Documentos en camera_catcher_people: ${snap.size}`);
-        snap.docs.forEach(d => firestoreClientsMap.set(d.id, { id: d.id, ...d.data() }));
-      } catch (err) {
-        console.warn(`[Firestore] Error leyendo people:`, err.message);
-      }
-    }
-
-    const allClientIds = new Set([...sqliteCustomers.map(c => c.id), ...firestoreClientsMap.keys()]);
+    console.log(`[SQLite] Clientes encontrados: ${localSqliteProfiles.length}`);
+    console.log(`[Firestore] Documentos en camera_catcher_people: ${firestoreClientsMap.size}`);
 
     for (const cId of allClientIds) {
-      const client = firestoreClientsMap.get(cId) || sqliteCustomers.find(c => c.id === cId);
+      const client = firestoreClientsMap.get(cId) || localSqliteProfiles.find(c => c.id === cId);
       if (!client) continue;
 
       if (cId === "staff_barbero") {
@@ -281,34 +392,30 @@ async function runCleanup() {
         continue;
       }
 
+      // Si fue marcado como contaminado por el barbero, aplicar Hard Delete
+      if (barberContaminatedClientIds.has(cId)) {
+        clientsToDelete.add(cId);
+        console.log(`   💈 🗑️  [Perfil Contaminado por Barbero - Hard Delete] ID: ${cId} | Nombre: "${client.name}". Purgado.`);
+        continue;
+      }
+
       const clientName = String(client.name || "");
       const validPhotos = Array.isArray(client.photos) ? client.photos.filter(isValidPhoto) : [];
+      const origEmbeddings = Array.isArray(client.embeddings) ? client.embeddings : [];
       const apptCountForClient = validAppts.filter(a => a.clientId === cId || a.personId === cId).length;
 
-      // 1. Filtrar fotos y embeddings que coincidan con el Barbero real
+      // 1. Filtrar fotos y embeddings individuales que coincidan con el Barbero real (>= 0.46)
       const nonStaffPhotos = [];
       const nonStaffEmbeddings = [];
-      const origEmbeddings = Array.isArray(client.embeddings) ? client.embeddings : [];
 
       for (let pIdx = 0; pIdx < validPhotos.length; pIdx++) {
         const ph = validPhotos[pIdx];
-        const emb = origEmbeddings[pIdx] || (pIdx === 0 && client.embedding ? client.embedding : null);
-        let isStaffPhoto = false;
-
-        if (emb && staffVectors.length > 0) {
-          const v = Array.isArray(emb) ? emb : (emb.vector || null);
-          if (v) {
-            for (const sv of staffVectors) {
-              if (computeCosineSimilarity(v, sv) >= 0.58) {
-                isStaffPhoto = true;
-                break;
-              }
-            }
-          }
-        }
+        const emb = origEmbeddings[pIdx] || (pIdx === 0 && client.embedding ? client.embedding : null) || ph.embedding || null;
+        const sim = computeBarberSimilarity(emb);
+        const isStaffPhoto = sim >= 0.46;
 
         if (isStaffPhoto) {
-          console.log(`   🚫 Foto del Barbero eliminada de "${clientName}" (${cId})`);
+          console.log(`   🚫 Foto del Barbero eliminada de "${clientName}" (${cId}) - Similitud: ${sim.toFixed(3)}`);
         } else {
           nonStaffPhotos.push(ph);
           if (emb) nonStaffEmbeddings.push(emb);
@@ -322,13 +429,13 @@ async function runCleanup() {
 
       if (hasNoValidPhotos) {
         clientsToDelete.add(cId);
-        console.log(`   🗑️  [Perfil Falso del Barbero / Sin fotos] ID: ${cId} | Nombre: "${clientName}" (Fotos no-staff: 0 / ${validPhotos.length}). Purgado.`);
+        console.log(`   🗑️  [Perfil Falso del Barbero / Sin fotos válidas] ID: ${cId} | Nombre: "${clientName}" (Fotos no-staff: 0 / ${validPhotos.length}). Purgado.`);
       } else if (isPending || hasNoAppts) {
         clientsToDelete.add(cId);
-        console.log(`   🗑️  [Cliente Falso/Provisional] ID: ${cId} | Nombre: "${clientName}" | Fotos válidas: ${nonStaffPhotos.length} | Citas válidas: ${apptCountForClient} (Razón: ${isPending ? 'en-confirmación ' : ''}${hasNoAppts ? 'sin-citas' : ''})`);
+        console.log(`   🗑️  [Cliente Falso/Provisional] ID: ${cId} | Nombre: "${clientName}" | Fotos válidas: ${nonStaffPhotos.length} | Citas válidas: ${apptCountForClient} (Razón: ${isPending ? 'en-confirmación ' : ''}${hasNoAppts ? 'sin-citas' : ''}). Purgado.`);
       } else {
 
-        // Deduplicar fotos del cliente
+        // Deduplicar fotos del cliente legítimo
         const cleanPhotos = [];
         const cleanEmbeddings = [];
 
@@ -378,15 +485,17 @@ async function runCleanup() {
         client.bestFaceScore = Math.max(...cleanPhotos.map(p => Number(p.sharpnessScore || 0)), 0);
         client.thumbnailBase64 = cleanPhotos[0]?.thumbnailBase64 || client.thumbnailBase64 || null;
         client.appointmentCount = apptCountForClient;
+        client.visitCount = Math.max(Number(client.visitCount || 1), apptCountForClient);
+
         legitimateClients.push(client);
       }
     }
 
-    console.log(`[Clientes] Total analizados: ${allClientIds.size} | Fantasmas a eliminar: ${clientsToDelete.size} | Legítimos conservados: ${legitimateClients.length}`);
+    console.log(`[Clientes] Total analizados: ${allClientIds.size} | Purgados a eliminar: ${clientsToDelete.size} | Legítimos conservados: ${legitimateClients.length}`);
 
     if (apply) {
       if (clientsToDelete.size > 0) {
-        console.log(`[Clientes] Ejecutando eliminación en SQLite y Firestore...`);
+        console.log(`[Clientes] Ejecutando Hard Delete en SQLite y Firestore (${clientsToDelete.size} perfiles)...`);
         for (const id of clientsToDelete) {
           if (sqliteClient.deleteCustomer) {
             try { sqliteClient.deleteCustomer(id); } catch (e) {}
@@ -409,6 +518,7 @@ async function runCleanup() {
             await firestoreDb.collection("camera_catcher_people").doc(client.id).set({
               photos: client.photos,
               appointmentCount: client.appointmentCount,
+              visitCount: client.visitCount,
               thumbnailBase64: client.photos[0]?.thumbnailBase64 || null
             }, { merge: true });
           } catch (e) {}
@@ -419,7 +529,7 @@ async function runCleanup() {
 
   console.log("\n=============================================================");
   if (dryRun) {
-    console.log("🔍 Simulación completada (DRY-RUN). Ejecuta con '--apply --all-databases' para ejecutar la purga.");
+    console.log("🔍 Simulación completada (DRY-RUN). Ejecuta con '--apply --database=test' o '--apply --all-databases' para ejecutar la purga.");
   } else {
     console.log("🎉 ¡Purga y saneamiento ejecutados exitosamente con '--apply'!");
   }

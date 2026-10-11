@@ -225,7 +225,7 @@ export function enrichPersonAngles(person, { embedding, faceThumbnailBase64, sha
  * @param {number} [staffThreshold=0.58]
  * @returns {{ isStaffMatch: boolean, maxStaffSim: number, staffProfile: Object|null }}
  */
-export function matchStaffFace(embedding, knownProfiles = [], staffThreshold = 0.58) {
+export function matchStaffFace(embedding, knownProfiles = [], staffThreshold = 0.46) {
   if (!embedding || !Array.isArray(knownProfiles) || knownProfiles.length === 0) {
     return { isStaffMatch: false, maxStaffSim: 0, staffProfile: null };
   }
@@ -371,8 +371,8 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
         return null;
       }
 
-      // Filtro de Cara Frontal y Nitidez (Rechaza nucas, espaldas, orejas y codos con umbral 0.70)
-      const quality = await evaluateFaceQuality(crop.buffer, { minConfidence: 0.70, minSharpness: 40 });
+      // Filtro de Cara Frontal y Nitidez (Rechaza nucas, espaldas, orejas y codos con umbral por defecto 0.80)
+      const quality = await evaluateFaceQuality(crop.buffer, { minSharpness: 40 });
       if (!quality.isValid) {
         console.log(`[FaceRecognition] Recorte ${crop.id || i + 1} omitido: ${quality.reason} (No es rostro frontal nítido).`);
         return null;
@@ -412,7 +412,7 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
 
       // 1. EVALUACIÓN PRIORITARIA Y EXCLUSIVA DEL BARBERO / STAFF
       // Regla: "Si se parece al barbero, no se guarda como cliente ni se asocia a visitas".
-      const staffMatch = matchStaffFace(embedding, allKnown, 0.58);
+      const staffMatch = matchStaffFace(embedding, allKnown, 0.46);
 
       if (staffMatch.isStaffMatch) {
         const staff = staffMatch.staffProfile;
@@ -466,9 +466,9 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
       }
 
       // 2. CANDADO DE AMBIGÜEDAD CON EL BARBERO:
-      // "Si se parece al barbero, no se guarda". Si la similitud con el barbero es sospechosa (>= 0.58), descartar.
-      if (staffMatch.maxStaffSim >= 0.58) {
-        console.log(`[FaceRecognition] Recorte ${crop.id || i + 1} omitido: sospecha de Barbero (similitud: ${staffMatch.maxStaffSim.toFixed(3)} >= 0.58). "Si se parece al barbero, no se guarda".`);
+      // "Si se parece al barbero, no se guarda". Si la similitud con el barbero es sospechosa (>= 0.46), descartar.
+      if (staffMatch.maxStaffSim >= 0.46) {
+        console.log(`[FaceRecognition] Recorte ${crop.id || i + 1} omitido: sospecha de Barbero (similitud: ${staffMatch.maxStaffSim.toFixed(3)} >= 0.46). "Si se parece al barbero, no se guarda".`);
         continue;
       }
 
@@ -594,17 +594,10 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
             p.embeddings = currentGallery;
           }
 
-          p.lastSeen = new Date().toISOString();
-
-          await custService.saveOrUpdateCustomer(p, {
-            db,
-            newAngle: isNovelAngle,
-            higherSharpness: hasHigherSharpness,
-            galleryUpdated,
-            faceBuffer: quality.faceBuffer,
-            sharpnessScore: quality.sharpnessScore,
-            backgroundSync
-          });
+          // En streaming en tiempo real: actualizar solo en memoria RAM sin llamadas a Firestore cuadro a cuadro
+          if (custService?.profilesCache) {
+            custService.profilesCache.set(p.id, p);
+          }
 
           console.log(`[FaceRecognition] Rostro confirmado en sesión activa de ${crop.zoneId || 'silla'} -> Cliente: "${p.name}" (${p.id}).`);
 
@@ -667,10 +660,8 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
 
         console.log(`[FaceRecognition] Match biométrico confirmado: "${p.name}" (Similitud: ${result.similarity.toFixed(3)}, Canónica: ${canonicalSim.toFixed(3)})`);
 
-        // Cliente existente: incrementar visitas y actualizar fecha
-        const newCount = (p.visitCount || 1) + 1;
-        p.visitCount = newCount;
-        p.lastSeen = new Date().toISOString();
+        // Cliente existente: durante streaming en tiempo real NO incrementar visitas ni modificar lastSeen cuadro a cuadro
+        const count = p.visitCount || 1;
         if (record?.storagePath) {
           p.thumbnailPath = record.storagePath;
         }
@@ -742,15 +733,10 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
           p.embeddings = currentGallery;
         }
 
-        await custService.saveOrUpdateCustomer(p, {
-          db,
-          newAngle: isNovelAngle,
-          higherSharpness: hasHigherSharpness,
-          galleryUpdated,
-          faceBuffer: quality.faceBuffer,
-          sharpnessScore: quality.sharpnessScore,
-          backgroundSync
-        });
+        // En streaming en tiempo real: actualizar solo en memoria RAM sin llamadas a Firestore cuadro a cuadro
+        if (custService?.profilesCache) {
+          custService.profilesCache.set(p.id, p);
+        }
 
         identifiedPeople.push({
           cropId: crop.id || `crop_${i + 1}`,
@@ -758,8 +744,8 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
           personId: p.id,
           name: p.name,
           isStaff: false,
-          isFrequent: newCount > 1,
-          visitCount: newCount,
+          isFrequent: count > 1,
+          visitCount: count,
           similarity: result.similarity,
           confidence: crop.confidence,
           faceBuffer: quality.faceBuffer,
@@ -839,10 +825,10 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
             candidate.poseLabel = quality.poseLabel;
           }
 
-          // Re-verificar que no se parezca al barbero con umbral estricto 0.58
-          const candStaffCheck = matchStaffFace(candidate.embedding, allKnown, 0.58);
-          if (candStaffCheck.isStaffMatch || candStaffCheck.maxStaffSim >= 0.58) {
-            console.log(`[FaceRecognition] Candidato descartado: sospecha de Barbero (similitud: ${candStaffCheck.maxStaffSim.toFixed(3)} >= 0.58). No se crea cliente.`);
+          // Re-verificar que no se parezca al barbero con umbral sensible 0.46
+          const candStaffCheck = matchStaffFace(candidate.embedding, allKnown, 0.46);
+          if (candStaffCheck.isStaffMatch || candStaffCheck.maxStaffSim >= 0.46) {
+            console.log(`[FaceRecognition] Candidato descartado: sospecha de Barbero (similitud: ${candStaffCheck.maxStaffSim.toFixed(3)} >= 0.46). No se crea cliente.`);
             pendingNewClients.delete(matchedCandidateKey);
             continue;
           }

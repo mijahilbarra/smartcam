@@ -83,7 +83,7 @@ export async function getRfbInferenceSession() {
  * @param {number} minConfidence - Umbral mínimo (por defecto 0.70)
  * @returns {Promise<{ hasFace: boolean, faceBoxNorm?: number[], confidence?: number }>}
  */
-export async function detectFace(imageBuffer, minConfidence = 0.70) {
+export async function detectFace(imageBuffer, minConfidence = 0.80) {
   try {
     const session = await getRfbInferenceSession();
     const anchors = generatePriors();
@@ -276,7 +276,7 @@ export async function estimateFacePose({ faceBuffer, faceBoxNorm, embedding } = 
  * @returns {Promise<{ isValid: boolean, faceBuffer?: Buffer, faceBoxNorm?: number[], confidence?: number, sharpnessScore?: number, pose?: string, poseLabel?: string, yawScore?: number, pitchScore?: number, reason?: string }>}
  */
 export async function evaluateFaceQuality(personCropBuffer, options = {}) {
-  const minConfidence = options.minConfidence || 0.70;
+  const minConfidence = options.minConfidence || 0.80;
   const minSharpness = options.minSharpness || 40;
 
   const detection = await detectFace(personCropBuffer, minConfidence);
@@ -327,16 +327,33 @@ export async function evaluateFaceQuality(personCropBuffer, options = {}) {
     faceBoxNorm: detection.faceBoxNorm
   });
 
+  const validPoses = ['frontal', 'semi_left', 'semi_right'];
+  const isFrontalOrSemi = validPoses.includes(poseData.pose);
+  const isConfidenceOk = (detection.confidence || 0) >= minConfidence;
+
+  // Si la pose no es frontal o semi-perfil válida, o la nitidez es insuficiente, o la confianza es baja:
+  const isValid = isSharp && isFrontalOrSemi && isConfidenceOk;
+
+  let reason = "ok";
+  if (!isSharp) {
+    reason = "blurry_face";
+  } else if (!isFrontalOrSemi) {
+    reason = "non_frontal_pose_or_back_of_head";
+  } else if (!isConfidenceOk) {
+    reason = "low_confidence_face";
+  }
+
   return {
-    isValid: isSharp,
+    isValid,
     faceBuffer,
     faceBoxNorm: detection.faceBoxNorm,
     confidence: detection.confidence,
     sharpnessScore,
     pose: poseData.pose,
     poseLabel: poseData.label,
+    isFrontalOrSemi,
     yawScore: poseData.yawScore,
     pitchScore: poseData.pitchScore,
-    reason: isSharp ? "ok" : "blurry_face"
+    reason
   };
 }

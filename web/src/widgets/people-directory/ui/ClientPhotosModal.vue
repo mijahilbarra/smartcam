@@ -177,7 +177,14 @@ const handleConfirmDeletePhoto = async () => {
                 Barbero
               </span>
               <span
-                v-else-if="person.visitCount > 1"
+                v-else-if="person.status === 'to_verify'"
+                class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-purple-950/80 text-purple-300 border border-purple-500/40"
+              >
+                <AppIcon name="pending" :size="13" />
+                Por verificar
+              </span>
+              <span
+                v-else-if="person.status === 'frequent' || person.visitCount > 1"
                 class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-amber-950/80 text-amber-300 border border-amber-500/40"
               >
                 <AppIcon name="star" :size="13" />

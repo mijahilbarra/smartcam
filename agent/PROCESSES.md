@@ -107,17 +107,25 @@ flowchart TD
 * **`extractClientCrops({ bucket, clientCrops, docId, isManual })`**:
   * Procesa recortes de personas en zonas de atención; si es disparo manual, genera la subida correspondiente a Storage. En tiempo real opera en RAM a 0 ms.
 * **`reidentifyPeople({ db, clientRecords, clientCrops, activeSessions, isRealtime, backgroundSync })`**:
-  * Filtro de calidad facial RFB-320 (frontalidad y nitidez) + MobileFaceNet ONNX (embedding 512D en ~15 ms).
+  * **Filtro Facial Estricto y Anti-Nucas**: RFB-320 con umbral elevado (`minConfidence = 0.80`) y validación de orientación facial (`isFrontalOrSemi: ['frontal', 'semi_left', 'semi_right']`). Descarta nucas, orejas y espaldas impidiendo que texturas de cabello con alta nitidez sustituyan al rostro real.
+  * **Zero Escrituras en Vivo (Gobernanza de Sesión)**: En streaming en tiempo real, `reidentifyPeople` opera exclusivamente en memoria RAM para telemetría SSE y asociación a tracks. Nunca incrementa visitas ni persiste en Firestore o SQLite cuadro a cuadro.
   * **Biometría Multi-Ángulo y Tolerancia Canónica (`minCanonicalSimilarity = 0.48`)**: Permite giros naturales de cabeza ($15^\circ - 35^\circ$) durante el corte al validar contra la foto inicial o el ángulo más cercano del cluster (`maxGallerySim >= 0.55 && canonicalSim >= 0.42`), descartando extraños y staff ($< 0.45$).
   * **Cadencia Temporal Periódica de 20 Segundos**: Acumula fotos de forma periódica espaciadas a lo largo de la sesión (hasta 20 recortes por atención) sin duplicados idénticos ($\text{sim} \ge 0.985$).
   * **Respeto Absoluto a Roles de Usuario**: Perfiles modificados manualmente por el usuario (`role: "client"` o `isStaff: false`) no son revertidos a Staff por el backend, independientemente del prefijo del ID.
-  * **Gobernanza por Sesión Temporal**: Acumula candidatos en memoria RAM sin crear perfiles prematuros en Firestore. La formalización definitiva de nuevos clientes (`Cliente #N`) ocurre únicamente al concluir una atención legítima ($\ge 10$ min) con galería consolidada.
 
 ### 6. `visits_step.js`
 * **`updateVisits({ visitService, tracker, activeTracks })`**:
+  * **Filtro Canónico Anti-Nuca en Sesión**: `addFaceSample` exige similitud coseno $\ge 0.45$ con la foto inicial de la sesión, rechazando fotos de nucas o espaldas que produzcan embeddings desvinculados.
+  * **Protección de Miniatura de Atención**: La miniatura de la atención solo se actualiza ante poses frontales o semi-frontales con mayor nitidez.
+  * **Ciclo de Vida de Estados (`to_verify` $\rightarrow$ `new` / `frequent` / Borrado Físico)**:
+    * Al abrir sesión en la silla se asigna `status: "to_verify"`.
+    * Al concluir la atención ($\ge 10$ min), realiza evaluación Set-to-Set:
+      * **Si coincide con Barbero/Staff ($\ge 0.46$)**: **Borrado Físico Completo (Hard Delete)** en Firestore y SQLite (`deleteCustomer`). Cero citas y cero clientes creados.
+      * **Si coincide con cliente recurrente ($\ge 0.60$)**: Se vincula la cita, se incrementa `appointmentCount`, se asigna `status: "frequent"` y se elimina físicamente el ID temporal `to_verify`.
+      * **Si es cliente nuevo legítimo**: Se crea el perfil formal con `status: "new"`.
   * **Filtro de Permanencia / Debounce de Asiento (`consecutiveChairFrames >= 6`)**: Requiere de 2 a 3 segundos de permanencia continua en la silla antes de disparar `"Persona se sienta"` e iniciar la sesión, descartando transeúntes que cruzan caminando.
   * **Ventana de Gracia de Liberación (30 segundos)**: Si el cliente se levanta transitoriamente o el barbero ocluye la silla, la atención permanece en estado `"esperando_liberacion"`. Si retorna antes de 30s se reanuda limpiamente sin cerrar la atención.
-  * **Blindaje contra Personal**: El barbero de pie en la zona de corte queda excluido de la atención y nunca contamina la sesión del cliente ni su galería.
+  * **Blindaje contra Personal**: El barbero de pie en la zona de corte queda forzado incondicionalmente como Staff por diferencia de altura (`PersonTracker`), excluyéndose de la atención.
 
 ### 7. `occupancy_step.js`
 * **`computeOccupancy({ quadrants, identifiedPeople, rawDetections })`**:
