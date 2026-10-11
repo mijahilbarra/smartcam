@@ -48,13 +48,15 @@ export function broadcastTelemetry({ docId, mlResult, activeTracks = [], identif
         missedFrames: t.missedFrames || 0
       })),
     quadrants: mlResult.quadrants || [],
-    peopleIdentified: (identifiedPeople || []).map(p => ({
-      name: p.name,
-      isStaff: p.isStaff === true,
-      isFrequent: p.isFrequent === true,
-      visitCount: p.visitCount || 1,
-      box: p.box
-    })),
+    peopleIdentified: identifiedPeople !== null
+      ? (identifiedPeople || []).map(p => ({
+          name: p.name,
+          isStaff: p.isStaff === true,
+          isFrequent: p.isFrequent === true,
+          visitCount: p.visitCount || 1,
+          box: p.box
+        }))
+      : undefined,
     occupancy,
     memory: getSystemMemoryMetrics()
   });

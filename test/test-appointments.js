@@ -92,10 +92,15 @@ const longTrack = {
 await service.processTrack(longTrack);
 
 // Frame 1: Rostro visible
+const angleVec1 = new Array(512).fill(0);
+angleVec1[1] = 0.82;
+angleVec1[2] = Math.sqrt(1 - 0.82 * 0.82);
+
 await service.addFaceSample(202, {
   sharpnessScore: 85,
   thumbnailBase64: "data:image/jpeg;base64,face_client",
-  embedding: client141Vector,
+  embedding: angleVec1,
+  pose: "frontal",
   isStaff: false
 });
 
@@ -120,15 +125,70 @@ assert.strictEqual(activeSession.photos.length, 1, "Solo la foto legítima del c
 console.log("-> Exclusión del barbero en la silla validada: 0 fotos de personal añadidas al appointment.");
 
 console.log("\n[4] Probando finalización de atención de 45 min y Re-identificación Set-to-Set...");
-// Agregamos más fotos del cliente a la sesión (hasta 20)
+// 4a. Probar rechazo de foto duplicada con menor nitidez
+const dupRejected = await service.addFaceSample(202, {
+  sharpnessScore: 70, // Menor que 85
+  thumbnailBase64: "data:image/jpeg;base64,face_client_dup",
+  embedding: angleVec1, // Similitud 1.0 con la foto 1
+  pose: "frontal",
+  skipCooldown: true
+});
+assert.strictEqual(dupRejected, false, "Foto duplicada con menor nitidez debe ser rechazada");
+assert.strictEqual(activeSession.photos.length, 1, "No debe duplicar fotos en la atención");
+
+// 4b. Probar reemplazo en caso de foto duplicada con MAYOR nitidez
+const dupReplaced = await service.addFaceSample(202, {
+  sharpnessScore: 95, // Mayor que 85
+  thumbnailBase64: "data:image/jpeg;base64,face_client_sharper",
+  embedding: angleVec1,
+  pose: "frontal",
+  skipCooldown: true
+});
+assert.strictEqual(dupReplaced, true, "Foto duplicada con mayor nitidez debe reemplazar a la anterior");
+assert.strictEqual(activeSession.photos.length, 1, "Reemplazo no debe aumentar el conteo de fotos");
+assert.strictEqual(activeSession.photos[0].sharpnessScore, 95);
+
+// 4c. Probar control de cadencia temporal (< 20 segundos) sin skipCooldown
+const tooFastSample = await service.addFaceSample(202, {
+  sharpnessScore: 90,
+  thumbnailBase64: "data:image/jpeg;base64,face_client_rapid",
+  embedding: angleVec1,
+  pose: "frontal",
+  skipCooldown: false,
+  timestamp: Date.now() + 5000 // 5s después (< 20s)
+});
+assert.strictEqual(tooFastSample, false, "Cadencia temporal debe rechazar fotos tomadas en < 20 segundos");
+
+// 4d. Agregamos 19 fotos adicionales de ángulos legítimos con skipCooldown (hasta completar 20)
 for (let i = 2; i <= 20; i++) {
+  const angleVec = new Array(512).fill(0);
+  angleVec[1] = 0.82;
+  angleVec[i + 2] = Math.sqrt(1 - 0.82 * 0.82);
   await service.addFaceSample(202, {
     sharpnessScore: 80 + (i % 10),
     thumbnailBase64: `data:image/jpeg;base64,session_photo_${i}`,
-    embedding: client141Vector
+    embedding: angleVec,
+    pose: `angle_${i}`,
+    skipCooldown: true
   });
 }
 assert.strictEqual(activeSession.photos.length, 20, "Debe acumular hasta 20 fotos en la atención");
+
+// 4e. Probar filtro anti-outliers de la sesión
+const outlierSamplePhotos = [
+  { thumbnailBase64: "thumb1" },
+  { thumbnailBase64: "thumb2" },
+  { thumbnailBase64: "thumb3" },
+  { thumbnailBase64: "thumb_intruder" }
+];
+const vNormal1 = new Array(512).fill(0); vNormal1[1] = 0.9; vNormal1[5] = Math.sqrt(1 - 0.9 * 0.9);
+const vNormal2 = new Array(512).fill(0); vNormal2[1] = 0.9; vNormal2[6] = Math.sqrt(1 - 0.9 * 0.9);
+const vNormal3 = new Array(512).fill(0); vNormal3[1] = 0.9; vNormal3[7] = Math.sqrt(1 - 0.9 * 0.9);
+const vRogue = new Array(512).fill(0); vRogue[200] = 1.0; // Ortogonal al cluster (similitud 0.0 < 0.45)
+const outlierResult = service.filterOutlierSamples(outlierSamplePhotos, [vNormal1, vNormal2, vNormal3, vRogue]);
+assert.strictEqual(outlierResult.photos.length, 3, "Filtro anti-outliers debe eliminar la foto espuria");
+assert.strictEqual(outlierResult.photos.some(p => p.thumbnailBase64 === "thumb_intruder"), false);
+console.log("-> Filtro anti-outliers validado: foto anómala (< 0.45 similitud) descartada del cluster.");
 
 // Cierre de sesión formal tras 45 minutos
 const completion = await service.closeSession(202, { durationMinutes: 45 });
@@ -228,6 +288,93 @@ assert.strictEqual(sqlite.getAppointmentById(candidateCompletion.id), null, "La 
 assert.strictEqual(sqlite.deleteCustomer(candidateCompletion.clientId), true, "Debe eliminar el cliente de SQLite");
 assert.strictEqual(sqlite.getCustomerById(candidateCompletion.clientId), null, "El cliente eliminado no debe existir");
 console.log("-> Eliminación de atención y cliente en cascada validada exitosamente.");
+
+console.log("\n[11] Probando máquina de estados de silla y gracia de 30 segundos (checkChairTimeouts)...");
+const timeoutService = new VisitSessionService({
+  db: mockDb,
+  sqliteClient: sqlite,
+  customerService: custService,
+  minAppointmentMinutes: 10,
+  emptyChairTimeoutMs: 30000
+});
+
+const t0 = 1000000;
+const chairTrack = {
+  trackId: 301,
+  currentQuadrant: { id: "silla_corte_1", label: "Silla de Corte 1", type: "barber_chair" }
+};
+const startedSession = await timeoutService.processTrack(chairTrack, { now: t0 });
+assert.strictEqual(startedSession.status, "en_corte");
+
+// Agregamos una foto válida
+await timeoutService.addFaceSample(301, {
+  sharpnessScore: 88,
+  thumbnailBase64: "data:image/jpeg;base64,session_301",
+  embedding: angleVec1,
+  timestamp: t0
+});
+
+// Paso A: La persona se levanta temporalmente a los 15 min
+const tLeave = t0 + 15 * 60 * 1000;
+await timeoutService.checkChairTimeouts(tLeave, []);
+assert.strictEqual(startedSession.status, "esperando_liberacion", "Debe entrar en estado esperando_liberacion");
+assert.strictEqual(startedSession.emptySinceEpoch, tLeave);
+
+// Paso B: Pasan 10 segundos (< 30s) y la persona RETOMA la silla (con nuevo trackId 302 de YOLO)
+const tResume = tLeave + 10000;
+const resumedTrack = {
+  trackId: 302,
+  currentQuadrant: { id: "silla_corte_1", label: "Silla de Corte 1", type: "barber_chair" }
+};
+const resumedSession = await timeoutService.processTrack(resumedTrack, { now: tResume });
+assert.strictEqual(resumedSession.status, "en_corte", "La atención debe reanudarse al retomar la silla");
+assert.strictEqual(resumedSession.emptySinceEpoch, null, "Debe cancelar la cuenta regresiva de 30s");
+assert.strictEqual(resumedSession.photos.length, 1, "Debe conservar las fotos cosechadas previamente");
+
+// Paso C: La persona se levanta definitivamente a los 25 min
+const tFinalLeave = t0 + 25 * 60 * 1000;
+await timeoutService.checkChairTimeouts(tFinalLeave, []);
+assert.strictEqual(resumedSession.status, "esperando_liberacion");
+
+// Paso D: Pasan 31 segundos (>= 30s) con la silla vacía -> Cierre automático y clasificación Set-to-Set
+const tTimeoutClose = tFinalLeave + 31000;
+const closedAppts = await timeoutService.checkChairTimeouts(tTimeoutClose, []);
+assert.strictEqual(closedAppts.length, 1, "Debe cerrar automáticamente la atención tras 30s desocupada");
+assert.strictEqual(closedAppts[0].status, "completed");
+assert.strictEqual(closedAppts[0].chairId, "silla_corte_1");
+assert.strictEqual(timeoutService.activeSessions.size, 0, "No deben quedar sesiones activas en la silla");
+console.log("-> Máquina de estados con gracia de 30s y reanudación validada exitosamente.");
+
+console.log("\n[12] Probando filtro de permanencia y debounce de asiento (consecutiveChairFrames >= 6)...");
+const debounceApptService = new VisitSessionService({
+  db: mockDb,
+  sqliteClient: sqlite,
+  customerService: custService,
+  minConsecutiveChairFrames: 6
+});
+
+// Transeúnte en silla por 2 fotogramas (consecutiveChairFrames: 2 < 6)
+const walkerTrack = {
+  trackId: 401,
+  consecutiveChairFrames: 2,
+  currentQuadrant: { id: "silla_corte_debounce", label: "Silla Debounce", type: "barber_chair" }
+};
+const walkerSession = await debounceApptService.processTrack(walkerTrack);
+assert.strictEqual(walkerSession, null, "Transeúnte con solo 2 fotogramas NO debe abrir una sesión de atención");
+assert.strictEqual(debounceApptService.activeSessions.has(401), false, "No debe haber sesión en memoria");
+console.log("-> Transeúnte en tránsito (2 fotogramas) descartado correctamente sin abrir atención.");
+
+// Cliente sentado por >= 6 fotogramas (consecutiveChairFrames: 6)
+const seatedTrack = {
+  trackId: 402,
+  consecutiveChairFrames: 6,
+  currentQuadrant: { id: "silla_corte_debounce", label: "Silla Debounce", type: "barber_chair" }
+};
+const seatedSession = await debounceApptService.processTrack(seatedTrack);
+assert.ok(seatedSession, "Cliente con >= 6 fotogramas DEBE abrir la sesión de atención");
+assert.strictEqual(seatedSession.status, "en_corte");
+assert.strictEqual(debounceApptService.activeSessions.has(402), true);
+console.log("-> Cliente con permanencia confirmada (>= 6 fotogramas) inicia atención exitosamente.");
 
 sqlite.close();
 console.log("\n🎉 ¡Todas las pruebas del pipeline de Atenciones pasaron al 100%!");

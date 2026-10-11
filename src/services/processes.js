@@ -64,7 +64,7 @@ export async function runProcessCycle(context = {}, options = {}) {
     quadrants: mlResult.quadrants, identifiedPeople: [], rawDetections: mlResult.rawDetections
   });
   broadcastTelemetry({
-    docId, mlResult, activeTracks, identifiedPeople: [], occupancy: immediateOccupancy
+    docId, mlResult, activeTracks, identifiedPeople: null, occupancy: immediateOccupancy
   });
 
   // 4b. Enriquecimiento reactivo de recortes con Stream Clear de alta resolución

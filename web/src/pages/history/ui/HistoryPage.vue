@@ -1,6 +1,5 @@
 <script setup>
 import CostMonitorWidget from '@/widgets/cost-monitor/ui/CostMonitorWidget.vue';
-import PeopleDirectoryWidget from '@/widgets/people-directory/ui/PeopleDirectoryWidget.vue';
 import PhotosTable from '@/widgets/photos-table/ui/PhotosTable.vue';
 
 defineProps({
@@ -45,10 +44,7 @@ const emit = defineEmits([
       :total-photos-count="totalPhotos"
     />
 
-    <!-- 2. People & Frequent Customers Directory -->
-    <PeopleDirectoryWidget />
-
-    <!-- 3. Photos Table -->
+    <!-- 2. Photos Table -->
     <PhotosTable
       :photos="photos"
       :loading="loading"

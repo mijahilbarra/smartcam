@@ -85,6 +85,17 @@ class DaemonReporter {
   }
 
   /**
+   * Emite un evento verbal en lenguaje natural directamente a la telemetría SSE
+   * @param {string} text - Mensaje descriptivo
+   * @param {string} [type="info"] - Tipo de log ('info' | 'process' | 'success' | 'warning' | 'error')
+   */
+  async reportVerbalLog(text, type = "info") {
+    if (!text) return;
+    this._addHistoryEntry(text, type);
+    await this._syncToFirestore();
+  }
+
+  /**
    * Fase 1: Se activa la consulta a la cámara de seguridad
    */
   async reportCameraQuery(triggerType = "manual") {

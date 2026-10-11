@@ -16,7 +16,7 @@ import { CaptureOrchestrator } from "../src/services/capture_orchestrator.js";
 import { PersonTracker } from "../src/core/person_tracker.js";
 import { identifyFace, extractFaceEmbedding } from "../src/face_recognizer.js";
 import { evaluateFaceQuality } from "../src/services/face_quality_service.js";
-import { processPeopleRecognition, resetPendingCandidates, enrichPersonAngles, matchStaffFace } from "../src/services/people_service.js";
+import { processPeopleRecognition, resetPendingCandidates, getPendingCandidates, enrichPersonAngles, matchStaffFace } from "../src/services/people_service.js";
 import { customerService } from "../src/services/customer_service.js";
 
 console.log("=== Test de Pipeline Funcional de Procesos (processes.js) ===");
@@ -433,16 +433,45 @@ const mockDb = {
   })
 };
 
-// Guardamos cliente existente en Firestore con el embedding real de barber_crop.jpg
+// Guardamos cliente existente en Firestore con un ángulo canónico de Enrique (similitud 0.75 con barber_crop.jpg)
 const enriqueQuality = await evaluateFaceQuality(barberImgBuffer);
 const enriqueEmbedding = await extractFaceEmbedding(enriqueQuality.faceBuffer);
+
+const createSimilarVector = (baseVector, targetSimilarity = 0.75) => {
+  let v = new Array(baseVector.length).fill(0);
+  v[0] = 1.0;
+  if (Math.abs(baseVector[0]) > 0.8) {
+    v[0] = 0.0;
+    v[1] = 1.0;
+  }
+  let dot = 0;
+  for (let i = 0; i < baseVector.length; i++) dot += v[i] * baseVector[i];
+  let u = new Array(baseVector.length);
+  let normU = 0;
+  for (let i = 0; i < baseVector.length; i++) {
+    u[i] = v[i] - dot * baseVector[i];
+    normU += u[i] * u[i];
+  }
+  normU = Math.sqrt(normU);
+  for (let i = 0; i < baseVector.length; i++) u[i] /= normU;
+
+  const s = targetSimilarity;
+  const orthoScale = Math.sqrt(Math.max(0, 1 - s * s));
+  const res = new Array(baseVector.length);
+  for (let i = 0; i < baseVector.length; i++) {
+    res[i] = s * baseVector[i] + orthoScale * u[i];
+  }
+  return res;
+};
+
+const canonicalEnrique = createSimilarVector(enriqueEmbedding, 0.75);
 const initialClient = {
   id: "client_enrique",
   name: "Enrique Gómez",
   isStaff: false,
   visitCount: 3,
   bestFaceScore: 50,
-  embeddings: [enriqueEmbedding],
+  embeddings: [canonicalEnrique],
   photos: [{
     thumbnailBase64: "data:image/jpeg;base64,mock_thumb",
     sharpnessScore: 50,
@@ -500,7 +529,7 @@ console.log(`-> Sesión activa gobernó detección: asignado a ${updatedClientDo
 
 // Verificación de tope máximo de 20 ángulos en galería
 const currentDoc = firestoreStorage.get("client_enrique");
-currentDoc.embeddings = [enriqueEmbedding];
+currentDoc.embeddings = [canonicalEnrique];
 currentDoc.photos = [currentDoc.photos[0]];
 for (let k = 1; k < 19; k++) {
   currentDoc.embeddings.push(createUnitVector(512, k));
@@ -568,18 +597,23 @@ await processPeopleRecognition(cleanDb, [], [newCropInEmptyChair], []);
 const confirmResult = await processPeopleRecognition(cleanDb, [], [newCropInEmptyChair], []);
 
 assert.strictEqual(confirmResult.length, 1);
-assert.strictEqual(confirmResult[0].isPendingConfirmation, false);
-const createdClientId = confirmResult[0].personId;
-const createdClientDoc = cleanStorage.get(createdClientId);
-assert.ok(createdClientDoc, "Debe existir el nuevo cliente en Firestore");
-assert.ok(Array.isArray(createdClientDoc.embeddings), "El nuevo cliente debe tener array de embeddings");
-assert.strictEqual(createdClientDoc.embeddings.length, 1, "Debe iniciar con 1 embedding en embeddings");
-assert.ok(Array.isArray(createdClientDoc.embedding), "Debe mantener compatibilidad con embedding singular");
-assert.ok(Array.isArray(createdClientDoc.photos), "El nuevo cliente debe tener array de photos");
-assert.strictEqual(createdClientDoc.photos.length, 1, "Debe iniciar con 1 foto en photos");
-assert.ok(createdClientDoc.photos[0].thumbnailBase64, "La foto debe tener thumbnailBase64");
-assert.strictEqual(typeof createdClientDoc.photos[0].sharpnessScore, "number", "La foto debe tener sharpnessScore numérico");
-console.log("-> Inicialización de embeddings y photos en creación de nuevo cliente validada exitosamente.");
+assert.strictEqual(confirmResult[0].isPendingConfirmation, true, "Debe marcar isPendingConfirmation: true");
+assert.strictEqual(confirmResult[0].isCandidate, true, "Debe ser candidato temporal");
+assert.strictEqual(confirmResult[0].name, null, "NO debe inventar nombres como 'Cliente en confirmación'");
+assert.strictEqual(cleanStorage.size, 0, "NO debe crear clientes prematuramente en Firestore durante el debounce");
+
+const pendingList = getPendingCandidates();
+assert.ok(pendingList.length >= 1, "Debe mantenerse el candidato en memoria");
+const currentCand = pendingList.find(c => c.tempId === confirmResult[0].personId);
+assert.ok(currentCand, "El candidato debe existir en memoria");
+assert.strictEqual(currentCand.count, 3, "Debe haber acumulado 3 ciclos de debounce en memoria");
+assert.ok(Array.isArray(currentCand.embeddings), "El candidato debe tener array de embeddings");
+assert.strictEqual(currentCand.embeddings.length, 1, "Debe iniciar con 1 embedding en embeddings");
+assert.ok(Array.isArray(currentCand.photos), "El candidato debe tener array de photos");
+assert.strictEqual(currentCand.photos.length, 1, "Debe iniciar con 1 foto en photos");
+assert.ok(currentCand.photos[0].thumbnailBase64, "La foto debe tener thumbnailBase64");
+assert.strictEqual(typeof currentCand.photos[0].sharpnessScore, "number", "La foto debe tener sharpnessScore numérico");
+console.log("-> Debounce en memoria sin creación prematura en Firestore validado exitosamente.");
 
 // 11. enrichPersonAngles: Correspondencia 1:1 y sincronización de perfiles legados
 console.log("\n[11] Probando sincronización 1:1 de embeddings y photos en enrichPersonAngles...");
@@ -599,7 +633,7 @@ const legacyPerson = {
 // Agregar fotos 2 a 20 consecutivamente
 let currentLegacy = { ...legacyPerson };
 for (let photoNum = 2; photoNum <= 20; photoNum++) {
-  const newEmb = createUnitVector(512, 10 + photoNum);
+  const newEmb = createUnitVector(512, 20 + photoNum);
   const newThumb = `data:image/jpeg;base64,photo_${photoNum}`;
   const res = enrichPersonAngles(currentLegacy, {
     embedding: newEmb,

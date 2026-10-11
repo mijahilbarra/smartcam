@@ -79,27 +79,58 @@ export class CustomerService {
       await this.loadProfilesFromFirestore(options.db);
     }
 
-    // Sincronizar staff desde Firestore si está disponible
-    if (options.db && typeof options.db.doc === "function") {
+    // Sincronizar staff desde Firestore si está disponible (camera_catcher_people o documento legacy)
+    if (options.db) {
       try {
-        const staffDoc = await options.db.doc("camera_catcher/staff").get();
-        if (staffDoc && staffDoc.exists) {
-          const members = staffDoc.data()?.members || [];
-          for (const staff of members) {
-            const staffId = staff.id || `staff_${staff.name}`;
-            const staffProfile = {
-              id: staffId,
-              name: staff.name || "Staff",
-              isStaff: true,
-              role: staff.role || "barber",
-              embedding: staff.embedding,
-              embeddings: staff.embeddings || (staff.embedding ? [staff.embedding] : []),
-              photos: [],
-              thumbnailBase64: null,
-              bestFaceScore: staff.bestFaceScore || 0
-            };
-            this.sqliteClient.upsertCustomer(staffProfile);
-            this.profilesCache.set(staffId, staffProfile);
+        if (typeof options.db.collection === "function") {
+          try {
+            const col = options.db.collection("camera_catcher_people");
+            if (typeof col?.where === "function") {
+              const staffSnap = await col.where("isStaff", "==", true).get();
+              if (staffSnap && !staffSnap.empty) {
+                staffSnap.forEach(docSnap => {
+                  const data = docSnap.data();
+                  const staffId = docSnap.id;
+                  const isClientName = /^Cliente #\d+$/i.test(data.name?.trim() || "");
+                  if (isClientName) return;
+                  const staffProfile = {
+                    id: staffId,
+                    name: data.name || "Barbero",
+                    isStaff: true,
+                    role: data.role || "barber",
+                    embedding: data.embedding || (data.embeddings?.[0] ? (Array.isArray(data.embeddings[0]) ? data.embeddings[0] : data.embeddings[0].vector) : null),
+                    embeddings: data.embeddings || (data.embedding ? [data.embedding] : []),
+                    photos: data.photos || [],
+                    thumbnailBase64: data.thumbnailBase64 || null,
+                    bestFaceScore: data.bestFaceScore || 0
+                  };
+                  this.sqliteClient.upsertCustomer(staffProfile);
+                  this.profilesCache.set(staffId, staffProfile);
+                });
+              }
+            }
+          } catch (_) {}
+        }
+        if (typeof options.db.doc === "function") {
+          const staffDoc = await options.db.doc("camera_catcher/staff").get();
+          if (staffDoc && staffDoc.exists) {
+            const members = staffDoc.data()?.members || [];
+            for (const staff of members) {
+              const staffId = staff.id || `staff_${staff.name}`;
+              const staffProfile = {
+                id: staffId,
+                name: staff.name || "Staff",
+                isStaff: true,
+                role: staff.role || "barber",
+                embedding: staff.embedding,
+                embeddings: staff.embeddings || (staff.embedding ? [staff.embedding] : []),
+                photos: [],
+                thumbnailBase64: null,
+                bestFaceScore: staff.bestFaceScore || 0
+              };
+              this.sqliteClient.upsertCustomer(staffProfile);
+              this.profilesCache.set(staffId, staffProfile);
+            }
           }
         }
       } catch (err) {
@@ -139,7 +170,15 @@ export class CustomerService {
         const data = typeof docSnap.data === "function" ? docSnap.data() : docSnap;
         const id = docSnap.id || data.id;
         if (id) {
-          const profile = { id, ...data };
+          const isClientName = /^Cliente #\d+$/i.test(data.name?.trim() || "");
+          const isClientExplicit = isClientName || data.role === "client" || data.isStaff === false;
+          const isStaff = !isClientExplicit && (data.isStaff === true || data.role === "barber" || String(id).startsWith("staff_"));
+          const profile = {
+            id,
+            ...data,
+            isStaff,
+            role: isStaff ? (data.role || "barber") : "client"
+          };
           this.sqliteClient.upsertCustomer(profile);
           const cachedForComparison = { ...profile, photos: [], thumbnailBase64: null };
           this.profilesCache.set(id, cachedForComparison);
@@ -152,6 +191,61 @@ export class CustomerService {
     } catch (err) {
       console.warn(`[CustomerService] Error cargando perfiles desde Firestore:`, err.message);
       return [];
+    }
+  }
+
+  /**
+   * Registra un listener en tiempo real a 'camera_catcher_people' para sincronizar
+   * inmediatamente cualquier cambio de rol (ej: Barbero <-> Cliente), nombre o eliminación
+   * realizado por el usuario desde la interfaz web hacia SQLite y la memoria RAM.
+   * @param {Object} db - Instancia de Firestore
+   */
+  setupPeopleListener(db) {
+    if (!db || typeof db.collection !== "function") return;
+    if (this._peopleUnsubscribe) {
+      try { this._peopleUnsubscribe(); } catch (_) {}
+    }
+    console.log(`[CustomerService] 👂 Escuchando cambios en 'camera_catcher_people' en tiempo real...`);
+    try {
+      this._peopleUnsubscribe = db.collection("camera_catcher_people").onSnapshot((snapshot) => {
+        if (!snapshot || typeof snapshot.docChanges !== "function") return;
+        snapshot.docChanges().forEach((change) => {
+          const docData = change.doc.data();
+          const id = change.doc.id;
+          if (change.type === "removed") {
+            this.profilesCache.delete(id);
+            this.sqliteClient.deleteCustomer(id);
+            console.log(`[CustomerService] 🗑️ Perfil "${docData?.name || id}" eliminado en tiempo real desde Firestore.`);
+          } else {
+            // added o modified
+            const isClientName = /^Cliente #\d+$/i.test(docData?.name?.trim() || "");
+            const isClientExplicit = isClientName || docData?.role === "client" || docData?.isStaff === false;
+            const isStaff = !isClientExplicit && ((docData?.isStaff === true && docData?.role === "barber") || (String(id).startsWith("staff_") && docData?.isStaff !== false && docData?.role !== "client"));
+            const role = isStaff ? "barber" : "client";
+            const profile = {
+              id,
+              name: docData?.name || "Cliente",
+              isStaff,
+              role,
+              embedding: docData?.embedding || (docData?.embeddings?.[0] ? (Array.isArray(docData.embeddings[0]) ? docData.embeddings[0] : docData.embeddings[0].vector) : null),
+              embeddings: docData?.embeddings || (docData?.embedding ? [docData.embedding] : []),
+              photos: docData?.photos || [],
+              thumbnailBase64: docData?.thumbnailBase64 || null,
+              bestFaceScore: docData?.bestFaceScore || 0,
+              visitCount: docData?.visitCount || 1,
+              appointmentCount: docData?.appointmentCount || docData?.visitCount || 1
+            };
+            this.sqliteClient.upsertCustomer(profile);
+            const cached = { ...profile, photos: [], thumbnailBase64: null };
+            this.profilesCache.set(id, cached);
+            console.log(`[CustomerService] 🔄 Perfil sincronizado en tiempo real desde Firestore: "${profile.name}" (${id}, rol: ${role}, isStaff: ${isStaff})`);
+          }
+        });
+      }, (err) => {
+        console.warn(`[CustomerService] Error en listener de 'camera_catcher_people':`, err.message);
+      });
+    } catch (err) {
+      console.warn(`[CustomerService] Fallo al suscribir listener de camera_catcher_people:`, err.message);
     }
   }
 
@@ -323,11 +417,14 @@ export class CustomerService {
     }
 
     // Preparar objeto para Firestore removiendo campos binarios no serializables
+    const isClientName = /^Cliente #\d+$/i.test(customer.name?.trim() || "");
+    const isClientExplicit = isClientName || customer.role === "client" || customer.isStaff === false;
+    const isActuallyStaff = !isClientExplicit && (customer.isStaff === true && (customer.role === "barber" || String(customer.id).startsWith("staff_")));
     const firestoreData = {
       id: customer.id,
       name: customer.name || "Cliente",
-      isStaff: customer.isStaff === true,
-      role: customer.role || (customer.isStaff ? "barber" : "client"),
+      isStaff: isActuallyStaff,
+      role: isActuallyStaff ? "barber" : "client",
       firstSeen: customer.firstSeen || new Date().toISOString(),
       lastSeen: customer.lastSeen || new Date().toISOString(),
       visitCount: customer.visitCount || 1,

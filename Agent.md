@@ -122,6 +122,27 @@ El repositorio utiliza GitHub Actions con filtros por ruta (`paths:`):
 
 ---
 
+### 10. Segregación Estricta y Obligatoria de Entornos (Local vs Producción)
+> [!CAUTION]
+> **PROHIBIDO COMPARTIR O COMBINAR BASES DE DATOS O BUCKETS ENTRE LOCAL Y PRODUCCIÓN**.
+> El sistema cuenta con aislamiento estricto por diseño para que las pruebas, desarrollo y simulaciones locales jamás contaminen ni lean los datos reales de producción de la barbería:
+> 
+> | Entorno | Firestore Database | Firebase Cloud Storage | SQLite Local |
+> | :--- | :--- | :--- | :--- |
+> | **Local / Dev / Simulador E2** (`localhost`, `127.0.0.1`, Docker `e2-micro-sim`) | `"test"` | `"skip-bigotes-test"` (`gs://skip-bigotes-test`) | `data/barberia_test.db` |
+> | **Producción Real** (`camera-catcher-bigotes.web.app`, VM GCP `/opt/camera-catcher`) | `"(default)"` | `"skip-bigotes.firebasestorage.app"` (`gs://...`) | `data/barberia.db` |
+> 
+> 1. **Prohibición de Fallback a Producción en Local**: En [`web/src/shared/lib/environment.js`](web/src/shared/lib/environment.js), el cálculo automático DEBE resolver siempre:
+>    ```javascript
+>    const databaseId = customDb || (isLocal ? 'test' : '(default)');
+>    const storageBucket = customStorage || (isLocal ? 'gs://skip-bigotes-test' : 'gs://skip-bigotes.firebasestorage.app');
+>    ```
+>    Queda **terminantemente prohibido** que un agente reemplace `(isLocal ? 'test' : '(default)')` por `'(default)'` o el bucket de producción como fallback por conveniencia temporal.
+> 2. **Modal de Configuración y Reset Auto**: El botón "Auto" en el frontend debe restablecer siempre la resolución basada en el hostname (`isLocal`), llevando a `test` en local y a `(default)` en producción.
+> 3. **Scripts y Migraciones Seguros**: Todo script de mantenimiento o migración en `scripts/` debe operar por defecto en `"test"`. Para tocar producción, el usuario o desarrollador DEBE pasar explícitamente el flag `--database="(default)"`.
+
+---
+
 ## 🛠️ Resumen de Componentes Técnicos
 
 1. **Captura P2P (Neolink)**:

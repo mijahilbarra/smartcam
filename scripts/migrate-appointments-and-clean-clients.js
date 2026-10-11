@@ -1,8 +1,9 @@
 /**
  * Script de Purga y Saneamiento Integral:
  * - Depura atenciones fantasma (< 10 min, 0 fotos, sin cliente identificado, o en confirmación)
- * - Depura perfiles de clientes corruptos o provisionales ("Cliente en confirmación", sin fotos válidas)
- * - Sanea fotos con miniaturas nulas
+ * - Sanea y deduplica fotos dentro de las atenciones legítimas (elimina las 15+ fotos repetidas)
+ * - Registra formalmente al Barbero real con sus fotos y embeddings en staff_barbero
+ * - Purgar perfiles falsos creados a partir del barbero (Cliente #578-#582, Cliente #112, etc.)
  * - Recalcula appointmentCount real para cada cliente legítimo
  *
  * Uso:
@@ -13,13 +14,14 @@
 
 import { initFirebaseAdmin } from "../src/infrastructure/firebase/firebase_admin.js";
 import { getSqliteClient } from "../src/infrastructure/storage/sqlite_client.js";
+import { computeCosineSimilarity } from "../src/face_recognizer.js";
 
 function parseArgs() {
   const args = process.argv.slice(2);
   const apply = args.includes("--apply");
   const dryRun = args.includes("--dry-run") || !apply;
 
-  let databaseId = "(default)";
+  let databaseId = "test";
   const dbArg = args.find(a => a.startsWith("--database="));
   if (dbArg) {
     databaseId = dbArg.split("=")[1].replace(/^["']|["']$/g, "").trim();
@@ -38,13 +40,35 @@ function isValidPhoto(p) {
   return false;
 }
 
+function getPhotoThumb(p) {
+  if (!p) return "";
+  if (typeof p === "string") return p;
+  return p.thumbnailBase64 || p.base64 || p.url || "";
+}
+
 async function runCleanup() {
   const { apply, dryRun, databaseId, allDatabases } = parseArgs();
 
   console.log("=============================================================");
-  console.log("✂️  Purga y Saneamiento de Atenciones y Clientes de la Barbería");
+  console.log("✂️  Purga y Saneamiento Integral de Atenciones, Barbero y Clientes");
   console.log(`   Modo: ${dryRun ? "🔍 DRY-RUN (Simulación sin cambios)" : "⚡ APPLY (Escritura real activada)"}`);
   console.log("=============================================================\n");
+
+  // Obtener perfil oficial del Barbero desde '(default)' para asegurar consistencia
+  let realBarberPhotos = [];
+  let realBarberEmbeddings = [];
+  try {
+    const fbDef = initFirebaseAdmin({ databaseId: "(default)" });
+    const snap25 = await fbDef.db.collection("camera_catcher_people").doc("person_1791417553339_2").get();
+    if (snap25.exists) {
+      const data25 = snap25.data();
+      realBarberPhotos = Array.isArray(data25.photos) ? data25.photos.filter(isValidPhoto) : [];
+      realBarberEmbeddings = Array.isArray(data25.embeddings) ? data25.embeddings : [];
+      console.log(`💈 Perfil del verdadero Barbero recuperado (person_1791417553339_2): ${realBarberPhotos.length} fotos, ${realBarberEmbeddings.length} embeddings.`);
+    }
+  } catch (e) {
+    console.warn(`[BarberBootstrap] Aviso leyendo perfil base del barbero:`, e.message);
+  }
 
   const targets = allDatabases ? ["(default)", "test"] : [databaseId];
 
@@ -63,11 +87,47 @@ async function runCleanup() {
       console.warn(`[Firestore] No se pudo conectar a Firebase para '${dbId}':`, err.message);
     }
 
+    // 0. Preparar vectores del Barbero para exclusión
+    const staffVectors = [];
+    for (const e of realBarberEmbeddings) {
+      const v = Array.isArray(e) ? e : (e?.vector || null);
+      if (v) staffVectors.push(v);
+    }
+
+    const officialBarberProfile = {
+      id: "staff_barbero",
+      name: "Barbero",
+      isStaff: true,
+      role: "barber",
+      firstSeen: realBarberPhotos[0]?.capturedAt || new Date().toISOString(),
+      lastSeen: new Date().toISOString(),
+      visitCount: 1,
+      appointmentCount: 0,
+      bestFaceScore: Math.max(...realBarberPhotos.map(p => Number(p.sharpnessScore || 0)), 96),
+      thumbnailBase64: realBarberPhotos[0]?.thumbnailBase64 || null,
+      photos: realBarberPhotos,
+      embeddings: realBarberEmbeddings,
+      embedding: Array.isArray(realBarberEmbeddings[0]) ? realBarberEmbeddings[0] : (realBarberEmbeddings[0]?.vector || null)
+    };
+
+    if (apply && realBarberPhotos.length > 0) {
+      console.log(`💈 [Staff / Barbero] Sincronizando perfil oficial 'staff_barbero' (${realBarberPhotos.length} fotos)...`);
+      if (sqliteClient.upsertCustomer) {
+        try { sqliteClient.upsertCustomer(officialBarberProfile); } catch (e) {}
+      }
+      if (firestoreDb) {
+        try {
+          await firestoreDb.collection("camera_catcher_people").doc("staff_barbero").set(officialBarberProfile, { merge: true });
+        } catch (e) {}
+      }
+    }
+
     // ==========================================
-    // 1. PURGA DE ATENCIONES (APPOINTMENTS) FANTASMAS
+    // 1. SANEAMIENTO Y DEDUPLICACIÓN DE ATENCIONES (APPOINTMENTS)
     // ==========================================
-    console.log(`\n--- 1. Analizando Atenciones (Appointments) ---`);
+    console.log(`\n--- 1. Analizando y Saneando Atenciones (Appointments) ---`);
     const apptsToDelete = new Set();
+    const apptsToUpdate = [];
     const validAppts = [];
 
     // 1.1 Leer de SQLite
@@ -93,48 +153,97 @@ async function runCleanup() {
       const appt = firestoreApptsMap.get(apptId) || sqliteAppts.find(a => a.id === apptId);
       if (!appt) continue;
 
-      const photos = Array.isArray(appt.photos) ? appt.photos.filter(isValidPhoto) : [];
+      const rawPhotos = Array.isArray(appt.photos) ? appt.photos.filter(isValidPhoto) : [];
       const duration = Number(appt.durationMinutes || 0);
       const clientName = String(appt.clientName || appt.personName || "");
       const clientId = appt.clientId || appt.personId;
 
-      // Criterios de atencion fantasma:
-      // 1. Duración < 10 min
-      // 2. 0 fotos válidas
-      // 3. Cliente sin identificar o nulo
-      // 4. Nombre provisional en confirmación
       const isEphemeral = duration < 10;
-      const hasNoPhotos = photos.length === 0;
+      const hasNoPhotos = rawPhotos.length === 0;
       const isUnidentified = !clientId || clientId.startsWith("unidentified_") || clientName.includes("sin identificar");
       const isPending = clientName.includes("confirmación");
 
       if (isEphemeral || hasNoPhotos || isUnidentified || isPending) {
         apptsToDelete.add(apptId);
-        console.log(`   🗑️  [Atención Fantasma] ID: ${apptId} | Cliente: "${clientName}" | Duración: ${duration}m | Fotos válidas: ${photos.length} (Razón: ${isEphemeral ? '<10m ' : ''}${hasNoPhotos ? 'sin-fotos ' : ''}${isUnidentified ? 'no-id ' : ''}${isPending ? 'en-confirmación' : ''})`);
+        console.log(`   🗑️  [Atención Fantasma] ID: ${apptId} | Cliente: "${clientName}" | Duración: ${duration}m | Fotos: ${rawPhotos.length}`);
       } else {
-        validAppts.push({ ...appt, photos });
+        // DEDUPLICACIÓN DE FOTOS DENTRO DE LA ATENCIÓN
+        const cleanPhotos = [];
+        for (const ph of rawPhotos) {
+          const phThumb = getPhotoThumb(ph);
+          // Verificar si ya existe miniatura idéntica
+          const duplicateIdx = cleanPhotos.findIndex(cp => {
+            const cpThumb = getPhotoThumb(cp);
+            return phThumb && cpThumb && phThumb === cpThumb;
+          });
+
+          if (duplicateIdx !== -1) {
+            // Reemplazar si tiene mayor nitidez
+            if ((ph.sharpnessScore || 0) > (cleanPhotos[duplicateIdx].sharpnessScore || 0)) {
+              cleanPhotos[duplicateIdx] = ph;
+            }
+          } else {
+            cleanPhotos.push(ph);
+          }
+        }
+
+        // Limitar a máximo 6 fotos representativas por atención
+        const cappedPhotos = cleanPhotos.slice(0, 6);
+
+        if (cappedPhotos.length < rawPhotos.length) {
+          console.log(`   ✂️  [Atención Saneada] ID: ${apptId} | "${clientName}" | De ${rawPhotos.length} fotos a ${cappedPhotos.length} fotos únicas (eliminados ${rawPhotos.length - cappedPhotos.length} clones repetidos).`);
+          apptsToUpdate.push({
+            ...appt,
+            photos: cappedPhotos,
+            thumbnailBase64: cappedPhotos[0]?.thumbnailBase64 || appt.thumbnailBase64 || null
+          });
+        }
+
+        validAppts.push({
+          ...appt,
+          photos: cappedPhotos
+        });
       }
     }
 
-    console.log(`[Atenciones] Total analizadas: ${allApptIds.size} | Fantasmas a eliminar: ${apptsToDelete.size} | Válidas conservadas: ${validAppts.length}`);
+    console.log(`[Atenciones] Total analizadas: ${allApptIds.size} | Fantasmas a eliminar: ${apptsToDelete.size} | Con fotos saneadas: ${apptsToUpdate.length} | Válidas conservadas: ${validAppts.length}`);
 
-    if (apply && apptsToDelete.size > 0) {
-      console.log(`[Atenciones] Ejecutando eliminación en SQLite y Firestore...`);
-      for (const id of apptsToDelete) {
-        if (sqliteClient.deleteAppointment) {
-          try { sqliteClient.deleteAppointment(id); } catch (e) {}
+    if (apply) {
+      if (apptsToDelete.size > 0) {
+        console.log(`[Atenciones] Ejecutando eliminación de atenciones fantasmas...`);
+        for (const id of apptsToDelete) {
+          if (sqliteClient.deleteAppointment) {
+            try { sqliteClient.deleteAppointment(id); } catch (e) {}
+          }
+          if (firestoreDb) {
+            try {
+              await firestoreDb.collection("camera_catcher_appointments").doc(id).delete();
+              await firestoreDb.collection("camera_catcher_visits").doc(id).delete();
+            } catch (e) {}
+          }
         }
-        if (firestoreDb) {
-          try {
-            await firestoreDb.collection("camera_catcher_appointments").doc(id).delete();
-            await firestoreDb.collection("camera_catcher_visits").doc(id).delete();
-          } catch (e) {}
+      }
+
+      if (apptsToUpdate.length > 0) {
+        console.log(`[Atenciones] Actualizando ${apptsToUpdate.length} atenciones saneadas sin fotos repetidas...`);
+        for (const appt of apptsToUpdate) {
+          if (sqliteClient.saveAppointment) {
+            try { sqliteClient.saveAppointment(appt); } catch (e) {}
+          }
+          if (firestoreDb) {
+            try {
+              await firestoreDb.collection("camera_catcher_appointments").doc(appt.id).update({
+                photos: appt.photos,
+                thumbnailBase64: appt.thumbnailBase64
+              });
+            } catch (e) {}
+          }
         }
       }
     }
 
     // ==========================================
-    // 2. PURGA DE CLIENTES FANTASMAS O PROVISIONALES
+    // 2. PURGA Y SANEAMIENTO DE CLIENTES
     // ==========================================
     console.log(`\n--- 2. Analizando Perfiles de Clientes ---`);
     const clientsToDelete = new Set();
@@ -160,9 +269,15 @@ async function runCleanup() {
       const client = firestoreClientsMap.get(cId) || sqliteCustomers.find(c => c.id === cId);
       if (!client) continue;
 
-      const isStaff = client.isStaff === true || client.role === "staff" || client.role === "barber" || String(client.id).startsWith("staff_");
-      if (isStaff) {
-        console.log(`   💈 [Staff / Barbero] ID: ${client.id} | "${client.name}" conservado intacto.`);
+      if (cId === "staff_barbero") {
+        console.log(`   💈 [Staff / Barbero] 'staff_barbero' conservado intacto.`);
+        continue;
+      }
+
+      // Si es el perfil duplicado de Cliente #25 del barbero, consolidar o eliminar
+      if (cId === "person_1791417553339_2") {
+        console.log(`   💈 [Staff / Barbero] '${cId}' consolidado en 'staff_barbero'. Purgando duplicado de cliente.`);
+        clientsToDelete.add(cId);
         continue;
       }
 
@@ -170,19 +285,98 @@ async function runCleanup() {
       const validPhotos = Array.isArray(client.photos) ? client.photos.filter(isValidPhoto) : [];
       const apptCountForClient = validAppts.filter(a => a.clientId === cId || a.personId === cId).length;
 
-      // Criterios de cliente corrupto:
-      // 1. Nombre contiene "confirmación"
-      // 2. 0 fotos válidas con imagen
-      // 3. Cliente efímero con 0 atenciones legítimas
+      // 1. Filtrar fotos y embeddings que coincidan con el Barbero real
+      const nonStaffPhotos = [];
+      const nonStaffEmbeddings = [];
+      const origEmbeddings = Array.isArray(client.embeddings) ? client.embeddings : [];
+
+      for (let pIdx = 0; pIdx < validPhotos.length; pIdx++) {
+        const ph = validPhotos[pIdx];
+        const emb = origEmbeddings[pIdx] || (pIdx === 0 && client.embedding ? client.embedding : null);
+        let isStaffPhoto = false;
+
+        if (emb && staffVectors.length > 0) {
+          const v = Array.isArray(emb) ? emb : (emb.vector || null);
+          if (v) {
+            for (const sv of staffVectors) {
+              if (computeCosineSimilarity(v, sv) >= 0.58) {
+                isStaffPhoto = true;
+                break;
+              }
+            }
+          }
+        }
+
+        if (isStaffPhoto) {
+          console.log(`   🚫 Foto del Barbero eliminada de "${clientName}" (${cId})`);
+        } else {
+          nonStaffPhotos.push(ph);
+          if (emb) nonStaffEmbeddings.push(emb);
+        }
+      }
+
+      // 2. Criterios de purga
       const isPending = clientName.includes("confirmación");
-      const hasNoValidPhotos = validPhotos.length === 0;
+      const hasNoValidPhotos = nonStaffPhotos.length === 0;
       const hasNoAppts = apptCountForClient === 0;
 
-      if (isPending || hasNoValidPhotos || hasNoAppts) {
+      if (hasNoValidPhotos) {
         clientsToDelete.add(cId);
-        console.log(`   🗑️  [Cliente Falso/Provisional] ID: ${cId} | Nombre: "${clientName}" | Fotos válidas: ${validPhotos.length} | Citas válidas: ${apptCountForClient} (Razón: ${isPending ? 'en-confirmación ' : ''}${hasNoValidPhotos ? 'sin-fotos ' : ''}${hasNoAppts ? 'sin-citas' : ''})`);
+        console.log(`   🗑️  [Perfil Falso del Barbero / Sin fotos] ID: ${cId} | Nombre: "${clientName}" (Fotos no-staff: 0 / ${validPhotos.length}). Purgado.`);
+      } else if (isPending || hasNoAppts) {
+        clientsToDelete.add(cId);
+        console.log(`   🗑️  [Cliente Falso/Provisional] ID: ${cId} | Nombre: "${clientName}" | Fotos válidas: ${nonStaffPhotos.length} | Citas válidas: ${apptCountForClient} (Razón: ${isPending ? 'en-confirmación ' : ''}${hasNoAppts ? 'sin-citas' : ''})`);
       } else {
-        client.photos = validPhotos;
+
+        // Deduplicar fotos del cliente
+        const cleanPhotos = [];
+        const cleanEmbeddings = [];
+
+        for (let pIdx = 0; pIdx < nonStaffPhotos.length; pIdx++) {
+          const ph = nonStaffPhotos[pIdx];
+          const emb = nonStaffEmbeddings[pIdx] || null;
+          let isDuplicate = false;
+
+          for (let j = 0; j < cleanPhotos.length; j++) {
+            const existing = cleanPhotos[j];
+            const existingEmb = cleanEmbeddings[j] || null;
+
+            const sameThumb = getPhotoThumb(ph) && getPhotoThumb(existing) && getPhotoThumb(ph) === getPhotoThumb(existing);
+            let highSim = sameThumb;
+
+            if (emb && existingEmb) {
+              const v1 = Array.isArray(emb) ? emb : (emb.vector || null);
+              const v2 = Array.isArray(existingEmb) ? existingEmb : (existingEmb.vector || null);
+              if (v1 && v2) {
+                const sim = computeCosineSimilarity(v1, v2);
+                const samePose = (ph.pose || 'frontal') === (existing.pose || 'frontal');
+                if (sim >= 0.92 || (sim >= 0.88 && samePose)) highSim = true;
+              }
+            }
+
+            if (highSim) {
+              isDuplicate = true;
+              if ((ph.sharpnessScore || 0) > (existing.sharpnessScore || 0)) {
+                cleanPhotos[j] = ph;
+                if (emb) cleanEmbeddings[j] = emb;
+              }
+              break;
+            }
+          }
+
+          if (!isDuplicate) {
+            cleanPhotos.push(ph);
+            if (emb) cleanEmbeddings.push(emb);
+          }
+        }
+
+        client.photos = cleanPhotos;
+        if (cleanEmbeddings.length > 0) {
+          client.embeddings = cleanEmbeddings;
+          client.embedding = cleanEmbeddings[0];
+        }
+        client.bestFaceScore = Math.max(...cleanPhotos.map(p => Number(p.sharpnessScore || 0)), 0);
+        client.thumbnailBase64 = cleanPhotos[0]?.thumbnailBase64 || client.thumbnailBase64 || null;
         client.appointmentCount = apptCountForClient;
         legitimateClients.push(client);
       }
@@ -205,7 +399,6 @@ async function runCleanup() {
         }
       }
 
-      // Actualizar clientes legítimos con sus fotos limpias y contador real
       console.log(`[Clientes] Sincronizando ${legitimateClients.length} clientes legítimos...`);
       for (const client of legitimateClients) {
         if (sqliteClient.upsertCustomer) {

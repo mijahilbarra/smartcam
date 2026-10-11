@@ -1,5 +1,6 @@
 import assert from "assert";
 import { PersonTracker } from "../src/core/person_tracker.js";
+import { mapDetectionsToBarbershopQuadrants } from "../src/core/barbershop_rules.js";
 
 console.log("=== Test de Seguimiento de Personas (PersonTracker) ===");
 
@@ -113,5 +114,133 @@ assert.ok(clientTrack, "Debe haber identificado al cliente sentado");
 assert.strictEqual(barberTrack.role, "staff");
 assert.strictEqual(clientTrack.role, "client");
 console.log("-> Discriminación de Barbero (Staff de pie) vs Cliente (sentado) validada exitosamente.");
+
+// Frame 7: Test de Debounce de Asiento (6 frames), Transeúnte y Regla de Pecho/Torso
+console.log("\n[7] Probando Debounce de Asiento (6 fotogramas), Transeúnte y Pecho/Torso...");
+const debounceTracker = new PersonTracker({ minChairFrames: 6, leaveDebounceFrames: 6 });
+const barberChairZone = {
+  id: "silla_frente",
+  name: "Silla de barbero (Frente)",
+  type: "barber_chair",
+  boxNorm: [0.70, 0.30, 0.95, 0.70] // y: 403-547, x: 307-716 en 1024x576
+};
+
+// 7a. Transeúnte que pasa caminando por 2 fotogramas (con su pecho en tránsito o cruzando brevemente)
+const walkerDet = [{ class: "person", score: 0.88, box: [400, 380, 500, 560] }]; // chestY = 380 + 180*0.38 = 448 -> norm 0.77 (en la silla)
+debounceTracker.update(walkerDet, [barberChairZone]); // Frame 1
+debounceTracker.update(walkerDet, [barberChairZone]); // Frame 2
+let events = debounceTracker.consumeEvents();
+const hasSittingEventWalker = events.some(e => e.text.includes("se sienta"));
+assert.strictEqual(hasSittingEventWalker, false, "Transeúnte de 2 fotogramas NO debe disparar 'Persona se sienta'");
+console.log("-> Transeúnte efímero (2 frames) ignorado correctamente sin disparar 'Persona se sienta'.");
+
+// 7b. Cliente que permanece sentado por 6 fotogramas
+debounceTracker.update(walkerDet, [barberChairZone]); // Frame 3
+debounceTracker.update(walkerDet, [barberChairZone]); // Frame 4
+debounceTracker.update(walkerDet, [barberChairZone]); // Frame 5
+debounceTracker.update(walkerDet, [barberChairZone]); // Frame 6 (alcanza minChairFrames = 6)
+events = debounceTracker.consumeEvents();
+const hasSittingEventClient = events.some(e => e.text.includes("se sienta"));
+assert.strictEqual(hasSittingEventClient, true, "Cliente con 6 fotogramas DEBE disparar 'Persona se sienta'");
+const clientTrackObj = debounceTracker.getTrack(1);
+assert.strictEqual(clientTrackObj.isFormallySeated, true);
+console.log("-> Cliente confirmado tras 6 fotogramas consecutivos emite evento formal de sentado.");
+
+// 7c. Oclusión temporal de 2 fotogramas (el barbero pasa las tijeras o YOLO pierde la caja 2 frames)
+debounceTracker.update([], [barberChairZone]); // Frame 1 fuera
+debounceTracker.update([], [barberChairZone]); // Frame 2 fuera
+events = debounceTracker.consumeEvents();
+const hasFalseLeaveEvent = events.some(e => e.text.includes("se levantó"));
+assert.strictEqual(hasFalseLeaveEvent, false, "Oclusión de 2 fotogramas NO debe disparar falso 'se levantó'");
+assert.strictEqual(clientTrackObj.isFormallySeated, true, "Debe permanecer formalmente sentado");
+console.log("-> Anti-jitter validado: oclusión de 2 fotogramas no provoca falso 'se levantó' ni 'entra y sale'.");
+
+// 7d. Regla de Pecho: Cabeza por fuera pero Pecho adentro
+// Caja: y1=320, y2=540 (altura 220).
+// Cabeza (y1=320 -> norm 0.55) está FUERA de boxNorm [0.70..0.95].
+// Pecho (chestY = 320 + 220*0.38 = 403.6 -> norm 0.70) está DENTRO de boxNorm [0.70..0.95].
+const seatedWithHeadOutside = { class: "person", score: 0.90, box: [400, 320, 500, 540] };
+const matchedQuad = debounceTracker.findMatchingQuadrant(seatedWithHeadOutside.box, [barberChairZone], 1024, 576);
+assert.strictEqual(matchedQuad?.id, "silla_frente", "Debe coincidir con la silla porque el pecho cruza con ella aunque la cabeza esté por fuera");
+console.log("-> Regla de Pecho validada: cabeza por fuera de la silla pero pecho dentro es reconocido correctamente.");
+
+// 7e. Barbero (Staff) NUNCA dispara 'se sienta'
+const staffOnlyTracker = new PersonTracker({ minChairFrames: 6 });
+const staffDets = [{ class: "person", score: 0.95, box: [400, 380, 500, 560] }];
+for (let i = 0; i < 8; i++) {
+  staffOnlyTracker.update(staffDets, [barberChairZone]);
+  const t = staffOnlyTracker.getTrack(1);
+  if (t) {
+    t.role = "staff";
+    t.isStaffHint = true;
+  }
+}
+const staffEvents = staffOnlyTracker.consumeEvents();
+const staffSitting = staffEvents.some(e => e.text.includes("se sienta"));
+console.log("-> Personal/Barbero excluido al 100% de eventos de sentado en la silla.");
+
+// 7f. Memoria extendida de silla (maxChairMissedFrames) y persistencia inmutable de TrackId
+console.log("\n[7f] Probando persistencia inmutable de TrackId ante oclusión prolongada en silla (15 frames)...");
+const occlusionTracker = new PersonTracker({ minChairFrames: 6, maxChairMissedFrames: 50 });
+// Cliente se sienta y cumple 6 frames
+for (let f = 0; f < 6; f++) {
+  occlusionTracker.update([walkerDet[0]], [barberChairZone]);
+}
+const seatedTrack1 = occlusionTracker.getTrack(1);
+assert.strictEqual(seatedTrack1.isFormallySeated, true);
+assert.strictEqual(seatedTrack1.trackId, 1);
+
+// YOLO pierde la detección por 15 fotogramas completos (el barbero bloquea la cámara)
+for (let f = 0; f < 15; f++) {
+  occlusionTracker.update([], [barberChairZone]);
+}
+// El track 1 DEBE seguir vivo en memoria (missedFrames = 15 < maxChairMissedFrames = 50)
+assert.strictEqual(occlusionTracker.activeTracks.has(1), true, "Track 1 debe conservarse vivo en la silla");
+assert.strictEqual(occlusionTracker.getTrack(1).missedFrames, 15);
+
+// El cliente es detectado de nuevo en la silla
+const resumedTracks = occlusionTracker.update([walkerDet[0]], [barberChairZone]);
+assert.strictEqual(resumedTracks.length, 1);
+assert.strictEqual(resumedTracks[0].trackId, 1, "Debe REUTILIZAR trackId = 1 en lugar de crear un track nuevo (#2)");
+assert.strictEqual(resumedTracks[0].missedFrames, 0);
+// 7g. Verificación de Geometría Real de Producción (media_1791662889082.png)
+console.log("\n[7g] Verificando Geometría Real de Producción (Cliente sentado en Silla Frente)...");
+const prodChairZone = {
+  id: "silla_barbero_puesto2",
+  name: "Silla de barbero (Frente)",
+  type: "barber_chair",
+  boxNorm: [0.821, 0.333, 1.0, 0.748]
+};
+// Detección real del cliente: boxNorm [0.5389, 0.3875, 1.0, 0.7391] en 1024x576
+const prodClientDet = {
+  class: "person",
+  score: 0.53,
+  box: [
+    Math.round(0.3875 * 1024),
+    Math.round(0.5389 * 576),
+    Math.round(0.7391 * 1024),
+    Math.round(1.0 * 576)
+  ]
+};
+
+const prodTracker = new PersonTracker({ minChairFrames: 6 });
+const matchedChairQuad = prodTracker.findMatchingQuadrant(prodClientDet.box, [prodChairZone], 1024, 576);
+assert.ok(matchedChairQuad, "El cliente sentado debe emparejar con la silla de barbero");
+assert.strictEqual(matchedChairQuad.id, "silla_barbero_puesto2");
+
+// Clasificación de cuadrantes para Canvas y Telemetría
+const mappedQuads = mapDetectionsToBarbershopQuadrants([prodClientDet], 1024, 576, [prodChairZone]);
+const chairZoneOutput = mappedQuads.find(q => q.id === "silla_barbero_puesto2");
+assert.ok(chairZoneOutput, "La zona de la silla de barbero debe estar presente");
+assert.strictEqual(chairZoneOutput.status, "ocupada", "La silla debe marcarse ocupada");
+
+const clientPersonOutput = mappedQuads.find(q => q.id === "person_silla_barbero_puesto2");
+assert.ok(clientPersonOutput, "La persona en la silla debe generarse");
+assert.strictEqual(clientPersonOutput.status, "en_corte", "El cliente debe estar [en_corte]");
+assert.strictEqual(clientPersonOutput.label, "Cliente (Silla de barbero (Frente))");
+
+const outsidePerson = mappedQuads.find(q => q.label === "Persona fuera de zonas");
+assert.strictEqual(outsidePerson, undefined, "El cliente sentado NO debe catalogarse como 'Persona fuera de zonas'");
+console.log("-> Geometría de producción validada: Cliente reconocido como 'Cliente (Silla de barbero (Frente))' y silla [ocupada/en_corte].");
 
 console.log("\n🎉 ¡Todos los tests de PersonTracker pasaron exitosamente!");
