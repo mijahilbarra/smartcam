@@ -26,8 +26,55 @@ export const BARBERSHOP_QUADRANTS = {};
  */
 export function doesDetectionOverlapZone(detBox, zone, width, height) {
   const [x1, y1, x2, y2] = detBox;
+  const isChair = isChairZone(zone);
 
-  // Muestreo multipunto a lo largo de la caja (cabeza, torso, centro, cadera, laterales)
+  if (isChair) {
+    // Para sillas de barbero: la cabeza puede estar por fuera (arriba de la zona).
+    // Se muestrea a lo largo del torso y cuerpo sentado (38%, 50%, 65%, 80%, 90% de la altura).
+    const h = y2 - y1;
+    const bodyHeights = [0.38, 0.50, 0.65, 0.80, 0.90];
+    const xWeights = [
+      [0.50, 0.50],
+      [0.65, 0.35],
+      [0.35, 0.65]
+    ];
+
+    const bodySamples = [];
+    for (const bh of bodyHeights) {
+      const sy = (y1 + h * bh) / height;
+      for (const [w1, w2] of xWeights) {
+        const sx = (x1 * w1 + x2 * w2) / width;
+        bodySamples.push([sx, sy]);
+      }
+    }
+
+    if (bodySamples.some(([px, py]) => isPointInsideZone(px, py, zone))) {
+      return true;
+    }
+
+    // Fallback si la zona solo tiene caja en píxeles (sin polygonNorm)
+    if (zone.box) {
+      const [qx1, qy1, qx2, qy2] = zone.box;
+      if (bodySamples.some(([px, py]) => {
+        const pxPx = px * width;
+        const pyPx = py * height;
+        return pxPx >= qx1 && pxPx <= qx2 && pyPx >= qy1 && pyPx <= qy2;
+      })) {
+        return true;
+      }
+    } else if (zone.boxNorm) {
+      const [by1, bx1, by2, bx2] = zone.boxNorm;
+      if (bodySamples.some(([px, py]) => px >= bx1 && px <= bx2 && py >= by1 && py <= by2)) {
+        return true;
+      }
+    }
+
+    // Para sillas de barbero NO se permite IoU de caja completa.
+    // Esto evita que transeúntes de paso o el barbero de pie inclinado activen la silla.
+    return false;
+  }
+
+  // Muestreo multipunto general para pasillos, tránsito y áreas generales
   const samples = [
     [(x1 + x2) / (2 * width), (y1 + y2) / (2 * height)],
     [(x1 * 0.75 + x2 * 0.25) / width, (y1 + y2) / (2 * height)],
@@ -42,7 +89,7 @@ export function doesDetectionOverlapZone(detBox, zone, width, height) {
     return true;
   }
 
-  // Comprobación adicional de IoU
+  // Comprobación adicional de IoU solo para áreas de tránsito / zonas que no son sillas
   let bNorm = zone.boxNorm;
   if (!bNorm && zone.polygonNorm && zone.polygonNorm.length >= 3) {
     bNorm = polygonNormToBoundingBoxNorm(zone.polygonNorm);

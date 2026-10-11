@@ -6,14 +6,70 @@
 
 import { calculateIoU, isPointInsideZone } from "./geometry.js";
 import { isChairZone, isTransitZone } from "./barbershop_rules.js";
+import { computeCosineSimilarity } from "../face_recognizer.js";
 
 export class PersonTracker {
   constructor(options = {}) {
     this.iouThreshold = options.iouThreshold || 0.30;
     this.maxMissedFrames = options.maxMissedFrames || 8;
+    this.maxChairMissedFrames = options.maxChairMissedFrames || 75; // ~30s de memoria para cliente sentado en silla
+    this.minChairFrames = options.minChairFrames || 6; // Debounce de asiento: 6 fotogramas (~2s de quietud)
+    this.leaveDebounceFrames = options.leaveDebounceFrames || 6; // Debounce de levantarse: 6 fotogramas continuos fuera
     this.nextTrackId = 1;
     this.activeTracks = new Map(); // trackId -> TrackedPerson
     this.historyTracks = [];
+    this.pendingEvents = [];
+  }
+
+  emitEvent(text, type = "info") {
+    this.pendingEvents.push({ text, type });
+  }
+
+  consumeEvents() {
+    const events = [...this.pendingEvents];
+    this.pendingEvents = [];
+    return events;
+  }
+
+  _handleQuadrantChange(track, prevQuadrant, currentQuadrant, now) {
+    if (prevQuadrant?.id === currentQuadrant?.id) return;
+    track.quadrantChangedAt = now;
+  }
+
+  _updateChairSittingState(track) {
+    const isStaff = track.isStaffHint === true || track.identity?.isStaff === true || track.role === "staff";
+    const inChair = !isStaff && track.currentQuadrant && isChairZone(track.currentQuadrant);
+
+    if (inChair) {
+      track.consecutiveChairFrames = (track.consecutiveChairFrames || 0) + 1;
+      track.consecutiveNonChairFrames = 0;
+
+      // Si ya estaba formalmente sentado y cambia de silla
+      if (track.isFormallySeated && track.lastChairQuadrant && track.lastChairQuadrant.id !== track.currentQuadrant.id) {
+        const oldName = track.lastChairQuadrant.label || track.lastChairQuadrant.name || 'Silla de corte';
+        const newName = track.currentQuadrant.label || track.currentQuadrant.name || 'Silla de corte';
+        this.emitEvent(`🚶 Persona (Track #${track.trackId}) se levantó de ${oldName}`, "process");
+        this.emitEvent(`💺 Persona (Track #${track.trackId}) se sienta en ${newName}`, "process");
+        track.lastChairQuadrant = track.currentQuadrant;
+      } else if (track.consecutiveChairFrames >= this.minChairFrames && !track.isFormallySeated) {
+        // Disparo formal de asiento tras >= minChairFrames (6 a 8) consecutivos
+        track.isFormallySeated = true;
+        track.lastChairQuadrant = track.currentQuadrant;
+        const quadName = track.currentQuadrant.label || track.currentQuadrant.name || 'Silla de corte';
+        this.emitEvent(`💺 Persona (Track #${track.trackId}) se sienta en ${quadName}`, "process");
+      }
+    } else {
+      track.consecutiveNonChairFrames = (track.consecutiveNonChairFrames || 0) + 1;
+      track.consecutiveChairFrames = 0;
+
+      // Disparo de levantarse: requiere al menos leaveDebounceFrames (6) consecutivos fuera
+      // Evita falsos 'se levantó / entra y sale' ante movimientos de brazos del barbero o caídas de 1-2 frames
+      if (track.isFormallySeated && track.consecutiveNonChairFrames >= this.leaveDebounceFrames) {
+        track.isFormallySeated = false;
+        const quadName = track.lastChairQuadrant?.label || track.lastChairQuadrant?.name || 'Silla de corte';
+        this.emitEvent(`🚶 Persona (Track #${track.trackId}) se levantó de ${quadName}`, "process");
+      }
+    }
   }
 
   /**
@@ -77,14 +133,7 @@ export class PersonTracker {
       track.seenCount = (track.seenCount || 0) + 1;
       const prevQuadrant = track.currentQuadrant;
       track.currentQuadrant = this.findMatchingQuadrant(track.box, quadrants, imgWidth, imgHeight);
-      if (prevQuadrant?.id !== track.currentQuadrant?.id) {
-        track.quadrantChangedAt = now;
-      }
-      if (track.currentQuadrant && isChairZone(track.currentQuadrant)) {
-        track.consecutiveChairFrames = (track.consecutiveChairFrames || 0) + 1;
-      } else {
-        track.consecutiveChairFrames = 0;
-      }
+      this._handleQuadrantChange(track, prevQuadrant, track.currentQuadrant, now);
     }
 
     // 1b. Etapa 2: Emparejamiento por proximidad euclidiana de centroides
@@ -149,13 +198,47 @@ export class PersonTracker {
       track.seenCount = (track.seenCount || 0) + 1;
       const prevQuadrant = track.currentQuadrant;
       track.currentQuadrant = this.findMatchingQuadrant(track.box, quadrants, imgWidth, imgHeight);
-      if (prevQuadrant?.id !== track.currentQuadrant?.id) {
-        track.quadrantChangedAt = now;
-      }
-      if (track.currentQuadrant && isChairZone(track.currentQuadrant)) {
-        track.consecutiveChairFrames = (track.consecutiveChairFrames || 0) + 1;
-      } else {
-        track.consecutiveChairFrames = 0;
+      this._handleQuadrantChange(track, prevQuadrant, track.currentQuadrant, now);
+    }
+
+    // 1c. Etapa 3: Emparejamiento por continuidad espacial en Silla de Barbero
+    // Si un cliente confirmado o sentado quedó sin emparejar en este cuadro (por ej. oclusión temporal de brazos del barbero),
+    // y en esa misma silla aparece una detección no emparejada:
+    // Vincula inmediatamente la detección al track existente para preservar de forma inmutable su trackId.
+    for (const [tId, track] of trackEntries) {
+      if (matchedTrackIds.has(tId)) continue;
+      if (!track.isFormallySeated && (!track.currentQuadrant || !isChairZone(track.currentQuadrant))) continue;
+      const chairId = (track.lastChairQuadrant || track.currentQuadrant)?.id;
+      if (!chairId) continue;
+
+      for (let dIdx = 0; dIdx < personDetections.length; dIdx++) {
+        if (matchedDetectionIndices.has(dIdx)) continue;
+        const det = personDetections[dIdx];
+        const detQuadrant = this.findMatchingQuadrant(det.box, quadrants, imgWidth, imgHeight);
+        if (detQuadrant?.id === chairId) {
+          matchedTrackIds.add(tId);
+          matchedDetectionIndices.add(dIdx);
+
+          track.box = det.box;
+          track.boxNorm = [
+            Number((det.box[1] / imgHeight).toFixed(4)),
+            Number((det.box[0] / imgWidth).toFixed(4)),
+            Number((det.box[3] / imgHeight).toFixed(4)),
+            Number((det.box[2] / imgWidth).toFixed(4))
+          ];
+          track.confidence = det.score;
+          track.lastSeen = now;
+          track.missedFrames = 0;
+          track.centroid = {
+            x: Math.round((det.box[0] + det.box[2]) / 2),
+            y: Math.round((det.box[1] + det.box[3]) / 2)
+          };
+          track.seenCount = (track.seenCount || 0) + 1;
+          const prevQuadrant = track.currentQuadrant;
+          track.currentQuadrant = detQuadrant;
+          this._handleQuadrantChange(track, prevQuadrant, track.currentQuadrant, now);
+          break;
+        }
       }
     }
 
@@ -163,11 +246,20 @@ export class PersonTracker {
     for (const [tId, track] of trackEntries) {
       if (!matchedTrackIds.has(tId)) {
         track.missedFrames += 1;
-        if (track.missedFrames > this.maxMissedFrames) {
+        const maxAllowed = track.isFormallySeated
+          ? this.maxChairMissedFrames
+          : this.maxMissedFrames;
+        if (track.missedFrames > maxAllowed) {
           track.status = "left";
           track.leftAt = now;
+          if (track.isFormallySeated) {
+            track.isFormallySeated = false;
+            const quadName = track.lastChairQuadrant?.label || track.lastChairQuadrant?.name || 'Silla de corte';
+            this.emitEvent(`🚶 Persona (Track #${tId}) se levantó de ${quadName}`, "process");
+          }
           this.historyTracks.push({ ...track });
           this.activeTracks.delete(tId);
+          this.emitEvent(`🚪 Persona (Track #${tId}) salió del encuadre`, "info");
         }
       }
     }
@@ -182,7 +274,10 @@ export class PersonTracker {
         const newTrack = {
           trackId: tId,
           seenCount: 1,
-          consecutiveChairFrames: quadrant && isChairZone(quadrant) ? 1 : 0,
+          consecutiveChairFrames: 0,
+          consecutiveNonChairFrames: 0,
+          isFormallySeated: false,
+          lastChairQuadrant: null,
           box: det.box,
           boxNorm: [
             Number((det.box[1] / imgHeight).toFixed(4)), // ymin
@@ -205,10 +300,13 @@ export class PersonTracker {
           isStaffHint: false,
           role: "client",
           bestFace: null,
-          topFaces: [] // Almacena hasta las 10 mejores caras
+          topFaces: [], // Almacena hasta las 10 mejores caras
+          lastPhotoTime: 0,
+          lastPose: null
         };
 
         this.activeTracks.set(tId, newTrack);
+        this.emitEvent(`🚶 Persona ingresa al local (Track #${tId})`, "info");
       }
     }
 
@@ -242,15 +340,28 @@ export class PersonTracker {
           // El cliente sentado tiene la cabeza más baja (y1 mayor).
           tracksInChair.sort((a, b) => a.box[1] - b.box[1]);
           const standingBarber = tracksInChair[0];
-          standingBarber.isStaffHint = true;
-          standingBarber.role = "staff";
+          if (standingBarber.identity?.role !== "client" && standingBarber.identity?.isStaff !== false) {
+            standingBarber.isStaffHint = true;
+            standingBarber.role = "staff";
+          }
 
           for (let i = 1; i < tracksInChair.length; i++) {
             tracksInChair[i].isStaffHint = false;
             tracksInChair[i].role = "client";
           }
         }
+      } else if (tracksInChair.length === 1) {
+        const singleTrack = tracksInChair[0];
+        if (singleTrack.identity?.isStaff === true) {
+          singleTrack.isStaffHint = true;
+          singleTrack.role = "staff";
+        }
       }
+    }
+
+    // 5. Actualizar estado de permanencia y debounce de asiento (6 a 8 fotogramas)
+    for (const track of this.activeTracks.values()) {
+      this._updateChairSittingState(track);
     }
 
     return Array.from(this.activeTracks.values());
@@ -259,7 +370,7 @@ export class PersonTracker {
   /**
    * Determina en qué cuadrante o silla está la persona
    */
-  findMatchingQuadrant(box, quadrants, imgWidth, imgHeight) {
+  findMatchingQuadrant(box, quadrants, imgWidth = 1024, imgHeight = 576) {
     if (!quadrants || quadrants.length === 0) return null;
     const [x1, y1, x2, y2] = box;
     const cx = (x1 + x2) / 2;
@@ -267,23 +378,71 @@ export class PersonTracker {
     const normX = imgWidth ? cx / imgWidth : 0;
     const normY = imgHeight ? cy / imgHeight : 0;
 
+    const h = y2 - y1;
+    const bodyHeights = [0.38, 0.50, 0.65, 0.80, 0.90];
+    const xWeights = [
+      [0.50, 0.50],
+      [0.65, 0.35],
+      [0.35, 0.65]
+    ];
+
+    const bodySamples = [];
+    for (const bh of bodyHeights) {
+      const sy = imgHeight ? (y1 + h * bh) / imgHeight : 0;
+      for (const [w1, w2] of xWeights) {
+        const sx = imgWidth ? (x1 * w1 + x2 * w2) / imgWidth : 0;
+        bodySamples.push([sx, sy]);
+      }
+    }
+
     const candidates = [];
     for (const q of quadrants) {
       if (!q) continue;
+      // Las personas rastreadas deben ubicarse únicamente en zonas físicas configuradas, no en overlays temporales de personas
+      if (q.isConfiguredZone === false) continue;
       let isInside = false;
+      const isChair = isChairZone(q);
 
-      // 1. Si tiene polígono normalizado, verificar si el punto está dentro
-      if (q.polygonNorm && Array.isArray(q.polygonNorm) && q.polygonNorm.length >= 3 && imgWidth && imgHeight) {
-        if (isPointInsideZone(normX, normY, q)) {
-          isInside = true;
+      if (isChair) {
+        // Regla de negocio: la cabeza puede estar por fuera de la silla;
+        // se muestrea a lo largo del torso y cuerpo sentado (38%, 50%, 65%, 80%, 90% de la altura).
+        if (q.polygonNorm && Array.isArray(q.polygonNorm) && q.polygonNorm.length >= 3 && imgWidth && imgHeight) {
+          isInside = bodySamples.some(([px, py]) => isPointInsideZone(px, py, q));
         }
-      }
 
-      // 2. Si no o fallback, verificar caja
-      if (!isInside && q.box) {
-        const [qx1, qy1, qx2, qy2] = q.box;
-        if (cx >= qx1 && cx <= qx2 && cy >= qy1 && cy <= qy2) {
-          isInside = true;
+        if (!isInside && q.box) {
+          const [qx1, qy1, qx2, qy2] = q.box;
+          isInside = bodySamples.some(([px, py]) => {
+            const pxPx = px * imgWidth;
+            const pyPx = py * imgHeight;
+            return pxPx >= qx1 && pxPx <= qx2 && pyPx >= qy1 && pyPx <= qy2;
+          });
+        }
+
+        if (!isInside && q.boxNorm) {
+          const [by1, bx1, by2, bx2] = q.boxNorm;
+          isInside = bodySamples.some(([px, py]) => px >= bx1 && px <= bx2 && py >= by1 && py <= by2);
+        }
+      } else {
+        // Verificación estándar para pasillos / tránsito / espera
+        if (q.polygonNorm && Array.isArray(q.polygonNorm) && q.polygonNorm.length >= 3 && imgWidth && imgHeight) {
+          if (isPointInsideZone(normX, normY, q)) {
+            isInside = true;
+          }
+        }
+
+        if (!isInside && q.box) {
+          const [qx1, qy1, qx2, qy2] = q.box;
+          if (cx >= qx1 && cx <= qx2 && cy >= qy1 && cy <= qy2) {
+            isInside = true;
+          }
+        }
+
+        if (!isInside && q.boxNorm) {
+          const [by1, bx1, by2, bx2] = q.boxNorm;
+          if (normX >= bx1 && normX <= bx2 && normY >= by1 && normY <= by2) {
+            isInside = true;
+          }
         }
       }
 
@@ -307,7 +466,7 @@ export class PersonTracker {
   /**
    * Actualiza la identidad y el buffer de mejores caras para un track
    */
-  updateIdentityAndFace(trackId, { identity, faceBuffer, faceBoxNorm, sharpnessScore, thumbnailBase64, embedding }) {
+  updateIdentityAndFace(trackId, { identity, faceBuffer, faceBoxNorm, sharpnessScore, thumbnailBase64, embedding, pose }) {
     const track = this.activeTracks.get(trackId);
     if (!track) return false;
 
@@ -317,26 +476,78 @@ export class PersonTracker {
     }
 
     if (faceBuffer && sharpnessScore) {
+      const now = Date.now();
+      const incomingPose = pose || identity?.pose || null;
+      const targetEmbedding = embedding || identity?.embedding || null;
+
       const faceShot = {
         faceBuffer,
         faceBoxNorm,
         sharpnessScore,
         thumbnailBase64: thumbnailBase64 || identity?.thumbnailBase64 || null,
-        embedding: embedding || identity?.embedding || null,
+        embedding: targetEmbedding,
+        pose: incomingPose || 'frontal',
         timestamp: new Date().toISOString()
       };
 
-      // Si supera la mejor cara histórica
+      // 1. Deduplicación por fotograma idéntico / congelado (sim >= 0.985)
+      let duplicateIdx = -1;
+      if (targetEmbedding && track.topFaces.length > 0) {
+        for (let i = 0; i < track.topFaces.length; i++) {
+          const exFace = track.topFaces[i];
+          if (!exFace.embedding) continue;
+          const sim = computeCosineSimilarity(targetEmbedding, exFace.embedding);
+          if (sim >= 0.985) {
+            duplicateIdx = i;
+            break;
+          }
+        }
+      }
+
+      if (duplicateIdx !== -1) {
+        const existingFace = track.topFaces[duplicateIdx];
+        if (sharpnessScore > (existingFace.sharpnessScore || 0)) {
+          track.topFaces[duplicateIdx] = faceShot;
+          track.topFaces.sort((a, b) => b.sharpnessScore - a.sharpnessScore);
+          if (!track.bestFace || sharpnessScore > track.bestFace.sharpnessScore) {
+            track.bestFace = faceShot;
+          }
+          track.lastPhotoTime = now;
+          if (incomingPose) track.lastPose = incomingPose;
+        }
+        return true;
+      }
+
+      // 2. Control de cadencia temporal ("de vez en cuando"):
+      // Si la última foto tomada fue hace menos de 20,000 ms y la pose es la misma, omitir adición
+      if (track.lastPhotoTime && (now - track.lastPhotoTime < 20000) && incomingPose && track.lastPose === incomingPose) {
+        // Si supera la nitidez de la foto de esta pose, actualizarla
+        const samePoseIdx = track.topFaces.findIndex(f => f.pose === incomingPose);
+        const updateIdx = samePoseIdx !== -1 ? samePoseIdx : (track.topFaces.length - 1);
+        if (updateIdx !== -1 && sharpnessScore > (track.topFaces[updateIdx].sharpnessScore || 0)) {
+          track.topFaces[updateIdx] = faceShot;
+          track.topFaces.sort((a, b) => b.sharpnessScore - a.sharpnessScore);
+          if (!track.bestFace || sharpnessScore > track.bestFace.sharpnessScore) {
+            track.bestFace = faceShot;
+          }
+          track.lastPhotoTime = now;
+        }
+        return true;
+      }
+
+      // 3. Agregar nueva foto válida
       if (!track.bestFace || sharpnessScore > track.bestFace.sharpnessScore) {
         track.bestFace = faceShot;
       }
 
-      // Mantener en el top 10 ordenado por nitidez
       track.topFaces.push(faceShot);
       track.topFaces.sort((a, b) => b.sharpnessScore - a.sharpnessScore);
       if (track.topFaces.length > 10) {
         track.topFaces.pop();
       }
+
+      track.lastPhotoTime = now;
+      if (incomingPose) track.lastPose = incomingPose;
     }
 
     return true;

@@ -56,7 +56,7 @@ export async function getDynamicConfig(db, defaultPrompt = "Describe what do you
  * @param {Object} options.db
  * @param {Object} options.workingHours
  */
-export function registerFirestoreListeners({ db, workingHours }) {
+export function registerFirestoreListeners({ db, workingHours, customerService }) {
   // 1. Listener de configuración (horario laboral y prompt)
   db.doc("camera_catcher/prompt").onSnapshot(async (snapshot) => {
     const data = snapshot.data();
@@ -107,6 +107,11 @@ export function registerFirestoreListeners({ db, workingHours }) {
   }, (err) => {
     console.warn(`[Quadrants] Error escuchando camera_catcher/quadrants:`, err.message);
   });
+
+  // 3. Listener de directorio biométrico de personas en tiempo real
+  if (customerService && typeof customerService.setupPeopleListener === "function") {
+    customerService.setupPeopleListener(db);
+  }
 }
 
 /**

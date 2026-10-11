@@ -261,7 +261,7 @@ export async function generateAnnotatedImage(imageBuffer, quadrants, width, heig
  * @param {Object|number} options
  */
 export async function detectObjectsAndQuadrants(imageBuffer, options = {}) {
-  const defaultConf = process.env.ML_CONF_THRESHOLD ? parseFloat(process.env.ML_CONF_THRESHOLD) : 0.35;
+  const defaultConf = process.env.ML_CONF_THRESHOLD ? parseFloat(process.env.ML_CONF_THRESHOLD) : 0.25;
   const confThreshold = typeof options === "number" ? options : (options.confThreshold !== undefined ? options.confThreshold : defaultConf);
   const forceRecheck = typeof options === "object" && options.forceRecheck === true;
   const isRealtime = typeof options === "object" && options.isRealtime === true;
@@ -271,9 +271,9 @@ export async function detectObjectsAndQuadrants(imageBuffer, options = {}) {
   const skipAllowed = typeof options === "object" && options.skipStatic !== undefined ? options.skipStatic : true;
   const hasHumansInLastResult = (lastDetectionResult?.rawDetections || []).some(d => d.class === "person");
   // Modo centinela: si no hay personas en la escena y la escena está inmóvil, permitir hasta 25 saltos (~30s a 0% CPU)
-  // Si hay personas en la escena, permitir hasta 5 saltos para mantener reactividad en el tracking
+  // Si hay personas en la escena, permitir hasta 2 saltos para mantener reactividad en el tracking
   const maxSkips = isRealtime
-    ? (hasHumansInLastResult ? 5 : 25)
+    ? (hasHumansInLastResult ? 2 : 25)
     : MAX_CONSECUTIVE_STATIC_SKIPS;
 
   // Comparación contra fotograma previo
@@ -307,7 +307,7 @@ export async function detectObjectsAndQuadrants(imageBuffer, options = {}) {
   const numAnchors = 8400;
   const targetThreshold = typeof options === "object" && options.confThreshold !== undefined
     ? options.confThreshold
-    : Math.min(confThreshold, 0.38);
+    : Math.min(confThreshold, 0.25);
   const scaleX = origWidth / 640;
   const scaleY = origHeight / 640;
   const rawDetections = [];

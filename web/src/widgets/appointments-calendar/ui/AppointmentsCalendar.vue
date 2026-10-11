@@ -7,6 +7,7 @@ import ModalTemplate from '@/shared/ui/templates/ModalTemplate.vue';
 import ModalHeader from '@/shared/ui/molecules/ModalHeader.vue';
 import DeleteAppointmentModal from './DeleteAppointmentModal.vue';
 import ClientAppointmentConflictModal from './ClientAppointmentConflictModal.vue';
+import ClientPhotosModal from '@/widgets/people-directory/ui/ClientPhotosModal.vue';
 import { useAppointments } from '@/entities/appointment/model/useAppointments';
 import { usePeople } from '@/entities/person/model/usePeople';
 
@@ -136,6 +137,36 @@ const openDetailModal = (apt) => {
 const closeDetailModal = () => {
   isDetailModalOpen.value = false;
   selectedAppointment.value = null;
+};
+
+// Modal de visualización de fotos completas del cliente
+const selectedPersonForClientModal = ref(null);
+const isClientPhotosModalOpen = ref(false);
+
+const openClientHistoryModal = () => {
+  if (!selectedAppointment.value) return;
+  const pId = selectedAppointment.value.personId || selectedAppointment.value.clientId;
+  const clientName = selectedAppointment.value.clientName;
+  let foundPerson = null;
+  if (pId) {
+    foundPerson = people.value.find(p => p.id === pId);
+  }
+  if (!foundPerson && clientName) {
+    foundPerson = people.value.find(p => p.name === clientName);
+  }
+  if (foundPerson) {
+    selectedPersonForClientModal.value = foundPerson;
+  } else {
+    selectedPersonForClientModal.value = {
+      id: pId || 'temp',
+      name: clientName || 'Cliente',
+      photos: selectedAppointment.value.photos || [],
+      visitCount: 1,
+      bestFaceScore: selectedAppointment.value.photos?.[0]?.sharpnessScore || 0
+    };
+  }
+  isClientPhotosModalOpen.value = true;
+  isDetailModalOpen.value = false;
 };
 
 // Estado de Eliminación de Atención
@@ -610,8 +641,8 @@ const getPhotoSrc = (photo) => {
             <AppButton
               variant="primary"
               size="sm"
-              @click="closeDetailModal"
-              class="bg-blue-600 hover:bg-blue-500 text-white shadow"
+              @click="openClientHistoryModal"
+              class="bg-blue-600 hover:bg-blue-500 text-white shadow cursor-pointer"
             >
               Ver Historial Completo del Cliente
             </AppButton>
@@ -619,6 +650,13 @@ const getPhotoSrc = (photo) => {
         </div>
       </div>
     </ModalTemplate>
+
+    <!-- Modal de Galería Completa de Fotos y Ángulos del Cliente -->
+    <ClientPhotosModal
+      :show="isClientPhotosModalOpen"
+      :person="selectedPersonForClientModal"
+      @close="isClientPhotosModalOpen = false"
+    />
 
     <!-- Modal de Confirmación para Borrar Atención / Usuario -->
     <DeleteAppointmentModal

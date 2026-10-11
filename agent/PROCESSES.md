@@ -96,30 +96,39 @@ flowchart TD
 
 ### 4. `tracking_step.js`
 * **`trackEntities(tracker, mlResult)`**:
-  * Correlaciona centroides y cajas delimitadoras cuadro a cuadro con `PersonTracker.update`, asignando un `trackId` persistente a cada individuo.
+  * Correlaciona centroides y cajas delimitadoras cuadro a cuadro con `PersonTracker.update`, asignando un `trackId` inmutable a cada individuo.
+  * **Memoria Extendida para Clientes Sentados (`maxChairMissedFrames = 75` $\approx 30$s)**: Tolera oclusiones temporales del barbero frente a la cámara sin perder el track del cliente ni reiniciar la sesión.
+  * **Emparejamiento por Continuidad Espacial de Silla (Etapa 1c)**: Si una detección aparece en la misma silla donde el cliente estaba sentado, se asocia inmediatamente al track existente preservando su identificador.
+  * **Filtrado de Zonas Físicas (`q.isConfiguredZone !== false`)**: `findMatchingQuadrant` ignora pseudo-cuadrantes transitorios de recorte de personas, vinculando al cliente exclusivamente a la zona física de la silla y eliminando aleteos de presencia/liberación.
 * **`matchIdentitiesToTracks({ tracker, activeTracks, identifiedPeople, iouThreshold })`**:
   * Asocia identidades biométricas al tracker mediante superposición espacial IoU (umbral por defecto `>= 0.20`), evitando cruzar identidades de staff con clientes sentados.
 
 ### 5. `biometrics_step.js`
 * **`extractClientCrops({ bucket, clientCrops, docId, isManual })`**:
-  * Procesa recortes de personas en zonas de atención; si es disparo manual, genera la subida correspondiente a Storage.
+  * Procesa recortes de personas en zonas de atención; si es disparo manual, genera la subida correspondiente a Storage. En tiempo real opera en RAM a 0 ms.
 * **`reidentifyPeople({ db, clientRecords, clientCrops, activeSessions, isRealtime, backgroundSync })`**:
-  * Filtro de calidad facial RFB-320 (frontalidad y nitidez) + ArcFace MobileFaceNet ONNX (embedding 512D en ~15 ms).
-  * **Almacenamiento Biométrico Podado en RAM**: `getAllComparisonProfiles()` almacena únicamente embeddings en memoria (0 Base64). `getCustomerData(id)` hidrata la información completa bajo demanda desde SQLite local (`data/barberia.db`) únicamente al consolidar la sesión.
-  * Gobernanza por sesión temporal: previene perfiles espurios en sillas activas y fusiona ángulos complementarios en la galería del cliente (hasta 20 fotos/embeddings).
+  * Filtro de calidad facial RFB-320 (frontalidad y nitidez) + MobileFaceNet ONNX (embedding 512D en ~15 ms).
+  * **Biometría Multi-Ángulo y Tolerancia Canónica (`minCanonicalSimilarity = 0.48`)**: Permite giros naturales de cabeza ($15^\circ - 35^\circ$) durante el corte al validar contra la foto inicial o el ángulo más cercano del cluster (`maxGallerySim >= 0.55 && canonicalSim >= 0.42`), descartando extraños y staff ($< 0.45$).
+  * **Cadencia Temporal Periódica de 20 Segundos**: Acumula fotos de forma periódica espaciadas a lo largo de la sesión (hasta 20 recortes por atención) sin duplicados idénticos ($\text{sim} \ge 0.985$).
+  * **Respeto Absoluto a Roles de Usuario**: Perfiles modificados manualmente por el usuario (`role: "client"` o `isStaff: false`) no son revertidos a Staff por el backend, independientemente del prefijo del ID.
+  * **Gobernanza por Sesión Temporal**: Acumula candidatos en memoria RAM sin crear perfiles prematuros en Firestore. La formalización definitiva de nuevos clientes (`Cliente #N`) ocurre únicamente al concluir una atención legítima ($\ge 10$ min) con galería consolidada.
 
 ### 6. `visits_step.js`
 * **`updateVisits({ visitService, tracker, activeTracks })`**:
-  * Control del ciclo de vida de visitas: apertura de sesión al sentarse (`isServiceChair`), seguimiento de mejor foto y cierre de sesión con cálculo de estancia al abandonar la escena.
+  * **Filtro de Permanencia / Debounce de Asiento (`consecutiveChairFrames >= 6`)**: Requiere de 2 a 3 segundos de permanencia continua en la silla antes de disparar `"Persona se sienta"` e iniciar la sesión, descartando transeúntes que cruzan caminando.
+  * **Ventana de Gracia de Liberación (30 segundos)**: Si el cliente se levanta transitoriamente o el barbero ocluye la silla, la atención permanece en estado `"esperando_liberacion"`. Si retorna antes de 30s se reanuda limpiamente sin cerrar la atención.
+  * **Blindaje contra Personal**: El barbero de pie en la zona de corte queda excluido de la atención y nunca contamina la sesión del cliente ni su galería.
 
 ### 7. `occupancy_step.js`
 * **`computeOccupancy({ quadrants, identifiedPeople, rawDetections })`**:
   * Función matemática pura que calcula clientes en corte (`clientsInCut`), en espera (`clientsWaiting`), barberos activos (`activeBarbers`) y total de personas (`totalHumans`).
+  * **Prevención de Doble Conteo (`q.isConfiguredZone !== false`)**: Filtra estrictamente las zonas físicas reales configuradas, evitando sumar duplicados generados por los pseudo-cuadrantes de recorte de personas.
 
 ### 8. `telemetry_step.js`
 * **`broadcastTelemetry({ docId, mlResult, activeTracks, identifiedPeople, occupancy })`**:
   * Emisión SSE en tiempo real hacia `/api/yolo/stream` (frontend web).
-  * Emisión temprana inmediata (< 50 ms) y emisión final enriquecida con biometría, ocupación y **métricas de memoria RAM del sistema** (`rssMB`, `heapUsedMB`, `heapTotalMB`, `osFreeMB`).
+  * **Emisión Temprana Inmediata (< 50 ms)**: Emite cajas visuales de tracking con `identifiedPeople: null`, omitiendo la clave para evitar parpadeos visuales en el Canvas web antes de completar la biometría.
+  * **Emisión Final Enriquecida**: Envía metadatos biométricos completos, ocupación depurada y **métricas de memoria RAM del sistema** (`rssMB`, `heapUsedMB`, `heapTotalMB`, `osFreeMB`).
 
 ### 9. `persistence_step.js`
 * **`persistCycleData({ db, docId, timestamp, storagePath, clientRecords, identifiedPeople, mlResult, visitService, activeTracks, occupancy, isRealtime })`**:

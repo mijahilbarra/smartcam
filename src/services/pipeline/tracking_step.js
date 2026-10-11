@@ -1,4 +1,5 @@
 import { calculateIoU } from "../../core/geometry.js";
+import { daemonReporter } from "../../daemon_reporter.js";
 
 /**
  * 4. Actualización del seguimiento temporal de personas (PersonTracker).
@@ -11,6 +12,14 @@ export function trackEntities(tracker, mlResult) {
     mlResult.imageDimensions?.width,
     mlResult.imageDimensions?.height
   );
+
+  if (typeof tracker.consumeEvents === "function") {
+    const events = tracker.consumeEvents();
+    for (const evt of events) {
+      daemonReporter.reportVerbalLog(evt.text, evt.type);
+    }
+  }
+
   console.log(`[Tracker] Personas rastreadas activas (${activeTracks.length}): ${activeTracks.map(t => `#${t.trackId} [${t.currentQuadrant?.label || 'General'}]`).join(", ") || 'Ninguna'}`);
   return activeTracks;
 }
@@ -56,7 +65,8 @@ export function matchIdentitiesToTracks({ tracker, activeTracks = [], identified
         faceBoxNorm: person.faceBoxNorm,
         sharpnessScore: person.sharpnessScore,
         thumbnailBase64: person.thumbnailBase64 || person.faceThumbnailBase64 || null,
-        embedding: person.embedding || null
+        embedding: person.embedding || null,
+        pose: person.pose || null
       });
       console.log(`[Tracker] Identidad "${person.name}" asociada a Track #${bestTrack.trackId} vía IoU (${(maxIoU * 100).toFixed(1)}%).`);
     }
