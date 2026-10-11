@@ -6,6 +6,9 @@
   "type": "module",
   "scripts": {
     "dev": "node scripts/dev.js",
+    "dev:mock": "MOCK_VIDEO_PATH=data/recordings/mock_stream.mp4 node scripts/dev.js",
+    "dev:mock:local": "MOCK_VIDEO_PATH=data/recordings/mock_stream.mp4 node scripts/dev-local.js",
+    "record": "node scripts/record-stream.js",
     "build:web": "vite build",
     "preview:web": "vite preview",
     "test": "node test/test-firestore-sanitizer.js && node test/test-daemon-reporter.js && node test/test-detector.js && node test/test-working-hours.js && node test/test-core-modular.js && node test/test-face-quality.js && node test/test-person-tracker.js && node test/test-visit-session.js && node test/test-processes.js && node test/test-people-merge.js && node test/test-sqlite-client.js && node test/test-customer-service.js && node test/test-appointments.js && node test/test-stream-resilience.js",
@@ -15,6 +18,7 @@
     "purge": "bash scripts/purge-connections.sh",
     "prestart": "bash scripts/purge-connections.sh",
     "start": "node --optimize-for-size --max-old-space-size=192 src/index.js",
+    "start:mock": "MOCK_VIDEO_PATH=data/recordings/mock_stream.mp4 node --optimize-for-size --max-old-space-size=192 src/index.js",
     "start:watch": "node --optimize-for-size --max-old-space-size=192 --watch --watch-path=src src/index.js"
   },
   "dependencies": {

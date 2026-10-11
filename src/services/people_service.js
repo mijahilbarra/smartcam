@@ -371,8 +371,8 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
         return null;
       }
 
-      // Filtro de Cara Frontal y Nitidez (Rechaza nucas, espaldas, orejas y codos con umbral 0.70)
-      const quality = await evaluateFaceQuality(crop.buffer, { minConfidence: 0.70, minSharpness: 40 });
+      // Filtro de Cara Frontal y Nitidez (Rechaza nucas, espaldas, orejas y codos con umbral por defecto 0.80)
+      const quality = await evaluateFaceQuality(crop.buffer, { minSharpness: 40 });
       if (!quality.isValid) {
         console.log(`[FaceRecognition] Recorte ${crop.id || i + 1} omitido: ${quality.reason} (No es rostro frontal nítido).`);
         return null;

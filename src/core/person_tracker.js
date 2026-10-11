@@ -36,11 +36,14 @@ export class PersonTracker {
     track.quadrantChangedAt = now;
   }
 
-  _updateChairSittingState(track) {
+  _updateChairSittingState(track, now = Date.now()) {
     const isStaff = track.isStaffHint === true || track.identity?.isStaff === true || track.role === "staff";
     const inChair = !isStaff && track.currentQuadrant && isChairZone(track.currentQuadrant);
 
     if (inChair) {
+      if (!track.chairEnteredAt || track.consecutiveChairFrames === 0) {
+        track.chairEnteredAt = now;
+      }
       track.consecutiveChairFrames = (track.consecutiveChairFrames || 0) + 1;
       track.consecutiveNonChairFrames = 0;
 
@@ -61,6 +64,7 @@ export class PersonTracker {
     } else {
       track.consecutiveNonChairFrames = (track.consecutiveNonChairFrames || 0) + 1;
       track.consecutiveChairFrames = 0;
+      track.chairEnteredAt = null;
 
       // Disparo de levantarse: requiere al menos leaveDebounceFrames (6) consecutivos fuera
       // Evita falsos 'se levantó / entra y sale' ante movimientos de brazos del barbero o caídas de 1-2 frames
@@ -276,6 +280,7 @@ export class PersonTracker {
           seenCount: 1,
           consecutiveChairFrames: 0,
           consecutiveNonChairFrames: 0,
+          chairEnteredAt: null,
           isFormallySeated: false,
           lastChairQuadrant: null,
           box: det.box,
@@ -323,18 +328,36 @@ export class PersonTracker {
 
     for (const [qId, tracksInChair] of chairTracksMap.entries()) {
       if (tracksInChair.length > 1) {
-        // En una silla de corte con 2 personas:
-        // Ordenar por altura: box[1] menor es la cabeza más alta (persona de pie = Barbero)
-        tracksInChair.sort((a, b) => a.box[1] - b.box[1]);
-        const standingBarber = tracksInChair[0];
-        standingBarber.isStaffHint = true;
-        standingBarber.role = "staff";
+        let seatedTrack = null;
+        let standingTracks = [];
 
-        // La persona sentada (cabeza más baja) es el cliente
-        for (let i = 1; i < tracksInChair.length; i++) {
-          const clientInChair = tracksInChair[i];
-          clientInChair.isStaffHint = false;
-          clientInChair.role = "client";
+        // 1. Si uno de los tracks ya estaba formalmente sentado (track.isFormallySeated === true y track.role === "client"),
+        // preservarlo como el cliente sentado
+        const formallySeatedClients = tracksInChair.filter(t => t.isFormallySeated === true && t.role === "client");
+        if (formallySeatedClients.length === 1) {
+          seatedTrack = formallySeatedClients[0];
+          standingTracks = tracksInChair.filter(t => t !== seatedTrack);
+        } else {
+          // 2. Usar la altura corporal total (box[3] - box[1]):
+          // El barbero de pie tiene mayor elongación vertical que el cliente sentado con la capa.
+          // El cliente sentado tiene menor elongación vertical.
+          const sortedByHeight = [...tracksInChair].sort((a, b) => {
+            const hA = a.box ? (a.box[3] - a.box[1]) : 0;
+            const hB = b.box ? (b.box[3] - b.box[1]) : 0;
+            return hA - hB;
+          });
+          seatedTrack = sortedByHeight[0];
+          standingTracks = sortedByHeight.slice(1);
+        }
+
+        // 3. El track de pie se marca incondicionalmente: standingTrack.isStaffHint = true; standingTrack.role = "staff";
+        // El sentado: seatedTrack.isStaffHint = false; seatedTrack.role = "client";
+        seatedTrack.isStaffHint = false;
+        seatedTrack.role = "client";
+
+        for (const standingTrack of standingTracks) {
+          standingTrack.isStaffHint = true;
+          standingTrack.role = "staff";
         }
       } else if (tracksInChair.length === 1) {
         const singleTrack = tracksInChair[0];
@@ -347,7 +370,7 @@ export class PersonTracker {
 
     // 5. Actualizar estado de permanencia y debounce de asiento (6 a 8 fotogramas)
     for (const track of this.activeTracks.values()) {
-      this._updateChairSittingState(track);
+      this._updateChairSittingState(track, now);
     }
 
     return Array.from(this.activeTracks.values());
