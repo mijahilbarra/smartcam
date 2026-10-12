@@ -21,11 +21,13 @@ export function usePeople() {
       snap.forEach((docSnap) => {
         const data = docSnap.data();
         const photos = Array.isArray(data.photos) ? data.photos : [];
+        const status = data.status || (Boolean(data.isStaff) ? 'barber' : ((data.visitCount ?? data.visitsCount ?? 1) > 1 ? 'frequent' : 'new'));
         list.push({
           id: docSnap.id,
           name: data.name || 'Cliente sin nombre',
           isStaff: Boolean(data.isStaff),
           role: data.role || (data.isStaff ? 'barber' : 'client'),
+          status,
           visitCount: data.visitCount ?? data.visitsCount ?? 1,
           bestFaceScore: data.bestFaceScore ?? 0,
           thumbnailBase64: photos[0]?.thumbnailBase64 || data.thumbnailBase64 || null,
@@ -223,8 +225,9 @@ export function usePeople() {
   };
 
   const barbersCount = computed(() => people.value.filter(p => p.isStaff).length);
-  const frequentCount = computed(() => people.value.filter(p => !p.isStaff && p.visitCount > 1).length);
-  const newClientsCount = computed(() => people.value.filter(p => !p.isStaff && p.visitCount <= 1).length);
+  const frequentCount = computed(() => people.value.filter(p => !p.isStaff && p.status !== 'to_verify' && (p.status === 'frequent' || p.visitCount > 1)).length);
+  const newClientsCount = computed(() => people.value.filter(p => !p.isStaff && p.status !== 'to_verify' && p.visitCount <= 1).length);
+  const toVerifyCount = computed(() => people.value.filter(p => !p.isStaff && p.status === 'to_verify').length);
 
   onMounted(() => {
     subscribe();
@@ -241,6 +244,7 @@ export function usePeople() {
     barbersCount,
     frequentCount,
     newClientsCount,
+    toVerifyCount,
     toggleRole,
     updatePersonName,
     deletePerson,

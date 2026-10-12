@@ -232,16 +232,20 @@ export function mapDetectionsToBarbershopQuadrants(detections, width, height, co
 
     // Ocupación basada EXCLUSIVAMENTE en personas reales detectadas
     const matchingPersonDets = [];
+    const zoneType = zone.type && zone.type !== "custom_zone" ? zone.type : inferZoneType(zone);
+    const zoneColor = zone.color || "#007BFF";
 
     detections.forEach((det, idx) => {
       if (det.class === "person" && doesDetectionOverlapZone(det.box, zone, width, height)) {
+        // En sillas de corte, exigir confianza >= 0.50 para evitar falsos positivos de cabezales/respaldos vacíos (35%-38%)
+        const isChair = zoneType === "barber_chair" || isChairZone(zone);
+        if (isChair && (det.score || 0) < 0.50) {
+          return;
+        }
         matchingPersonDets.push(det);
         matchedPersonIndices.add(idx);
       }
     });
-
-    const zoneType = zone.type && zone.type !== "custom_zone" ? zone.type : inferZoneType(zone);
-    const zoneColor = zone.color || "#007BFF";
 
     // Propiedades dinámicas de la zona con valores por defecto basados en tipo semántico
     const isTransit = isTransitZone(zone) || zoneType === "walking_zone";

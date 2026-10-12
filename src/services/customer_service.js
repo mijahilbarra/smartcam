@@ -372,6 +372,16 @@ export class CustomerService {
       status: resolvedStatus
     };
 
+    // Si customerData proviene de una caché podada (photos: []) y no se solicitó explícitamente actualizar la galería,
+    // preservar las fotos existentes en SQLite para evitar borrados accidentales
+    if (!options.galleryUpdated && (!customerData.photos || customerData.photos.length === 0)) {
+      const existingInDb = this.sqliteClient?.getCustomerById?.(customerData.id);
+      if (existingInDb && Array.isArray(existingInDb.photos) && existingInDb.photos.length > 0) {
+        dataToSave.photos = existingInDb.photos;
+        dataToSave.thumbnailBase64 = dataToSave.thumbnailBase64 || existingInDb.thumbnailBase64;
+      }
+    }
+
     this.sqliteClient.upsertCustomer(dataToSave);
 
     // 2. Actualizar caché en memoria RAM inmediatamente

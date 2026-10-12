@@ -71,6 +71,35 @@ async function main() {
   console.log(`- ¿Omitió inferencia por falta de cambio?: ${result2.skippedDueToNoChange ? "SÍ (0% CPU / 0ms inferencia)" : "NO"}`);
   console.log(`- Variación calculada: ${result2.diffPercent}%`);
   console.log(`- Tiempo total de respuesta: ${t2Elapsed} ms`);
+
+  console.log(`\n--- Prueba 3: Blindaje de Silla contra Cabezal Vacío (< 0.50 score) ---`);
+  const { mapDetectionsToBarbershopQuadrants } = await import("../src/core/barbershop_rules.js");
+  const assert = (await import("assert")).default;
+
+  const mockChairZones = [
+    { id: "chair_1", name: "Silla de Corte", label: "Silla de Corte", type: "barber_chair", boxNorm: [0.2, 0.2, 0.6, 0.6] }
+  ];
+
+  // 1. Detección débil (38% de cabezal vacío)
+  const weakDets = [{ class: "person", score: 0.38, box: [120, 150, 260, 320] }];
+  const quadsWeak = mapDetectionsToBarbershopQuadrants(weakDets, 640, 480, mockChairZones);
+  const chairWeak = quadsWeak.find(q => q.id === "chair_1");
+  assert.ok(chairWeak, "El cuadrante de la silla debe existir");
+  assert.strictEqual(chairWeak.status, "disponible", "Detección de 38% del cabezal no debe ocupar la silla");
+  const personWeak = quadsWeak.find(q => q.id === "person_chair_1");
+  assert.strictEqual(personWeak, undefined, "No debe generarse persona en corte con detección de 38%");
+  console.log("-> Detección débil (38% cabezal de cuero): Silla permanece [disponible] (sin falso positivo).");
+
+  // 2. Detección sólida de cliente real (85%)
+  const strongDets = [{ class: "person", score: 0.85, box: [120, 150, 260, 320] }];
+  const quadsStrong = mapDetectionsToBarbershopQuadrants(strongDets, 640, 480, mockChairZones);
+  const chairStrong = quadsStrong.find(q => q.id === "chair_1");
+  assert.ok(chairStrong, "El cuadrante de la silla debe existir");
+  assert.strictEqual(chairStrong.status, "ocupada", "Detección sólida (85%) debe marcar la silla como ocupada");
+  const personStrong = quadsStrong.find(q => q.id === "person_chair_1");
+  assert.ok(personStrong, "Debe generarse persona en corte");
+  assert.strictEqual(personStrong.status, "en_corte");
+  console.log("-> Detección sólida (85% persona real): Silla pasa a [ocupada / en_corte] correctamente.");
   console.log(`======================================================`);
 }
 

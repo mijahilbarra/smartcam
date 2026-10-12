@@ -225,7 +225,7 @@ export function enrichPersonAngles(person, { embedding, faceThumbnailBase64, sha
  * @param {number} [staffThreshold=0.58]
  * @returns {{ isStaffMatch: boolean, maxStaffSim: number, staffProfile: Object|null }}
  */
-export function matchStaffFace(embedding, knownProfiles = [], staffThreshold = 0.46) {
+export function matchStaffFace(embedding, knownProfiles = [], staffThreshold = 0.58) {
   if (!embedding || !Array.isArray(knownProfiles) || knownProfiles.length === 0) {
     return { isStaffMatch: false, maxStaffSim: 0, staffProfile: null };
   }
@@ -412,37 +412,12 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
 
       // 1. EVALUACIÓN PRIORITARIA Y EXCLUSIVA DEL BARBERO / STAFF
       // Regla: "Si se parece al barbero, no se guarda como cliente ni se asocia a visitas".
-      const staffMatch = matchStaffFace(embedding, allKnown, 0.46);
+      // INMUTABILIDAD TOTAL: El streaming NUNCA sobrescribe, borra ni altera fotos de un perfil de Staff en caliente.
+      const staffMatch = matchStaffFace(embedding, allKnown, 0.58);
 
       if (staffMatch.isStaffMatch) {
         const staff = staffMatch.staffProfile;
         staff.lastSeen = new Date().toISOString();
-        let higherSharpness = false;
-        if (!staff.photos || staff.photos.length === 0) {
-          staff.photos = [{
-            thumbnailBase64: faceThumbnailBase64,
-            sharpnessScore: quality.sharpnessScore || 0,
-            capturedAt: new Date().toISOString(),
-            pose: quality.pose || 'frontal',
-            poseLabel: quality.poseLabel || 'Frontal'
-          }];
-          staff.thumbnailBase64 = faceThumbnailBase64;
-          staff.bestFaceScore = quality.sharpnessScore || 0;
-          higherSharpness = true;
-        } else if (quality.sharpnessScore > (staff.bestFaceScore || 0)) {
-          staff.bestFaceScore = quality.sharpnessScore;
-          staff.thumbnailBase64 = faceThumbnailBase64;
-          higherSharpness = true;
-        }
-        if (higherSharpness) {
-          await custService.saveOrUpdateCustomer(staff, {
-            db,
-            higherSharpness,
-            faceBuffer: quality.faceBuffer,
-            sharpnessScore: quality.sharpnessScore,
-            backgroundSync
-          });
-        }
 
         console.log(`[FaceRecognition] Barbero / Staff identificado: "${staff.name}" (Similitud: ${staffMatch.maxStaffSim.toFixed(3)}). Excluido de clientes.`);
 
@@ -457,18 +432,12 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
           confidence: crop.confidence,
           faceBuffer: quality.faceBuffer,
           faceBoxNorm: quality.faceBoxNorm,
-          thumbnailBase64: faceThumbnailBase64 || staff.photos?.[0]?.thumbnailBase64 || staff.thumbnailBase64,
+          thumbnailBase64: staff.thumbnailBase64 || staff.photos?.[0]?.thumbnailBase64 || faceThumbnailBase64,
           sharpnessScore: quality.sharpnessScore
         });
 
-        // NUNCA procesar al barbero como cliente, ni en sesión de silla ni en debounce
-        continue;
-      }
-
-      // 2. CANDADO DE AMBIGÜEDAD CON EL BARBERO:
-      // "Si se parece al barbero, no se guarda". Si la similitud con el barbero es sospechosa (>= 0.46), descartar.
-      if (staffMatch.maxStaffSim >= 0.46) {
-        console.log(`[FaceRecognition] Recorte ${crop.id || i + 1} omitido: sospecha de Barbero (similitud: ${staffMatch.maxStaffSim.toFixed(3)} >= 0.46). "Si se parece al barbero, no se guarda".`);
+        // NUNCA procesar al barbero como cliente, ni en sesión de silla ni en debounce.
+        // NUNCA alterar la galería de fotos del personal en streaming.
         continue;
       }
 

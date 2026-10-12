@@ -210,11 +210,11 @@ console.log("-> Atención persistida exitosamente en SQLite con 20 fotos.");
 assert.ok(firestoreDocs[`camera_catcher_appointments/${completion.id}`], "Debe persistirse en camera_catcher_appointments");
 console.log("-> Atención persistida exitosamente en Firestore.");
 
-console.log("\n[5] Probando acumulación de 40 fotos en el perfil del cliente tras múltiples visitas...");
+console.log("\n[5] Probando CERO FUSIÓN DE FOTOS: La galería del cliente recurrente permanece intacta...");
 const updatedCustomer = custService.getCustomerData("client_141");
 assert.strictEqual(updatedCustomer.appointmentCount, 2, "appointmentCount debe incrementarse a 2");
-assert.strictEqual(updatedCustomer.photos.length, 40, "El cliente debe haber acumulado 40 fotos (20 iniciales + 20 de la sesión)");
-console.log("-> Galería de Cliente #141 ampliada exitosamente a 40 fotos a través de sesiones.");
+assert.strictEqual(updatedCustomer.photos.length, 20, "El cliente debe conservar sus 20 fotos originales intactas (Cero fusión de fotos)");
+console.log("-> CERO FUSIÓN validada: Galería de Cliente #141 intacta (20 fotos), appointment vinculada sin alteración.");
 
 console.log("\n[6] Probando creación de nuevo cliente ante cliente nunca antes visto...");
 const newTrack = {
@@ -797,7 +797,76 @@ const consensusResult = await consensusService.closeSession(950, { durationMinut
 assert.ok(consensusResult, "La atención NO debe ser descartada por una sola coincidencia fortuita");
 const preservedCustomer = custService.getCustomerData(consensusResult.clientId);
 assert.ok(preservedCustomer, "El nuevo perfil debe existir y no haber sido descartado como staff");
-console.log("-> Protección contra borrado de cliente sin consenso validada exitosamente.");
+// [22] Probando creación inmediata de perfil 'to_verify' en Firestore/SQLite al sentarse en silla
+console.log("\n[22] Probando creación en tiempo real de perfil 'to_verify'...");
+const liveVerifyService = new VisitSessionService({
+  db: mockDb,
+  sqliteClient: sqlite,
+  customerService: custService,
+  minAppointmentMinutes: 10
+});
+
+const sittingTrack = {
+  trackId: 960,
+  consecutiveChairFrames: 6,
+  currentQuadrant: { id: "silla_corte_verify", label: "Silla Verify", type: "barber_chair" },
+  bestFace: {
+    sharpnessScore: 84,
+    thumbnailBase64: "data:image/jpeg;base64,initial_face_thumb"
+  }
+};
+const liveSession = await liveVerifyService.processTrack(sittingTrack);
+assert.ok(liveSession, "Debe abrir sesión en silla");
+assert.ok(liveSession.tempClientId, "Debe tener tempClientId asignado");
+const toVerifyInCust = custService.getCustomerData(liveSession.tempClientId);
+assert.ok(toVerifyInCust, "Debe existir en SQLite el perfil temporal 'to_verify'");
+assert.strictEqual(toVerifyInCust.status, "to_verify", "El status debe ser 'to_verify'");
+assert.strictEqual(toVerifyInCust.name, "Cliente (Por verificar)");
+assert.ok(firestoreDocs[`camera_catcher_people/${liveSession.tempClientId}`], "Debe sincronizarse de inmediato a Firestore");
+assert.strictEqual(firestoreDocs[`camera_catcher_people/${liveSession.tempClientId}`].status, "to_verify");
+console.log("-> Creación en tiempo real de 'to_verify' en SQLite y Firestore validada exitosamente.");
+
+// [23] Blindaje de salida en checkChairTimeouts contra detección fantasma de cabezal vacío (< 0.50)
+console.log("\n[23] Probando que detección fantasma de cabezal (< 0.50) no interrumpe el temporizador de salida...");
+const ghostShieldService = new VisitSessionService({
+  db: mockDb,
+  sqliteClient: sqlite,
+  customerService: custService,
+  minAppointmentMinutes: 10,
+  emptyChairTimeoutMs: 30000
+});
+
+const personSitting = {
+  trackId: 970,
+  consecutiveChairFrames: 6,
+  currentQuadrant: { id: "silla_corte_ghost", label: "Silla Ghost", type: "barber_chair" }
+};
+await ghostShieldService.processTrack(personSitting);
+const activeGhostSession = ghostShieldService.activeSessions.get(970);
+activeGhostSession.photos.push({
+  thumbnailBase64: "data:image/jpeg;base64,sample_client",
+  sharpnessScore: 85
+});
+activeGhostSession.startedAtEpoch = 1000000;
+
+// Cliente se levanta a t = 2000000
+await ghostShieldService.checkChairTimeouts(2000000, []);
+assert.strictEqual(activeGhostSession.status, "esperando_liberacion", "Debe entrar en espera de liberación tras levantarse");
+
+// A los 15s (t = 2015000), el cabezal de cuero vacío genera una detección débil de YOLO (score: 0.38 < 0.50)
+const ghostHeadrestTrack = {
+  trackId: 999,
+  confidence: 0.38, // Detección fantasma del cabezal vacío
+  currentQuadrant: { id: "silla_corte_ghost", label: "Silla Ghost", type: "barber_chair" }
+};
+await ghostShieldService.checkChairTimeouts(2015000, [ghostHeadrestTrack]);
+// El estado NO debe haberse reseteado a 'en_corte'
+assert.strictEqual(activeGhostSession.status, "esperando_liberacion", "Detección de 38% del cabezal no debe interrumpir el temporizador de salida");
+
+// A los 30s cumplidos (t = 2030000), con el cabezal fantasma aún presente a 38%
+const closedGhostAppts = await ghostShieldService.checkChairTimeouts(2030000, [ghostHeadrestTrack]);
+assert.strictEqual(closedGhostAppts.length, 1, "La atención debe cerrarse tras 30s a pesar de detección fantasma del cabezal");
+console.log("-> Blindaje contra detecciones fantasma del cabezal (< 0.50) en checkChairTimeouts validado exitosamente.");
 
 sqlite.close();
 console.log("\n🎉 ¡Todas las pruebas del pipeline de Atenciones pasaron al 100%!");

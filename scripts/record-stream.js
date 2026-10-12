@@ -109,42 +109,89 @@ function recordHttpStream(url, destPath, duration) {
 
     const ffmpeg = spawn("ffmpeg", ffmpegArgs, { stdio: ["pipe", "inherit", "inherit"] });
 
-    let timer = null;
+    let isFinished = false;
     let secondsElapsed = 0;
+    let currentReq = null;
+    let reconnectTimeout = null;
+
+    const finishRecording = () => {
+      if (isFinished) return;
+      isFinished = true;
+      clearInterval(progressInterval);
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+      if (currentReq) {
+        try { currentReq.destroy(); } catch (_) {}
+      }
+      process.stdout.write("\nFinalizando y cerrando contenedor MP4...\n");
+      try { ffmpeg.stdin.end(); } catch (_) {}
+    };
+
     const progressInterval = setInterval(() => {
       secondsElapsed++;
-      process.stdout.write(`\r⏳ Grabando: ${secondsElapsed}/${duration}s...`);
+      const minElapsed = (secondsElapsed / 60).toFixed(1);
+      const totalMin = (duration / 60).toFixed(1);
+      process.stdout.write(`\r⏳ Grabando: ${secondsElapsed}/${duration}s (${minElapsed}m / ${totalMin}m)...`);
       if (secondsElapsed >= duration) {
-        clearInterval(progressInterval);
-        process.stdout.write("\nFinalizando contenedor de video...\n");
+        finishRecording();
       }
     }, 1000);
 
-    const req = client.get(url, { headers: { "Cache-Control": "no-cache" } }, (res) => {
-      if (res.statusCode !== 200) {
-        clearInterval(progressInterval);
-        ffmpeg.kill("SIGKILL");
-        return reject(new Error(`Respuesta HTTP no-200 al conectar al stream: ${res.statusCode}`));
-      }
+    const connectStream = () => {
+      if (isFinished) return;
 
-      res.pipe(ffmpeg.stdin);
+      currentReq = client.get(url, { headers: { "Cache-Control": "no-cache" } }, (res) => {
+        if (res.statusCode !== 200) {
+          console.warn(`\n[Aviso] HTTP ${res.statusCode} al conectar al stream. Reintentando en 3s...`);
+          res.resume();
+          scheduleReconnect();
+          return;
+        }
 
-      timer = setTimeout(() => {
-        try { res.destroy(); } catch (_) {}
-        try { ffmpeg.stdin.end(); } catch (_) {}
-      }, (duration + 1) * 1000);
-    });
+        res.pipe(ffmpeg.stdin, { end: false });
 
-    req.on("error", (err) => {
-      clearInterval(progressInterval);
-      if (timer) clearTimeout(timer);
-      ffmpeg.kill("SIGKILL");
-      reject(err);
-    });
+        res.on("end", () => {
+          if (!isFinished) {
+            console.warn("\n[Aviso] Stream desconectado temporalmente. Reconectando en 2s...");
+            scheduleReconnect();
+          }
+        });
+
+        res.on("error", (err) => {
+          if (!isFinished) {
+            console.warn("\n[Aviso] Error en conexión de stream:", err.message);
+            scheduleReconnect();
+          }
+        });
+      });
+
+      currentReq.on("error", (err) => {
+        if (!isFinished) {
+          console.warn("\n[Aviso] Error en request:", err.message, ". Reintentando en 3s...");
+          scheduleReconnect();
+        }
+      });
+    };
+
+    const scheduleReconnect = () => {
+      if (isFinished) return;
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+      reconnectTimeout = setTimeout(connectStream, 2000);
+    };
+
+    // Manejo de cancelación limpia (Ctrl+C / SIGINT / SIGTERM)
+    const handleSig = () => {
+      console.log("\n\x1b[33m%s\x1b[0m", "🛑 Señal de parada recibida. Guardando metadatos del video grabado hasta ahora...");
+      finishRecording();
+    };
+    process.once("SIGINT", handleSig);
+    process.once("SIGTERM", handleSig);
 
     ffmpeg.on("close", (code) => {
+      isFinished = true;
       clearInterval(progressInterval);
-      if (timer) clearTimeout(timer);
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+      process.removeListener("SIGINT", handleSig);
+      process.removeListener("SIGTERM", handleSig);
       if (code === 0 || code === 255) {
         resolve();
       } else {
@@ -153,10 +200,13 @@ function recordHttpStream(url, destPath, duration) {
     });
 
     ffmpeg.on("error", (err) => {
+      isFinished = true;
       clearInterval(progressInterval);
-      if (timer) clearTimeout(timer);
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
       reject(err);
     });
+
+    connectStream();
   });
 }
 

@@ -182,11 +182,7 @@ export class VisitSessionService {
       return null; // Transeúnte en tránsito o debounce insuficiente: no abrir atención efímera
     }
 
-    const isPendingInit = track.identity?.isPendingConfirmation ||
-                          track.identity?.isCandidate ||
-                          !track.identity?.personId ||
-                          (track.identity?.name && (track.identity.name.includes("confirmación") || track.identity.name === "Cliente"));
-    const validIdentity = isPendingInit ? null : track.identity;
+    const tempClientId = `person_${now}_${track.trackId}`;
     const visitId = `appt_${now}_${track.trackId}`;
     const startedAt = track.chairEnteredAt || now;
     session = {
@@ -202,22 +198,71 @@ export class VisitSessionService {
       emptySinceEpoch: null,
       lastPresenceLogAt: now,
       status: "en_corte",
-      personId: validIdentity?.personId || null,
-      personName: validIdentity?.name || null,
-      clientId: validIdentity?.personId || null,
-      clientName: validIdentity?.name || null,
+      tempClientId,
+      personId: tempClientId,
+      personName: "Cliente (Por verificar)",
+      clientId: tempClientId,
+      clientName: "Cliente (Por verificar)",
       isStaff: false,
-      visitCount: validIdentity?.visitCount || 1,
+      visitCount: 1,
       bestFaceScore: track.bestFace?.sharpnessScore || 0,
       bestFaceStoragePath: null,
-      thumbnailBase64: null,
+      thumbnailBase64: track.bestFace?.thumbnailBase64 || null,
       lastPhotoAt: 0,
+      lastSyncAt: now,
       photos: [],
       embeddings: [],
       topFaces: []
     };
     this.activeSessions.set(track.trackId, session);
-    this.logVerbal(`💺 Persona se sienta en ${session.chairName}. Iniciando registro de atención.`, "process");
+    this.logVerbal(`💺 Persona se sienta en ${session.chairName}. Creando cliente en estado "to_verify" e iniciando registro de atención.`, "process");
+
+    // Crear inmediatamente el perfil to_verify en Firestore y SQLite para visualización en tiempo real
+    if (this.customerService) {
+      const initialPhotos = [];
+      if (track.bestFace?.thumbnailBase64) {
+        initialPhotos.push({
+          thumbnailBase64: track.bestFace.thumbnailBase64,
+          sharpnessScore: track.bestFace.sharpnessScore || 0,
+          capturedAt: new Date(now).toISOString(),
+          pose: track.bestFace.pose || 'frontal',
+          poseLabel: track.bestFace.poseLabel || 'Frontal'
+        });
+      }
+      const initialEmbeddings = [];
+      if (track.bestFace?.embedding) {
+        initialEmbeddings.push(track.bestFace.embedding);
+      }
+      const provisionalCustomer = {
+        id: tempClientId,
+        name: "Cliente (Por verificar)",
+        status: "to_verify",
+        isStaff: false,
+        role: "client",
+        firstSeen: new Date(startedAt).toISOString(),
+        lastSeen: new Date(now).toISOString(),
+        visitCount: 1,
+        appointmentCount: 1,
+        bestFaceScore: track.bestFace?.sharpnessScore || 0,
+        thumbnailBase64: track.bestFace?.thumbnailBase64 || null,
+        thumbnailPath: null,
+        photos: initialPhotos,
+        embeddings: initialEmbeddings,
+        embedding: initialEmbeddings[0] || null
+      };
+
+      try {
+        await this.customerService.saveOrUpdateCustomer(provisionalCustomer, {
+          db: this.db,
+          bucket: this.bucket,
+          isNew: true,
+          forceSync: true,
+          backgroundSync: true
+        });
+      } catch (err) {
+        console.warn(`[Appointment] Aviso al crear cliente to_verify inicial:`, err.message);
+      }
+    }
 
     if (track.bestFace && track.bestFace.sharpnessScore > 0) {
       await this.addFaceSample(track.trackId, {
@@ -246,6 +291,11 @@ export class VisitSessionService {
     for (const session of Array.from(this.activeSessions.values())) {
       const trackInChair = activeTracks.find(t => {
         if (t.role === "staff" || t.isStaffHint === true || t.identity?.isStaff === true) {
+          return false;
+        }
+        // Para cancelar el temporizador de salida o reactivar la atención, la detección debe tener confianza sólida (>= 0.50)
+        // Evita que detecciones fantasma del cabezal vacío (35%-38%) cancelen la salida del cliente
+        if ((t.confidence || 0) < 0.50) {
           return false;
         }
         const qId = t.currentQuadrant?.id;
@@ -334,9 +384,9 @@ export class VisitSessionService {
 
     if (embedding) {
       const knownProfiles = this.customerService?.getComparisonProfiles?.() || [];
-      const staffCheck = matchStaffFace(embedding, knownProfiles, 0.46);
-      if (staffCheck.isStaffMatch || staffCheck.maxStaffSim >= 0.46) {
-        console.log(`[Appointment] Rostro en ${session.chairName} coincide con Barbero/Staff (Sim: ${staffCheck.maxStaffSim.toFixed(3)} >= 0.46). Excluido de atención.`);
+      const staffCheck = matchStaffFace(embedding, knownProfiles, 0.52);
+      if (staffCheck.isStaffMatch || staffCheck.maxStaffSim >= 0.52) {
+        console.log(`[Appointment] Rostro en ${session.chairName} coincide con Barbero/Staff (Sim: ${staffCheck.maxStaffSim.toFixed(3)} >= 0.52). Excluido de atención.`);
         return false;
       }
     }
@@ -496,6 +546,39 @@ export class VisitSessionService {
       }
     }
 
+    // 6. Sincronización periódica en vivo del perfil 'to_verify' hacia Firestore/SQLite (cada 15s)
+    if (this.customerService && session.tempClientId) {
+      const timeSinceLastSync = now - (session.lastSyncAt || 0);
+      if (timeSinceLastSync >= 15000 || session.photos.length === 1) {
+        session.lastSyncAt = now;
+        const updatedToVerify = {
+          id: session.tempClientId,
+          name: session.personName || "Cliente (Por verificar)",
+          status: "to_verify",
+          isStaff: false,
+          role: "client",
+          lastSeen: new Date(now).toISOString(),
+          visitCount: 1,
+          appointmentCount: 1,
+          bestFaceScore: session.bestFaceScore || 0,
+          thumbnailBase64: session.thumbnailBase64 || session.photos[0]?.thumbnailBase64 || null,
+          thumbnailPath: session.bestFaceStoragePath || null,
+          photos: session.photos,
+          embeddings: session.embeddings,
+          embedding: session.embeddings[0] || null
+        };
+        this.customerService.saveOrUpdateCustomer(updatedToVerify, {
+          db: this.db,
+          bucket: this.bucket,
+          galleryUpdated: true,
+          forceSync: true,
+          backgroundSync: true
+        }).catch(err => {
+          console.warn(`[Appointment] Error en live-sync de to_verify:`, err.message);
+        });
+      }
+    }
+
     this.logVerbal(`📸 Muestra facial recolectada para la atención (#${session.photos.length}/20, Nitidez: ${sharpnessScore}).`, "process");
     return true;
   }
@@ -530,7 +613,10 @@ export class VisitSessionService {
 
     // 1. Si es personal/barbero, no se registra como atención de cliente
     if (session.isStaff) {
-      if (session.personId && !session.personId.startsWith("staff_")) {
+      if (session.tempClientId) {
+        await this.customerService?.deleteCustomer?.(session.tempClientId, { db: this.db });
+      }
+      if (session.personId && session.personId !== session.tempClientId && !session.personId.startsWith("staff_")) {
         await this.customerService?.deleteCustomer?.(session.personId, { db: this.db });
       }
       this.logVerbal(`Atención descartada para Barbero/Staff: ${session.personName || `Track #${trackId}`}.`, "info");
@@ -542,8 +628,67 @@ export class VisitSessionService {
     // 2. Comprobar umbral de permanencia mínima obligatoria (mínimo 10 min)
     const minMinutes = options.minMinutes !== undefined ? options.minMinutes : this.minAppointmentMinutes;
     if (durationMinutes < minMinutes) {
+      if (session.tempClientId) {
+        await this.customerService?.deleteCustomer?.(session.tempClientId, { db: this.db });
+      }
+      if (session.personId && session.personId !== session.tempClientId && !session.personId.startsWith("staff_")) {
+        await this.customerService?.deleteCustomer?.(session.personId, { db: this.db });
+      }
       this.logVerbal(`⏱️ Estancia de ${durationMinutes} min en ${session.chairName} descartada (< ${minMinutes} min - transeúnte o cancelada).`, "info");
       return null;
+    }
+
+    // 3. Purga estricta de fotos individuales del Barbero / Staff en el cluster
+    if (session.photos && session.photos.length > 0 && session.embeddings && session.embeddings.length > 0) {
+      const knownProfiles = this.customerService?.getComparisonProfiles?.() || [];
+      const staffProfiles = knownProfiles.filter(p => {
+        if (p.name && /^Cliente\s*#\d+/i.test(p.name)) return false;
+        if (p.role === "client" || p.isStaff === false) return false;
+        return (p.isStaff === true && p.role !== "client") || p.role === "barber" || (String(p.id).startsWith("staff_") && p.role !== "client" && p.isStaff !== false);
+      });
+
+      if (staffProfiles.length > 0) {
+        const staffVectors = [];
+        for (const staff of staffProfiles) {
+          if (Array.isArray(staff.embeddings)) {
+            for (const item of staff.embeddings) {
+              if (Array.isArray(item)) staffVectors.push(item);
+              else if (item && Array.isArray(item.vector)) staffVectors.push(item.vector);
+            }
+          }
+          if (staffVectors.length === 0 && Array.isArray(staff.embedding)) {
+            staffVectors.push(staff.embedding);
+          }
+        }
+
+        if (staffVectors.length > 0) {
+          const cleanPhotos = [];
+          const cleanEmbeddings = [];
+          const N = Math.min(session.photos.length, session.embeddings.length);
+          for (let i = 0; i < N; i++) {
+            const emb = session.embeddings[i];
+            const sVec = Array.isArray(emb) ? emb : (emb?.vector || null);
+            let isStaffPhoto = false;
+            if (sVec) {
+              for (const sv of staffVectors) {
+                const sim = computeCosineSimilarity(sVec, sv);
+                if (sim >= 0.52) {
+                  isStaffPhoto = true;
+                  break;
+                }
+              }
+            }
+            if (isStaffPhoto) {
+              console.log(`[Appointment] ✂️ Purga de cluster: Eliminada foto #${i + 1} del corte por coincidir con el Barbero/Staff (>= 0.52).`);
+            } else {
+              cleanPhotos.push(session.photos[i]);
+              cleanEmbeddings.push(emb);
+            }
+          }
+          session.photos = cleanPhotos;
+          session.embeddings = cleanEmbeddings;
+        }
+      }
     }
 
     // Filtrado de outliers en el cluster de fotos antes de clasificar
@@ -560,14 +705,20 @@ export class VisitSessionService {
       session.embeddings = dedupedSession.embeddings;
     }
 
-    // 3. Prohibición estricta: Una atención válida REQUIERE fotos y biometría facial capturada
+    // 4. Prohibición estricta: Una atención válida REQUIERE fotos y biometría facial capturada
     if (!session.photos || session.photos.length === 0) {
+      if (session.tempClientId) {
+        await this.customerService?.deleteCustomer?.(session.tempClientId, { db: this.db });
+      }
+      if (session.personId && session.personId !== session.tempClientId && !session.personId.startsWith("staff_")) {
+        await this.customerService?.deleteCustomer?.(session.personId, { db: this.db });
+      }
       this.logVerbal(`⚠️ Estancia de ${durationMinutes} min en ${session.chairName} descartada: 0 fotos capturadas (sin rostro identificable).`, "info");
       return null;
     }
 
-    // Verificación Set-to-Set contra el Barbero / Staff:
-    // Si la similitud máxima o promedio del cluster contra el staff es >= 0.46, es el barbero
+    // Verificación de Consenso Set-to-Set contra el Barbero / Staff:
+    // Si la similitud promedio del cluster contra el staff es >= 0.50 O más del 50% de las fotos >= 0.50 con el staff
     if (session.embeddings && session.embeddings.length > 0) {
       const knownProfiles = this.customerService?.getComparisonProfiles?.() || [];
       const staffProfiles = knownProfiles.filter(p => {
@@ -611,54 +762,94 @@ export class VisitSessionService {
 
           // Exigir consenso del cluster: similitud promedio >= 0.50 O más del 50% de las fotos >= 0.50 con el staff
           if (avgStaffSim >= 0.50 || ratioStaff > 0.5) {
-            if (session.personId) {
+            if (session.tempClientId) {
+              await this.customerService?.deleteCustomer?.(session.tempClientId, { db: this.db });
+            }
+            if (session.personId && session.personId !== session.tempClientId) {
               await this.customerService?.deleteCustomer?.(session.personId, { db: this.db });
             }
-            if (session.clientId && session.clientId !== session.personId) {
-              await this.customerService?.deleteCustomer?.(session.clientId, { db: this.db });
-            }
-            console.log("[Appointment] 🗑️ Atención descartada: el cluster de fotos pertenece al Barbero/Staff. Perfil eliminado físicamente.");
+            console.log("[Appointment] 🗑️ Atención descartada: el cluster de fotos pertenece al Barbero/Staff. Perfil temporal eliminado físicamente.");
             return null;
           }
         }
       }
     }
 
-    // 4. Set-to-Set matching si no tenía identidad previa confirmada
+    // 5. Comparación Set-to-Set obligatoria contra la base de clientes conocidos
     this.logVerbal(`🔍 Analizando biometría acumulada de atención (${session.photos.length} fotos contra base de clientes)...`, "process");
 
+    let matchedClient = null;
+    if (session.embeddings && session.embeddings.length > 0) {
+      matchedClient = this.matchSessionAgainstClients(session.embeddings);
+      if (matchedClient && (matchedClient.name?.includes("confirmación") || matchedClient.status === "to_verify")) {
+        matchedClient = null;
+      }
+    }
+
     let finalClient = null;
-    if (session.personId && !session.personId.startsWith("unidentified_") && !session.personId.startsWith("cand_") && !session.personId.startsWith("to_verify_")) {
-      const existing = this.customerService?.getCustomerData?.(session.personId);
-      if (existing && !existing.name?.includes("confirmación")) {
-        finalClient = existing;
-      } else if (!existing && session.personName &&
-                 !session.personName.includes("confirmación") &&
-                 session.personName !== "Cliente" &&
-                 session.personName !== "Cliente nuevo" &&
-                 !session.isPendingConfirmation) {
-        finalClient = {
-          id: session.personId,
-          name: session.personName,
-          status: "frequent",
-          visitCount: session.visitCount || 1,
-          appointmentCount: session.visitCount || 1,
-          photos: session.photos,
-          embeddings: session.embeddings
-        };
-      }
-    }
 
-    if (!finalClient && session.embeddings.length > 0) {
-      finalClient = this.matchSessionAgainstClients(session.embeddings);
-      if (finalClient && finalClient.name?.includes("confirmación")) {
-        finalClient = null;
-      }
-    }
+    if (matchedClient) {
+      // Coincidencia con cliente recurrente existente
+      // CERO FUSIÓN DE FOTOS: La galería histórica de matchedClient NO SE MODIFICA.
+      finalClient = matchedClient;
+      finalClient.visitCount = (matchedClient.visitCount || 1) + 1;
+      finalClient.appointmentCount = (matchedClient.appointmentCount || (matchedClient.visitCount - 1) || 1) + 1;
+      finalClient.status = "frequent";
+      finalClient.lastSeen = new Date(now).toISOString();
 
-    if (finalClient) {
-      // Si session.personId era un ID temporal to_verify distinto del cliente existente, borrar físicamente el ID temporal
-      const tempIdToDelete = (session.personId && session.personId !== finalClient.id) ? session.personId : null;
+      this.logVerbal(`✅ Cliente identificado como recurrente: "${finalClient.name}" (Visita #${finalClient.visitCount}). Atención vinculada sin alterar su galería previa.`, "success");
+
+      // Preservar la galería previa intacta (hidratar fotos desde SQLite si finalClient vino de caché podada)
+      const fullExisting = this.customerService?.getCustomerData?.(finalClient.id) ||
+                           this.sqliteClient?.getCustomerById?.(finalClient.id);
+      if (fullExisting && Array.isArray(fullExisting.photos) && fullExisting.photos.length > 0) {
+        finalClient.photos = fullExisting.photos;
+        finalClient.thumbnailBase64 = finalClient.thumbnailBase64 || fullExisting.thumbnailBase64;
+      }
+
+      // Guardar cliente recurrente con contadores y lastSeen actualizados (sin modificar fotos)
+      if (this.customerService) {
+        await this.customerService.saveOrUpdateCustomer(finalClient, {
+          db: this.db,
+          bucket: this.bucket,
+          galleryUpdated: false,
+          forceSync: true
+        });
+      }
+
+      // Eliminar físicamente los perfiles temporales to_verify creados durante la sesión
+      if (session.tempClientId && session.tempClientId !== finalClient.id) {
+        await this.customerService?.deleteCustomer?.(session.tempClientId, { db: this.db });
+      }
+      if (session.personId && session.personId !== finalClient.id && session.personId !== session.tempClientId) {
+        await this.customerService?.deleteCustomer?.(session.personId, { db: this.db });
+      }
+
+      session.personId = finalClient.id;
+      session.personName = finalClient.name;
+      session.clientId = finalClient.id;
+      session.clientName = finalClient.name;
+      session.visitCount = finalClient.visitCount;
+    } else if ((!session.embeddings || session.embeddings.length === 0) && session.personName && session.personName !== "Cliente (Por verificar)") {
+      // Identidad pre-establecida en pruebas o integración sin embeddings
+      finalClient = {
+        id: session.personId,
+        name: session.personName,
+        status: (session.visitCount || 1) > 1 ? "frequent" : "new",
+        isStaff: false,
+        role: "client",
+        firstSeen: session.startedAt,
+        lastSeen: new Date(now).toISOString(),
+        visitCount: session.visitCount || 1,
+        appointmentCount: session.visitCount || 1,
+        bestFaceScore: session.bestFaceScore || 0,
+        thumbnailBase64: session.thumbnailBase64 || session.photos?.[0]?.thumbnailBase64 || null,
+        thumbnailPath: session.bestFaceStoragePath || null,
+        photos: session.photos || [],
+        embeddings: session.embeddings || []
+      };
+
+      const tempIdToDelete = session.tempClientId && session.tempClientId !== finalClient.id ? session.tempClientId : null;
       if (tempIdToDelete) {
         await this.customerService?.deleteCustomer?.(tempIdToDelete, { db: this.db });
       }
@@ -667,45 +858,20 @@ export class VisitSessionService {
       session.personName = finalClient.name;
       session.clientId = finalClient.id;
       session.clientName = finalClient.name;
-      session.visitCount = (finalClient.visitCount || 1) + 1;
-      finalClient.visitCount = session.visitCount;
-      finalClient.appointmentCount = (finalClient.appointmentCount || (finalClient.visitCount - 1) || 1) + 1;
-      finalClient.status = "frequent";
-      finalClient.lastSeen = new Date(now).toISOString();
+      session.visitCount = finalClient.visitCount;
 
-      this.logVerbal(`✅ Cliente identificado como recurrente: "${finalClient.name}" (Visita #${finalClient.visitCount}). Atención vinculada exitosamente.`, "success");
-
-      // Si finalClient provino de comparación biométrica (RAM podada sin fotos),
-      // hidratar fotos existentes desde SQLite antes de acumular:
-      const fullExisting = this.customerService?.getCustomerData?.(finalClient.id) ||
-                           this.sqliteClient?.getCustomerById?.(finalClient.id);
-      if (fullExisting && Array.isArray(fullExisting.photos) && fullExisting.photos.length > 0) {
-        finalClient.photos = fullExisting.photos;
-      }
-
-      // Acumular fotos de la sesión en el perfil del cliente (soportando 40+ fotos y sin duplicados)
-      if (session.photos.length > 0) {
-        const prevPhotos = finalClient.photos;
-        finalClient.photos = this.mergeCustomerPhotos(finalClient.photos, session.photos, finalClient.embeddings, session.embeddings);
-        finalClient.embeddings = this.mergeCustomerEmbeddings(finalClient.embeddings, session.embeddings, prevPhotos, session.photos);
-      }
-
-      if (this.customerService) {
-        await this.customerService.saveOrUpdateCustomer(finalClient, {
-          db: this.db,
-          bucket: this.bucket,
-          galleryUpdated: true,
-          forceSync: true
-        });
-      }
+      this.logVerbal(`✅ Atención completada para identidad establecida: "${finalClient.name}".`, "success");
     } else {
-      // Registrar nuevo cliente formal desde esta atención legítima (>= 10 min y con fotos, status = "new")
-      const newClientId = `person_${now}_${trackId}`;
+      // NO coincidió con clientes previos: Es un nuevo cliente legítimo
+      // Promover el perfil to_verify creado en vivo a status: 'new'
+      const clientId = session.tempClientId || `person_${now}_${trackId}`;
       const allKnown = this.customerService?.getComparisonProfiles?.() || [];
-      const clientCount = allKnown.filter(p => !p.isStaff && !p.name?.includes("confirmación")).length;
+      const clientCount = allKnown.filter(p => !p.isStaff && !p.name?.includes("confirmación") && p.status !== "to_verify" && p.id !== clientId).length;
+      const finalName = `Cliente #${clientCount + 1}`;
+
       finalClient = {
-        id: newClientId,
-        name: `Cliente #${clientCount + 1}`,
+        id: clientId,
+        name: finalName,
         status: "new",
         isStaff: false,
         role: "client",
@@ -721,24 +887,20 @@ export class VisitSessionService {
         embedding: session.embeddings[0] || null
       };
 
-      const prevTempId = (session.personId && session.personId !== newClientId) ? session.personId : null;
-      if (prevTempId) {
-        await this.customerService?.deleteCustomer?.(prevTempId, { db: this.db });
-      }
-
       session.personId = finalClient.id;
       session.personName = finalClient.name;
       session.clientId = finalClient.id;
       session.clientName = finalClient.name;
       session.visitCount = 1;
 
-      this.logVerbal(`🆕 Creando nuevo cliente: "${finalClient.name}" con galería de ${session.photos.length} fotos.`, "success");
+      this.logVerbal(`🆕 Nuevo cliente formalizado: "${finalClient.name}" con galería de ${session.photos.length} fotos.`, "success");
 
       if (this.customerService) {
         await this.customerService.saveOrUpdateCustomer(finalClient, {
           db: this.db,
           bucket: this.bucket,
-          isNew: true,
+          isNew: false, // Ya existía como to_verify, ahora se formaliza como new
+          galleryUpdated: true,
           forceSync: true
         });
       }
@@ -806,7 +968,12 @@ export class VisitSessionService {
    */
   matchSessionAgainstClients(sessionEmbeddings, threshold = 0.60) {
     if (!sessionEmbeddings || sessionEmbeddings.length === 0) return null;
-    const profiles = (this.customerService?.getComparisonProfiles?.() || []).filter(p => !p.isStaff);
+    const profiles = (this.customerService?.getComparisonProfiles?.() || []).filter(p => {
+      if (p.isStaff || p.role === "barber" || String(p.id).startsWith("staff_")) return false;
+      if (p.status === "to_verify") return false;
+      if (p.name && p.name.includes("confirmación")) return false;
+      return true;
+    });
     if (profiles.length === 0) return null;
 
     let bestMatch = null;
