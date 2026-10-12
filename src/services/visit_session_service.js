@@ -310,20 +310,40 @@ export class VisitSessionService {
   async checkChairTimeouts(now = Date.now(), activeTracks = []) {
     const closed = [];
     for (const session of Array.from(this.activeSessions.values())) {
+      const isChairMatch = (t) => {
+        const qId = t.currentQuadrant?.id;
+        const qName = t.currentQuadrant?.name || t.currentQuadrant?.label;
+        const sChairIdClean = session.chairId?.replace(/^person_/, "");
+        const inQuadrant = (qId && (qId === session.chairId || qId === sChairIdClean)) ||
+               (qName && (qName === session.chairName || session.chairName?.includes(qName) || qName?.includes(session.chairName)));
+        if (inQuadrant) return true;
+        if (t.lastChairQuadrant && (t.lastChairQuadrant.id === session.chairId || t.lastChairQuadrant.id === sChairIdClean)) {
+          return true;
+        }
+        return false;
+      };
+
+      // Histéresis de presencia:
+      // Si la atención ya está "en_corte", tolerar detecciones del cliente >= 0.22 (giros de cabeza o visto de espaldas)
+      // Si la atención está en "esperando_liberacion", exigir >= 0.50 para que el cabezal vacío (< 0.50) no cancele la salida
+      const minConfidence = session.status === "en_corte" ? 0.22 : 0.50;
+
       const trackInChair = activeTracks.find(t => {
         if (t.role === "staff" || t.isStaffHint === true || t.identity?.isStaff === true) {
           return false;
         }
-        // Para cancelar el temporizador de salida o reactivar la atención, la detección debe tener confianza sólida (>= 0.50)
-        // Evita que detecciones fantasma del cabezal vacío (35%-38%) cancelen la salida del cliente
-        if ((t.confidence || 0) < 0.50) {
+        if ((t.confidence || 0) < minConfidence) {
           return false;
         }
-        const qId = t.currentQuadrant?.id;
-        const qName = t.currentQuadrant?.name || t.currentQuadrant?.label;
-        const sChairIdClean = session.chairId?.replace(/^person_/, "");
-        return (qId && (qId === session.chairId || qId === sChairIdClean)) ||
-               (qName && (qName === session.chairName || session.chairName?.includes(qName) || qName?.includes(session.chairName)));
+        return isChairMatch(t) || t.trackId === session.trackId;
+      });
+
+      // Anclaje por co-presencia activa del Barbero (Barber Working Anchor):
+      // Si el barbero está trabajando activamente en o junto a esta silla, el corte está en progreso
+      const barberWorkingAtChair = activeTracks.find(t => {
+        const isStaff = t.role === "staff" || t.isStaffHint === true || t.identity?.isStaff === true;
+        if (!isStaff) return false;
+        return isChairMatch(t);
       });
 
       if (trackInChair) {
@@ -354,8 +374,11 @@ export class VisitSessionService {
           this.logVerbal(`🔄 Persona retomó la silla ${session.chairName}. Reanudando atención.`, "process");
         }
         session.lastSeenEpoch = now;
+      } else if (session.status === "en_corte" && barberWorkingAtChair) {
+        // El barbero está trabajando activamente en la silla: corte en progreso aunque el cliente esté temporalmente de espaldas u ocluido
+        session.lastSeenEpoch = now;
       } else {
-        // La silla no tiene track presente
+        // Ni cliente ni barbero presentes en la silla
         if (session.status === "en_corte") {
           session.status = "esperando_liberacion";
           session.emptySinceEpoch = now;

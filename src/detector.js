@@ -261,7 +261,7 @@ export async function generateAnnotatedImage(imageBuffer, quadrants, width, heig
  * @param {Object|number} options
  */
 export async function detectObjectsAndQuadrants(imageBuffer, options = {}) {
-  const defaultConf = process.env.ML_CONF_THRESHOLD ? parseFloat(process.env.ML_CONF_THRESHOLD) : 0.35;
+  const defaultConf = process.env.ML_CONF_THRESHOLD ? parseFloat(process.env.ML_CONF_THRESHOLD) : 0.25;
   const confThreshold = typeof options === "number" ? options : (options.confThreshold !== undefined ? options.confThreshold : defaultConf);
   const forceRecheck = typeof options === "object" && options.forceRecheck === true;
   const isRealtime = typeof options === "object" && options.isRealtime === true;
