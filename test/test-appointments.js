@@ -868,5 +868,54 @@ const closedGhostAppts = await ghostShieldService.checkChairTimeouts(2030000, [g
 assert.strictEqual(closedGhostAppts.length, 1, "La atención debe cerrarse tras 30s a pesar de detección fantasma del cabezal");
 console.log("-> Blindaje contra detecciones fantasma del cabezal (< 0.50) en checkChairTimeouts validado exitosamente.");
 
+// [24] Auto-reconciliación y purga automática de perfiles 'to_verify' del Barbero u huérfanos
+console.log("\n[24] Probando reconcileOrphanedProvisionalProfiles (auto-eliminación de barberos y huérfanos)...");
+const autoPurgeService = new VisitSessionService({
+  db: mockDb,
+  sqliteClient: sqlite,
+  customerService: custService,
+  emptyChairTimeoutMs: 30000
+});
+
+// Registrar barbero conocido
+const barberStaffAutoPurge = {
+  id: "staff_barbero",
+  name: "Barbero Principal",
+  role: "barber",
+  isStaff: true,
+  embeddings: [barberVector]
+};
+custService.saveOrUpdateCustomer(barberStaffAutoPurge);
+
+// Perfil 1: Barbero en to_verify (similitud >= 0.35 con barberVector)
+const barberToVerify = {
+  id: "to_verify_barber_leak",
+  name: "Cliente (Por verificar)",
+  status: "to_verify",
+  embeddings: [barberVector],
+  firstSeen: new Date(1000).toISOString(),
+  lastSeen: new Date(2000).toISOString()
+};
+custService.saveOrUpdateCustomer(barberToVerify);
+
+// Perfil 2: Huérfano abandonado (sin atención activa, inactivo > 30s)
+const orphanedToVerify = {
+  id: "to_verify_abandoned",
+  name: "Cliente (Por verificar)",
+  status: "to_verify",
+  firstSeen: new Date(10000).toISOString(),
+  lastSeen: new Date(20000).toISOString()
+};
+custService.saveOrUpdateCustomer(orphanedToVerify);
+
+// Ejecutar reconciliación automática a t = 60000 (40s después del huérfano)
+const purgedCount = await autoPurgeService.reconcileOrphanedProvisionalProfiles(60000);
+assert.strictEqual(purgedCount, 2, "Debe auto-eliminar 2 perfiles: el del barbero y el abandonado huérfano");
+
+// Verificar que fueron eliminados de la base
+assert.strictEqual(custService.getCustomerData("to_verify_barber_leak"), null, "El perfil del barbero debe haberse auto-eliminado");
+assert.strictEqual(custService.getCustomerData("to_verify_abandoned"), null, "El perfil huérfano debe haberse auto-eliminado");
+console.log("-> Auto-reconciliación y purga automática de perfiles 'to_verify' validadas exitosamente.");
+
 sqlite.close();
 console.log("\n🎉 ¡Todas las pruebas del pipeline de Atenciones pasaron al 100%!");

@@ -14,7 +14,7 @@
 import sharp from "sharp";
 import { uploadFaceCrop } from "../infrastructure/firebase/storage_client.js";
 import { isServiceChair as isServiceChairRule, isTransitZone } from "../core/barbershop_rules.js";
-import { computeCosineSimilarity } from "../face_recognizer.js";
+import { computeCosineSimilarity, extractFaceEmbedding } from "../face_recognizer.js";
 import { matchStaffFace } from "./people_service.js";
 import { customerService as defaultCustomerService } from "./customer_service.js";
 import { daemonReporter } from "../daemon_reporter.js";
@@ -37,6 +37,7 @@ export class VisitSessionService {
     this.activeSessions = new Map(); // trackId -> Session
     this.completedAppointments = [];
     this.completedVisits = [];
+    this._lastReconcileAt = 0;
   }
 
   /**
@@ -88,6 +89,26 @@ export class VisitSessionService {
 
     // 1. Buscar si ya existe una sesión activa para esta silla o para este trackId
     let session = this.findSessionByChair(chairId) || this.activeSessions.get(track.trackId);
+
+    // Si viene miniatura pero no embedding en bestFace, extraer embedding de inmediato
+    if (track.bestFace && !track.bestFace.embedding && track.bestFace.thumbnailBase64) {
+      try {
+        const raw = track.bestFace.thumbnailBase64.replace(/^data:image\/[a-z]+;base64,/, "");
+        track.bestFace.embedding = await extractFaceEmbedding(Buffer.from(raw, "base64"));
+      } catch (_) {}
+    }
+
+    // Si tiene embedding facial, evaluar contra Barbero/Staff (umbral sensible 0.40)
+    if (track.bestFace?.embedding) {
+      const knownProfiles = this.customerService?.getComparisonProfiles?.() || [];
+      const staffCheck = matchStaffFace(track.bestFace.embedding, knownProfiles, 0.40);
+      if (staffCheck.isStaffMatch || staffCheck.maxStaffSim >= 0.40) {
+        track.role = "staff";
+        track.isStaffHint = true;
+        if (track.identity) track.identity.isStaff = true;
+        return null;
+      }
+    }
 
     // Si es personal/barbero, no se registra como atención de cliente
     if (track.identity?.isStaff || track.isStaffHint || track.role === "staff") {
@@ -353,7 +374,169 @@ export class VisitSessionService {
         }
       }
     }
+
+    // Reconciliación automática periódica de perfiles 'to_verify' huérfanos o pertenecientes al Barbero
+    if (now - (this._lastReconcileAt || 0) >= 15000) {
+      await this.reconcileOrphanedProvisionalProfiles(now);
+    }
+
     return closed;
+  }
+
+  /**
+   * Reconciliador automático de perfiles provisionales ("to_verify").
+   * Detecta y auto-elimina perfiles que:
+   * 1. Pertenecen al Barbero (incluso en posturas inclinadas o hacia abajo con similitud >= 0.35)
+   * 2. O son perfiles huérfanos/abandonados (sin sesión activa en curso y con inactividad >= emptyChairTimeoutMs)
+   * @param {number} [now=Date.now()]
+   * @returns {Promise<number>} Número de perfiles auto-eliminados
+   */
+  async reconcileOrphanedProvisionalProfiles(now = Date.now()) {
+    this._lastReconcileAt = now;
+    if (!this.customerService) return 0;
+
+    let deletedCount = 0;
+    try {
+      const candidates = new Map();
+
+      // Candidatos en memoria RAM
+      if (this.customerService.profilesCache) {
+        for (const [id, p] of this.customerService.profilesCache.entries()) {
+          if (p.status === "to_verify" || /^Cliente\s*\(Por verificar\)/i.test(p.name || "")) {
+            candidates.set(id, p);
+          }
+        }
+      }
+
+      // Candidatos en Firestore (camera_catcher_people)
+      const firestoreInstance = this.db || this.customerService?.db;
+      if (firestoreInstance && typeof firestoreInstance.collection === "function") {
+        try {
+          const snap = await firestoreInstance.collection("camera_catcher_people").where("status", "==", "to_verify").get();
+          if (snap && !snap.empty) {
+            snap.forEach(docSnap => {
+              const data = docSnap.data();
+              const id = docSnap.id || data.id;
+              if (id) {
+                candidates.set(id, { id, ...data });
+              }
+            });
+          }
+        } catch (_) {}
+      }
+
+      if (candidates.size === 0) return 0;
+
+      // Obtener perfiles y vectores del Staff / Barbero
+      const knownProfiles = this.customerService.getComparisonProfiles?.() || [];
+      const staffProfiles = knownProfiles.filter(p => {
+        if (p.name && /^Cliente\s*#\d+/i.test(p.name)) return false;
+        if (p.role === "client" || p.isStaff === false) return false;
+        return (p.isStaff === true && p.role !== "client") || p.role === "barber" || (String(p.id).startsWith("staff_") && p.role !== "client" && p.isStaff !== false);
+      });
+
+      const staffVectors = [];
+      for (const staff of staffProfiles) {
+        if (Array.isArray(staff.embeddings)) {
+          for (const item of staff.embeddings) {
+            if (Array.isArray(item)) staffVectors.push(item);
+            else if (item && Array.isArray(item.vector)) staffVectors.push(item.vector);
+          }
+        }
+        if (staffVectors.length === 0 && Array.isArray(staff.embedding)) {
+          staffVectors.push(staff.embedding);
+        }
+      }
+
+      // Si no hay vectores en RAM, consultar staff_barbero en Firestore
+      if (staffVectors.length === 0 && firestoreInstance && typeof firestoreInstance.doc === "function") {
+        try {
+          const sDoc = await firestoreInstance.doc("camera_catcher_people/staff_barbero").get();
+          if (sDoc && sDoc.exists) {
+            const sData = sDoc.data();
+            if (Array.isArray(sData.embeddings)) {
+              for (const item of sData.embeddings) {
+                const v = Array.isArray(item) ? item : item?.vector;
+                if (v) staffVectors.push(v);
+              }
+            }
+            if (staffVectors.length === 0 && Array.isArray(sData.embedding)) {
+              staffVectors.push(sData.embedding);
+            }
+          }
+        } catch (_) {}
+      }
+
+      for (const [candId, cand] of candidates.entries()) {
+        const isAttachedToActiveSession = Array.from(this.activeSessions.values()).some(
+          s => s.tempClientId === candId || s.personId === candId || s.clientId === candId
+        );
+
+        let maxStaffSim = 0;
+
+        // Evaluar embeddings existentes
+        if (Array.isArray(cand.embeddings)) {
+          for (const item of cand.embeddings) {
+            const v = Array.isArray(item) ? item : item?.vector;
+            if (v && staffVectors.length > 0) {
+              for (const sv of staffVectors) {
+                const sim = computeCosineSimilarity(v, sv);
+                if (sim > maxStaffSim) maxStaffSim = sim;
+              }
+            }
+          }
+        }
+
+        // Si no tiene embeddings pero tiene fotos, extraer embedding ONNX bajo demanda
+        if (maxStaffSim < 0.35 && Array.isArray(cand.photos) && staffVectors.length > 0) {
+          for (const ph of cand.photos) {
+            if (ph.thumbnailBase64) {
+              try {
+                const base64Data = ph.thumbnailBase64.replace(/^data:image\/[a-z]+;base64,/, "");
+                const buf = Buffer.from(base64Data, "base64");
+                const emb = await extractFaceEmbedding(buf);
+                if (emb) {
+                  for (const sv of staffVectors) {
+                    const sim = computeCosineSimilarity(emb, sv);
+                    if (sim > maxStaffSim) maxStaffSim = sim;
+                  }
+                }
+              } catch (_) {}
+            }
+          }
+        }
+
+        const isBarberMatch = maxStaffSim >= 0.35;
+
+        if (isBarberMatch) {
+          // Descartar cualquier sesión en curso que pertenezca al barbero
+          for (const [tId, s] of this.activeSessions.entries()) {
+            if (s.tempClientId === candId || s.personId === candId) {
+              this.activeSessions.delete(tId);
+            }
+          }
+          this.logVerbal(`🧹 Auto-eliminando perfil "to_verify" (${candId}): Foto coincide con el Barbero/Staff (similitud: ${maxStaffSim.toFixed(3)} >= 0.35).`, "process");
+          await this.customerService.deleteCustomer(candId, { db: firestoreInstance });
+          deletedCount++;
+          continue;
+        }
+
+        // Si no está en una sesión activa, verificar si fue abandonado
+        if (!isAttachedToActiveSession) {
+          const lastActivityEpoch = cand.lastSeen ? new Date(cand.lastSeen).getTime() : (cand.firstSeen ? new Date(cand.firstSeen).getTime() : 0);
+          const elapsedInactive = now - lastActivityEpoch;
+
+          if (elapsedInactive >= (this.emptyChairTimeoutMs || 30000)) {
+            this.logVerbal(`🧹 Auto-eliminando perfil "to_verify" huérfano (${candId}): Silla vacía y sin atención activa (${Math.round(elapsedInactive / 1000)}s inactivo).`, "process");
+            await this.customerService.deleteCustomer(candId, { db: firestoreInstance });
+            deletedCount++;
+          }
+        }
+      }
+    } catch (err) {
+      console.warn(`[Appointment] Aviso en reconciliación automática de to_verify:`, err.message);
+    }
+    return deletedCount;
   }
 
   /**
