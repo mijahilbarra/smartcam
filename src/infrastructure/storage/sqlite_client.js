@@ -157,6 +157,8 @@ export class SQLiteClient {
         embedding_index INTEGER NOT NULL,
         embedding_blob BLOB NOT NULL,
         sharpness_score REAL DEFAULT 0,
+        pose TEXT DEFAULT 'frontal',
+        pose_label TEXT DEFAULT 'Frontal',
         created_at TEXT DEFAULT (datetime('now')),
         FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE,
         UNIQUE(customer_id, embedding_index)
@@ -198,6 +200,16 @@ export class SQLiteClient {
     } catch (_) {
       // La columna ya existe
     }
+    try {
+      this.db.exec(`ALTER TABLE customer_embeddings ADD COLUMN pose TEXT DEFAULT 'frontal';`);
+    } catch (_) {
+      // La columna ya existe
+    }
+    try {
+      this.db.exec(`ALTER TABLE customer_embeddings ADD COLUMN pose_label TEXT DEFAULT 'Frontal';`);
+    } catch (_) {
+      // La columna ya existe
+    }
   }
 
   /**
@@ -231,13 +243,15 @@ export class SQLiteClient {
 
     this.stmtUpsertEmbedding = this.db.prepare(`
       INSERT INTO customer_embeddings (
-        customer_id, embedding_index, embedding_blob, sharpness_score, created_at
+        customer_id, embedding_index, embedding_blob, sharpness_score, pose, pose_label, created_at
       ) VALUES (
-        @customerId, @embeddingIndex, @embeddingBlob, @sharpnessScore, datetime('now')
+        @customerId, @embeddingIndex, @embeddingBlob, @sharpnessScore, @pose, @poseLabel, datetime('now')
       )
       ON CONFLICT(customer_id, embedding_index) DO UPDATE SET
         embedding_blob = excluded.embedding_blob,
         sharpness_score = excluded.sharpness_score,
+        pose = COALESCE(excluded.pose, customer_embeddings.pose),
+        pose_label = COALESCE(excluded.pose_label, customer_embeddings.pose_label),
         created_at = datetime('now')
     `);
 
@@ -355,11 +369,15 @@ export class SQLiteClient {
           if (rawVector) {
             const blob = vectorToBlob(rawVector);
             const score = item && typeof item.sharpnessScore === "number" ? item.sharpnessScore : (customer.bestFaceScore || 0);
+            const pose = (item && item.pose) || customer.photos?.[idx]?.pose || 'frontal';
+            const poseLabel = (item && item.poseLabel) || customer.photos?.[idx]?.poseLabel || (pose === 'frontal' ? 'Frontal' : pose);
             this.stmtUpsertEmbedding.run({
               customerId: customer.id,
               embeddingIndex: idx,
               embeddingBlob: blob,
-              sharpnessScore: score
+              sharpnessScore: score,
+              pose,
+              poseLabel
             });
           }
         }
@@ -376,15 +394,19 @@ export class SQLiteClient {
    * @param {number} embeddingIndex
    * @param {Array<number>} vector
    * @param {number} sharpnessScore
+   * @param {string} [pose='frontal']
+   * @param {string} [poseLabel='Frontal']
    */
-  saveEmbedding(customerId, embeddingIndex, vector, sharpnessScore = 0) {
+  saveEmbedding(customerId, embeddingIndex, vector, sharpnessScore = 0, pose = 'frontal', poseLabel = 'Frontal') {
     const blob = vectorToBlob(vector);
     if (!blob) return;
     this.stmtUpsertEmbedding.run({
       customerId,
       embeddingIndex,
       embeddingBlob: blob,
-      sharpnessScore: Number(sharpnessScore || 0)
+      sharpnessScore: Number(sharpnessScore || 0),
+      pose: pose || 'frontal',
+      poseLabel: poseLabel || 'Frontal'
     });
   }
 
@@ -436,7 +458,12 @@ export class SQLiteClient {
       if (!embeddingsByCustomer.has(embRow.customer_id)) {
         embeddingsByCustomer.set(embRow.customer_id, []);
       }
-      embeddingsByCustomer.get(embRow.customer_id).push(blobToVector(embRow.embedding_blob));
+      embeddingsByCustomer.get(embRow.customer_id).push({
+        vector: blobToVector(embRow.embedding_blob),
+        pose: embRow.pose || 'frontal',
+        poseLabel: embRow.pose_label || 'Frontal',
+        sharpnessScore: embRow.sharpness_score || 0
+      });
     }
 
     return customers.map(row => {
@@ -457,7 +484,7 @@ export class SQLiteClient {
         thumbnailPath: null,
         photos: [],
         embeddings: vectors,
-        embedding: vectors[0] || null
+        embedding: vectors[0]?.vector || (Array.isArray(vectors[0]) ? vectors[0] : null)
       };
     });
   }

@@ -14,8 +14,10 @@
  */
 
 import { initFirebaseAdmin } from "../src/infrastructure/firebase/firebase_admin.js";
-import { getSqliteClient } from "../src/infrastructure/storage/sqlite_client.js";
+import { getSqliteClient, blobToVector } from "../src/infrastructure/storage/sqlite_client.js";
 import { computeCosineSimilarity } from "../src/face_recognizer.js";
+import Database from "better-sqlite3";
+import fs from "fs";
 
 function parseArgs() {
   const args = process.argv.slice(2);
@@ -55,29 +57,23 @@ async function runCleanup() {
   console.log(`   Modo: ${dryRun ? "🔍 DRY-RUN (Simulación sin cambios)" : "⚡ APPLY (Escritura real activada)"}`);
   console.log("=============================================================\n");
 
-  // Obtener perfil oficial del Barbero desde '(default)' para asegurar consistencia
+  // Obtener perfil oficial del Barbero prioritariamente desde data/barberia.db (20 fotos legítimas)
   let realBarberPhotos = [];
   let realBarberEmbeddings = [];
   try {
-    const fbDef = initFirebaseAdmin({ databaseId: "(default)" });
-    let snapStaff = await fbDef.db.collection("camera_catcher_people").doc("staff_barbero").get();
-    if (!snapStaff.exists) {
-      snapStaff = await fbDef.db.collection("camera_catcher_people").doc("person_1791417553339_2").get();
-    }
-    if (snapStaff.exists) {
-      const dataStaff = snapStaff.data();
-      realBarberPhotos = Array.isArray(dataStaff.photos) ? dataStaff.photos.filter(isValidPhoto) : [];
-      realBarberEmbeddings = Array.isArray(dataStaff.embeddings) ? dataStaff.embeddings : [];
-      if (realBarberPhotos.length === 0 && dataStaff.thumbnailBase64) {
-        realBarberPhotos.push({
-          thumbnailBase64: dataStaff.thumbnailBase64,
-          capturedAt: dataStaff.firstSeen || new Date().toISOString()
-        });
+    if (fs.existsSync("data/barberia.db")) {
+      const prodDb = new Database("data/barberia.db");
+      const staffRow = prodDb.prepare("SELECT * FROM customers WHERE id = 'staff_barbero'").get();
+      const staffEmbRows = prodDb.prepare("SELECT * FROM customer_embeddings WHERE customer_id = 'staff_barbero' ORDER BY embedding_index ASC").all();
+      if (staffRow) {
+        realBarberPhotos = JSON.parse(staffRow.photos_json || "[]");
+        realBarberEmbeddings = staffEmbRows.map(r => ({ vector: blobToVector(r.embedding_blob) }));
+        console.log(`💈 Perfil del verdadero Barbero recuperado desde 'data/barberia.db': ${realBarberPhotos.length} fotos, ${realBarberEmbeddings.length} embeddings.`);
       }
-      console.log(`💈 Perfil del verdadero Barbero recuperado (${snapStaff.id} en '(default)'): ${realBarberPhotos.length} fotos, ${realBarberEmbeddings.length} embeddings.`);
+      prodDb.close();
     }
   } catch (e) {
-    console.warn(`[BarberBootstrap] Aviso leyendo perfil base del barbero en '(default)':`, e.message);
+    console.warn(`[BarberBootstrap] Aviso leyendo perfil base de data/barberia.db:`, e.message);
   }
 
   const targets = allDatabases ? ["(default)", "test"] : [databaseId];

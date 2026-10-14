@@ -406,19 +406,20 @@ const nucaSession = antiNucaService.activeSessions.get(501);
 assert.strictEqual(nucaSession.photos.length, 1);
 assert.strictEqual(nucaSession.embeddings.length, 1);
 
-// Muestra 2: Nuca / espalda sin rostro compatible (dimensión 20 = 1.0 -> Similitud 0.0 < 0.45)
+console.log("\n[13] Probando captura continua en silla y filtrado anti-outliers / nuca al finalizar...");
+// Muestra 2: Nuca / espalda sin rostro compatible en la silla (dimensión 20 = 1.0 -> Similitud 0.0 < 0.45)
 const napeVec = new Array(512).fill(0);
 napeVec[20] = 1.0;
 const addedNape = await antiNucaService.addFaceSample(501, {
-  sharpnessScore: 85,
+  sharpnessScore: 80,
   embedding: napeVec,
   thumbnailBase64: "data:image/jpeg;base64,nape_crop",
-  pose: "frontal",
-  poseLabel: "Frontal"
+  pose: "tilted_down",
+  poseLabel: "Inclinado Abajo",
+  skipCooldown: true
 });
-assert.strictEqual(addedNape, false, "Debe rechazar muestra con similitud < 0.45 contra canónico (anti-nuca)");
-assert.strictEqual(nucaSession.photos.length, 1, "No debe incorporar nuca a la galería");
-assert.strictEqual(nucaSession.embeddings.length, 1);
+assert.strictEqual(addedNape, true, "YOLO debe acumular muestras durante la estancia sin bloqueo prematuro");
+assert.strictEqual(nucaSession.photos.length, 2);
 
 // Muestra 3: Rostro compatible (similitud 0.85 >= 0.45)
 const compatibleClientVec = new Array(512).fill(0);
@@ -433,8 +434,27 @@ const addedCompatible = await antiNucaService.addFaceSample(501, {
   skipCooldown: true
 });
 assert.strictEqual(addedCompatible, true, "Debe aceptar muestra facial compatible");
-assert.strictEqual(nucaSession.photos.length, 2);
-console.log("-> Filtro canónico anti-nuca/espalda validado exitosamente.");
+
+// Muestra 4: Segundo ángulo compatible del cliente (similitud 0.88)
+const compatibleClientVec2 = new Array(512).fill(0);
+compatibleClientVec2[10] = 0.88;
+compatibleClientVec2[12] = Math.sqrt(1 - 0.88 * 0.88);
+const addedCompatible2 = await antiNucaService.addFaceSample(501, {
+  sharpnessScore: 81,
+  embedding: compatibleClientVec2,
+  thumbnailBase64: "data:image/jpeg;base64,semi_face_2",
+  pose: "semi_right",
+  poseLabel: "Semi Perfil Derecho",
+  skipCooldown: true
+});
+assert.strictEqual(addedCompatible2, true);
+assert.strictEqual(nucaSession.photos.length, 4);
+
+// Al finalizar (closeSession): filterOutlierSamples purga la muestra anómala (nuca)
+const filteredCluster = antiNucaService.filterOutlierSamples(nucaSession.photos, nucaSession.embeddings);
+assert.strictEqual(filteredCluster.photos.length, 3, "Al finalizar debe descartar la muestra de nuca / outlier");
+assert.strictEqual(filteredCluster.photos.some(p => p.thumbnailBase64.includes("nape_crop")), false, "No debe incluir la nuca en la selección final");
+console.log("-> Filtrado anti-outliers / nuca al finalizar validado exitosamente.");
 
 console.log("\n[14] Probando protección de miniatura por orientación de pose...");
 // Muestra 4: Mayor nitidez (98 > 82) pero pose no frontal/semi (perfil o nuca)

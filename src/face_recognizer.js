@@ -59,12 +59,40 @@ export function l2Normalize(vec) {
  * @returns {number} Value between -1.0 and 1.0 (typically >= 0.45 indicates same person)
  */
 export function computeCosineSimilarity(vecA, vecB) {
-  if (!vecA || !vecB || vecA.length !== vecB.length) return 0;
+  const a = Array.isArray(vecA) ? vecA : (vecA?.vector || null);
+  const b = Array.isArray(vecB) ? vecB : (vecB?.vector || null);
+  if (!a || !b || a.length !== b.length) return 0;
   let dot = 0;
-  for (let i = 0; i < vecA.length; i++) {
-    dot += vecA[i] * vecB[i];
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
   }
   return Number(dot.toFixed(4));
+}
+
+/**
+ * Determina si dos orientaciones / poses faciales pertenecen al mismo grupo o son compatibles
+ * para optimizar la comparación biométrica por perspectiva.
+ * @param {string} poseA 
+ * @param {string} poseB 
+ * @returns {boolean}
+ */
+export function arePosesCompatible(poseA, poseB) {
+  if (!poseA || !poseB) return true;
+  if (poseA === poseB) return true;
+
+  const leftGroup = ['profile_left', 'semi_left', 'tilted_down_left', 'tilted_up_left'];
+  const rightGroup = ['profile_right', 'semi_right', 'tilted_down_right', 'tilted_up_right'];
+  const downGroup = ['tilted_down', 'tilted_down_left', 'tilted_down_right'];
+  const upGroup = ['tilted_up', 'tilted_up_left', 'tilted_up_right'];
+  const frontalGroup = ['frontal', 'semi_left', 'semi_right'];
+
+  if (leftGroup.includes(poseA) && leftGroup.includes(poseB)) return true;
+  if (rightGroup.includes(poseA) && rightGroup.includes(poseB)) return true;
+  if (downGroup.includes(poseA) && downGroup.includes(poseB)) return true;
+  if (upGroup.includes(poseA) && upGroup.includes(poseB)) return true;
+  if (frontalGroup.includes(poseA) && frontalGroup.includes(poseB)) return true;
+
+  return false;
 }
 
 /**

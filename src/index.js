@@ -59,7 +59,12 @@ const mockVideoPath = process.env.MOCK_VIDEO_PATH ? path.resolve(PROJECT_ROOT, p
 const streamServer = new StreamServer({
   rtspUrl: process.env.RTSP_STREAM_URL || "rtsp://127.0.0.1:8554/barberia/sub",
   fps: Number(process.env.STREAM_FPS) || 3.5,
+  streamFastForward: process.env.STREAM_FAST_FORWARD === "true",
   mockVideoPath,
+  mockVideoLastMinutes: process.env.MOCK_VIDEO_LAST_MINUTES ? Number(process.env.MOCK_VIDEO_LAST_MINUTES) : null,
+  mockVideoStartSs: process.env.MOCK_VIDEO_START_SS ? Number(process.env.MOCK_VIDEO_START_SS) : null,
+  mockVideoDurationSs: process.env.MOCK_VIDEO_DURATION_SS ? Number(process.env.MOCK_VIDEO_DURATION_SS) : null,
+  mockVideoLoop: process.env.MOCK_VIDEO_LOOP === "true",
   onEnsureRtspSource: async ({ forceRestart = false } = {}) => {
     if (!mockVideoPath) {
       await startNeolinkDaemon({ tomlPath: TOML_PATH, forceRestart });
@@ -123,6 +128,23 @@ app.get(["/api/yolo/stream", "/api/telemetry/stream"], (req, res) => {
 
 app.get(["/api/yolo/latest", "/api/telemetry/latest"], (req, res) => {
   res.json(telemetryStream.getLatestTelemetry() || { status: "no_data_yet" });
+});
+
+app.post(["/api/session/close", "/api/appointments/close"], async (req, res) => {
+  try {
+    const sessions = orchestrator.visitService.getActiveSessions();
+    if (sessions.length === 0) {
+      return res.json({ status: "no_active_sessions" });
+    }
+    const results = [];
+    for (const s of sessions) {
+      const appt = await orchestrator.visitService.closeSession(s.trackId, { minMinutes: 0 });
+      results.push(appt);
+    }
+    return res.json({ status: "closed", appointments: results });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 const PORT = process.env.PORT || 8085;
@@ -191,7 +213,7 @@ export function startRealtimeLoop(intervalMs = DEFAULT_REALTIME_INTERVAL_MS) {
 
   const loopStep = async () => {
     if (!isRealtimeLoopRunning) return;
-    if (!workingHours.isWorkingNow()) {
+    if (!mockVideoPath && !workingHours.isWorkingNow()) {
       realtimeLoopTimeout = setTimeout(loopStep, 5000);
       return;
     }
@@ -267,7 +289,11 @@ if (mockVideoPath) {
 
 // Iniciar bucle continuo de visión y seguimiento en tiempo real
 function tryStartRealtimeLoop() {
-  if (workingHours.isWorkingNow()) {
+  const isSimulation = Boolean(mockVideoPath);
+  if (isSimulation || workingHours.isWorkingNow()) {
+    if (isSimulation) {
+      console.log(`[Startup] 🎬 Modo Simulación Activo: omitiendo restricción de horario laboral.`);
+    }
     console.log(`[Startup] Arrancando bucle de visión y seguimiento continuo en tiempo real (${DEFAULT_REALTIME_INTERVAL_MS}ms)...`);
     startRealtimeLoop();
   } else {

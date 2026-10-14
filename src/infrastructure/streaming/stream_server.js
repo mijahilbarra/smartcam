@@ -4,7 +4,7 @@
  * sin sobrecargar la CPU de la VM ni consumir ancho de banda cuando nadie está conectado.
  */
 
-import { spawn } from "child_process";
+import { spawn, execSync } from "child_process";
 import http from "http";
 import https from "https";
 
@@ -16,6 +16,21 @@ export class StreamServer {
     this.rtspUrl = options.rtspUrl || process.env.RTSP_STREAM_URL || "rtsp://127.0.0.1:8554/barberia/sub";
     this.fps = options.fps || Number(process.env.STREAM_FPS) || 3.5;
     this.mockVideoPath = options.mockVideoPath || process.env.MOCK_VIDEO_PATH || null;
+    this.mockVideoLastMinutes = options.mockVideoLastMinutes != null
+      ? Number(options.mockVideoLastMinutes)
+      : (process.env.MOCK_VIDEO_LAST_MINUTES ? Number(process.env.MOCK_VIDEO_LAST_MINUTES) : null);
+    this.mockVideoStartSs = options.mockVideoStartSs != null
+      ? Number(options.mockVideoStartSs)
+      : (process.env.MOCK_VIDEO_START_SS ? Number(process.env.MOCK_VIDEO_START_SS) : null);
+    this.mockVideoDurationSs = options.mockVideoDurationSs != null
+      ? Number(options.mockVideoDurationSs)
+      : (process.env.MOCK_VIDEO_DURATION_SS ? Number(process.env.MOCK_VIDEO_DURATION_SS) : null);
+    this.mockVideoLoop = options.mockVideoLoop != null
+      ? Boolean(options.mockVideoLoop)
+      : (process.env.MOCK_VIDEO_LOOP === "true");
+    this.streamFastForward = options.streamFastForward != null
+      ? Boolean(options.streamFastForward)
+      : (process.env.STREAM_FAST_FORWARD === "true");
     this.onEnsureRtspSource = options.onEnsureRtspSource || null;
     this.clients = new Set();
     this.ffmpegProcess = null;
@@ -199,6 +214,44 @@ export class StreamServer {
   }
 
   /**
+   * Obtiene la duración de un video local en segundos usando ffprobe
+   * @param {string} filePath
+   * @returns {number|null}
+   */
+  getVideoDuration(filePath) {
+    try {
+      const output = execSync(
+        `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`,
+        { encoding: "utf8", timeout: 5000 }
+      );
+      const dur = parseFloat(output.trim());
+      return Number.isFinite(dur) && dur > 0 ? dur : null;
+    } catch (err) {
+      console.warn(`[Stream] No se pudo determinar duración con ffprobe para ${filePath}:`, err.message);
+      return null;
+    }
+  }
+
+  /**
+   * Calcula el segundo de inicio para videos mock basado en MOCK_VIDEO_START_SS o MOCK_VIDEO_LAST_MINUTES
+   * @returns {number} Offset en segundos (0 si inicia desde el principio)
+   */
+  getMockVideoStartOffset() {
+    if (this.mockVideoStartSs != null && !isNaN(this.mockVideoStartSs)) {
+      return Math.max(0, this.mockVideoStartSs);
+    }
+    if (this.mockVideoLastMinutes != null && !isNaN(this.mockVideoLastMinutes)) {
+      const duration = this.getVideoDuration(this.mockVideoPath);
+      if (duration != null) {
+        const offset = Math.max(0, Math.floor(duration - this.mockVideoLastMinutes * 60));
+        console.log(`[Stream] ⏱️ Duración del video: ${duration.toFixed(1)}s (~${(duration / 60).toFixed(1)} min). MOCK_VIDEO_LAST_MINUTES=${this.mockVideoLastMinutes} -> Iniciando en t=${offset}s (${Math.floor(offset / 60)}m ${offset % 60}s).`);
+        return offset;
+      }
+    }
+    return 0;
+  }
+
+  /**
    * Inicia el proceso de lectura RTSP con FFmpeg
    */
   async startFfmpegStream(persistent = false) {
@@ -229,14 +282,23 @@ export class StreamServer {
         }
       }
 
+      let seekOffset = 0;
+      if (this.mockVideoPath) {
+        seekOffset = this.getMockVideoStartOffset();
+      }
+
+      const isLoop = Boolean(this.mockVideoPath && this.mockVideoLoop);
+      const isFastForward = Boolean(this.mockVideoPath && this.streamFastForward);
       const args = this.mockVideoPath
         ? [
-            "-re",
-            "-stream_loop", "-1",
+            ...(!isFastForward ? ["-re"] : []),
+            ...(seekOffset > 0 ? ["-ss", String(seekOffset)] : []),
+            ...(this.mockVideoDurationSs > 0 ? ["-t", String(this.mockVideoDurationSs)] : []),
+            ...(isLoop ? ["-stream_loop", "-1"] : []),
             "-i", this.mockVideoPath,
             "-an",
             "-r", String(this.fps),
-            "-threads", "1",
+            "-threads", isFastForward ? "0" : "1",
             "-f", "image2pipe",
             "-q:v", "5",
             "-vcodec", "mjpeg",
@@ -257,7 +319,8 @@ export class StreamServer {
           ];
 
       if (this.mockVideoPath) {
-        console.log(`[Stream] 🎬 Iniciando ingesta FFmpeg en modo MOCK VIDEO desde: ${this.mockVideoPath} a ${this.fps} FPS (bucle continuo 1x)...`);
+        const seekMsg = seekOffset > 0 ? ` (iniciando en ${Math.floor(seekOffset / 60)}m ${seekOffset % 60}s)` : "";
+        console.log(`[Stream] 🎬 Iniciando ingesta FFmpeg en modo MOCK VIDEO desde: ${this.mockVideoPath}${seekMsg} a ${this.fps} FPS (bucle continuo 1x)...`);
       } else {
         console.log(`[Stream] Iniciando ingesta FFmpeg on-demand desde: ${this.rtspUrl} a ${this.fps} FPS...`);
       }
@@ -334,6 +397,13 @@ export class StreamServer {
         if (this.reconnectTimer) {
           clearTimeout(this.reconnectTimer);
           this.reconnectTimer = null;
+        }
+
+        // Si es video mock y terminó normalmente sin bucle, concluir la reproducción limpiamente
+        if (this.mockVideoPath && !this.mockVideoLoop && code === 0) {
+          console.log("[Stream] 🎬 Reproducción de video mock finalizada (reproducción única completa).");
+          this.isPersistent = false;
+          return;
         }
 
         // Si es persistente o aún hay clientes, programar reconexión con backoff en caso de fallo

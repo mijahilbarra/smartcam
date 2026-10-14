@@ -14,7 +14,7 @@
 import sharp from "sharp";
 import { uploadFaceCrop } from "../infrastructure/firebase/storage_client.js";
 import { isServiceChair as isServiceChairRule, isTransitZone } from "../core/barbershop_rules.js";
-import { computeCosineSimilarity, extractFaceEmbedding } from "../face_recognizer.js";
+import { computeCosineSimilarity, extractFaceEmbedding, arePosesCompatible } from "../face_recognizer.js";
 import { matchStaffFace } from "./people_service.js";
 import { customerService as defaultCustomerService } from "./customer_service.js";
 import { daemonReporter } from "../daemon_reporter.js";
@@ -98,11 +98,11 @@ export class VisitSessionService {
       } catch (_) {}
     }
 
-    // Si tiene embedding facial, evaluar contra Barbero/Staff (umbral sensible 0.40)
+    // Si tiene embedding facial, evaluar contra Barbero/Staff (umbral definitivo 0.50)
     if (track.bestFace?.embedding) {
       const knownProfiles = this.customerService?.getComparisonProfiles?.() || [];
-      const staffCheck = matchStaffFace(track.bestFace.embedding, knownProfiles, 0.40);
-      if (staffCheck.isStaffMatch || staffCheck.maxStaffSim >= 0.40) {
+      const staffCheck = matchStaffFace(track.bestFace.embedding, knownProfiles, 0.50);
+      if (staffCheck.isStaffMatch || staffCheck.maxStaffSim >= 0.50) {
         track.role = "staff";
         track.isStaffHint = true;
         if (track.identity) track.identity.isStaff = true;
@@ -201,6 +201,16 @@ export class VisitSessionService {
     const chairFrames = track.consecutiveChairFrames !== undefined ? track.consecutiveChairFrames : minFrames;
     if (chairFrames < minFrames) {
       return null; // Transeúnte en tránsito o debounce insuficiente: no abrir atención efímera
+    }
+
+    // Blindaje contra Barbero/Staff en la silla:
+    // Si la persona ya tiene un rostro con coincidencia indudable de staff (>= 0.50), no abrir atención de cliente
+    if (track.bestFace?.embedding) {
+      const knownProfiles = this.customerService?.getComparisonProfiles?.() || [];
+      const staffCheck = matchStaffFace(track.bestFace.embedding, knownProfiles, 0.50);
+      if (staffCheck.isStaffMatch || staffCheck.maxStaffSim >= 0.50) {
+        return null;
+      }
     }
 
     const tempClientId = `person_${now}_${track.trackId}`;
@@ -510,8 +520,10 @@ export class VisitSessionService {
           }
         }
 
+        const staffExclusionThreshold = 0.50;
+
         // Si no tiene embeddings pero tiene fotos, extraer embedding ONNX bajo demanda
-        if (maxStaffSim < 0.35 && Array.isArray(cand.photos) && staffVectors.length > 0) {
+        if (maxStaffSim < staffExclusionThreshold && Array.isArray(cand.photos) && staffVectors.length > 0) {
           for (const ph of cand.photos) {
             if (ph.thumbnailBase64) {
               try {
@@ -529,7 +541,7 @@ export class VisitSessionService {
           }
         }
 
-        const isBarberMatch = maxStaffSim >= 0.35;
+        const isBarberMatch = maxStaffSim >= staffExclusionThreshold;
 
         if (isBarberMatch) {
           // Descartar cualquier sesión en curso que pertenezca al barbero
@@ -538,7 +550,7 @@ export class VisitSessionService {
               this.activeSessions.delete(tId);
             }
           }
-          this.logVerbal(`🧹 Auto-eliminando perfil "to_verify" (${candId}): Foto coincide con el Barbero/Staff (similitud: ${maxStaffSim.toFixed(3)} >= 0.35).`, "process");
+          this.logVerbal(`🧹 Auto-eliminando perfil "to_verify" (${candId}): Foto coincide con el Barbero/Staff (similitud: ${maxStaffSim.toFixed(3)} >= ${staffExclusionThreshold.toFixed(2)}).`, "process");
           await this.customerService.deleteCustomer(candId, { db: firestoreInstance });
           deletedCount++;
           continue;
@@ -588,30 +600,21 @@ export class VisitSessionService {
       return false;
     }
 
+    // Solo excluir en caliente si es confirmación indudable de Staff (similitud >= 0.52).
+    // La depuración y exclusión estricta anti-barbero (si se parece más al barbero que al cliente)
+    // se realiza de forma limpia y completa al final en closeSession().
     if (embedding) {
       const knownProfiles = this.customerService?.getComparisonProfiles?.() || [];
-      const staffCheck = matchStaffFace(embedding, knownProfiles, 0.52);
-      if (staffCheck.isStaffMatch || staffCheck.maxStaffSim >= 0.52) {
-        console.log(`[Appointment] Rostro en ${session.chairName} coincide con Barbero/Staff (Sim: ${staffCheck.maxStaffSim.toFixed(3)} >= 0.52). Excluido de atención.`);
+      const staffCheck = matchStaffFace(embedding, knownProfiles, 0.48, { pose: sample.pose });
+      if (staffCheck.isStaffMatch || staffCheck.maxStaffSim >= 0.48) {
+        console.log(`[Appointment] Rostro en ${session.chairName} coincide con Barbero/Staff (Sim: ${staffCheck.maxStaffSim.toFixed(3)}, SamePoseSim: ${staffCheck.maxSamePoseSim?.toFixed(3) || 0}). Excluido de atención.`);
         return false;
       }
     }
 
-    // Filtro Canónico Anti-Nuca / Anti-Espalda:
-    // Si la sesión ya tiene muestras, calcular similitud con el rostro canónico original (embeddings[0])
-    // Si similitud < 0.45 (nuca o espalda), RECHAZAR la muestra
-    if (embedding && session.photos.length > 0 && session.embeddings.length > 0) {
-      const canonicalVector = Array.isArray(session.embeddings[0])
-        ? session.embeddings[0]
-        : (session.embeddings[0]?.vector || null);
-      if (canonicalVector) {
-        const canonicalSim = computeCosineSimilarity(embedding, canonicalVector);
-        if (canonicalSim < 0.45) {
-          console.warn(`[Appointment] Muestra descartada por incompatibilidad con rostro canónico (similitud: ${canonicalSim.toFixed(3)} < 0.45). Excluye posible nuca o espalda.`);
-          return false;
-        }
-      }
-    }
+    // Captura continua en silla con YOLO: mientras la persona esté sentada,
+    // se acumulan muestras de calidad respetando cadencia temporal y poses.
+    // La depuración y selección final (anti-barbero y anti-outliers) se realiza al finalizar en closeSession().
 
     // 2. Resolver miniatura en base64 (si solo viene el buffer, convertir con Sharp)
     let finalThumbnailBase64 = thumbnailBase64 || null;
@@ -635,7 +638,7 @@ export class VisitSessionService {
     const now = sample.timestamp || sample.capturedAtEpoch || Date.now();
     const incomingPose = pose || 'frontal';
     const incomingPoseLabel = poseLabel || (incomingPose === 'frontal' ? 'Frontal' : incomingPose);
-    const isFrontalOrSemi = ['frontal', 'semi_left', 'semi_right'].includes(sample.pose || 'frontal');
+    const isFrontalOrSemi = ['frontal', 'semi_left', 'semi_right', 'tilted_up', 'tilted_down', 'tilted_up_left', 'tilted_up_right', 'tilted_down_left', 'tilted_down_right'].includes(sample.pose || 'frontal');
 
     const photoItem = {
       thumbnailBase64: finalThumbnailBase64,
@@ -688,22 +691,27 @@ export class VisitSessionService {
     }
 
     // 4. Control de cadencia temporal ("de vez en cuando"):
-    // Si la última foto tomada fue hace menos de 20 segundos, omitir foto repetida
-    if (session.photos.length > 0 && session.lastPhotoAt && !skipCooldown && (now - session.lastPhotoAt < 20000)) {
-      const samePoseIdx = session.photos.findIndex(p => p.pose === incomingPose);
-      const updateIdx = samePoseIdx !== -1 ? samePoseIdx : (session.photos.length - 1);
-      if (updateIdx !== -1 && sharpnessScore > (session.photos[updateIdx].sharpnessScore || 0)) {
-        session.photos[updateIdx] = photoItem;
-        if (embedding && session.embeddings[updateIdx]) {
-          session.embeddings[updateIdx] = embedding;
+    // Si la última foto tomada fue hace menos de 20 segundos y es la MISMA pose, solo actualizar si mejora nitidez
+    const isFastForward = Boolean(process.env.STREAM_FAST_FORWARD === "true");
+    const cooldownMs = isFastForward ? 2000 : 20000;
+    const samePoseIdx = session.photos.findIndex(p => p.pose === incomingPose);
+
+    if (session.photos.length > 0 && session.lastPhotoAt && !skipCooldown && (now - session.lastPhotoAt < cooldownMs)) {
+      if (samePoseIdx !== -1) {
+        if (sharpnessScore > (session.photos[samePoseIdx].sharpnessScore || 0)) {
+          session.photos[samePoseIdx] = photoItem;
+          if (embedding && session.embeddings[samePoseIdx]) {
+            session.embeddings[samePoseIdx] = embedding;
+          }
+          session.lastPhotoAt = now;
+          if (sharpnessScore > (session.bestFaceScore || 0) && isFrontalOrSemi) {
+            session.bestFaceScore = sharpnessScore;
+            session.thumbnailBase64 = finalThumbnailBase64;
+          }
         }
-        session.lastPhotoAt = now;
-        if (sharpnessScore > (session.bestFaceScore || 0) && isFrontalOrSemi) {
-          session.bestFaceScore = sharpnessScore;
-          session.thumbnailBase64 = finalThumbnailBase64;
-        }
+        return false;
       }
-      return false;
+      // Si es una pose distinta o ángulo nuevo, permitir acumularlo directamente
     }
 
     // 5. Acumulación de fotos y embeddings (hasta 20 recortes por atención)
@@ -844,6 +852,18 @@ export class VisitSessionService {
       return null;
     }
 
+    // Sincronizar todas las fotos acumuladas en customerService si tiene más muestras que la sesión
+    const custData = this.customerService?.getCustomerData?.(session.personId) ||
+                     this.customerService?.getCustomerData?.(session.tempClientId);
+    if (custData && Array.isArray(custData.photos) && custData.photos.length > (session.photos?.length || 0)) {
+      session.photos = [...custData.photos];
+      session.embeddings = Array.isArray(custData.embeddings) ? [...custData.embeddings] : (Array.isArray(custData.embedding) ? [custData.embedding] : []);
+    }
+
+    // Snapshot de fotos antes de closeSession (para auditoría y reporte)
+    session.photosBeforeClose = session.photos ? [...session.photos] : [];
+    session.embeddingsBeforeClose = session.embeddings ? [...session.embeddings] : [];
+
     // 3. Purga estricta de fotos individuales del Barbero / Staff en el cluster
     if (session.photos && session.photos.length > 0 && session.embeddings && session.embeddings.length > 0) {
       const knownProfiles = this.customerService?.getComparisonProfiles?.() || [];
@@ -858,12 +878,15 @@ export class VisitSessionService {
         for (const staff of staffProfiles) {
           if (Array.isArray(staff.embeddings)) {
             for (const item of staff.embeddings) {
-              if (Array.isArray(item)) staffVectors.push(item);
-              else if (item && Array.isArray(item.vector)) staffVectors.push(item.vector);
+              if (Array.isArray(item)) {
+                staffVectors.push({ vector: item, pose: 'frontal' });
+              } else if (item && Array.isArray(item.vector)) {
+                staffVectors.push({ vector: item.vector, pose: item.pose || 'frontal', poseLabel: item.poseLabel || 'Frontal' });
+              }
             }
           }
           if (staffVectors.length === 0 && Array.isArray(staff.embedding)) {
-            staffVectors.push(staff.embedding);
+            staffVectors.push({ vector: staff.embedding, pose: 'frontal' });
           }
         }
 
@@ -871,37 +894,51 @@ export class VisitSessionService {
           const cleanPhotos = [];
           const cleanEmbeddings = [];
           const N = Math.min(session.photos.length, session.embeddings.length);
+          const rawVectors = session.embeddings.slice(0, N).map(e => Array.isArray(e) ? e : (e?.vector || null));
+
           for (let i = 0; i < N; i++) {
-            const emb = session.embeddings[i];
-            const sVec = Array.isArray(emb) ? emb : (emb?.vector || null);
+            const sVec = rawVectors[i];
+            const photoPose = session.photos[i]?.pose || 'frontal';
             let isStaffPhoto = false;
+            let maxStaffSim = 0;
+            let maxStaffSamePoseSim = 0;
+
             if (sVec) {
               for (const sv of staffVectors) {
-                const sim = computeCosineSimilarity(sVec, sv);
-                if (sim >= 0.52) {
-                  isStaffPhoto = true;
-                  break;
+                const sim = computeCosineSimilarity(sVec, sv.vector);
+                if (sim > maxStaffSim) maxStaffSim = sim;
+                if (arePosesCompatible(photoPose, sv.pose)) {
+                  if (sim > maxStaffSamePoseSim) maxStaffSamePoseSim = sim;
                 }
               }
+
+              // Calcular afinidad de esta foto con el resto de fotos de la sesión
+              let maxClientSim = 0;
+              for (let j = 0; j < N; j++) {
+                if (i === j || !rawVectors[j]) continue;
+                const cSim = computeCosineSimilarity(sVec, rawVectors[j]);
+                if (cSim > maxClientSim) maxClientSim = cSim;
+              }
+
+              // REGLA:
+              // 1. Similitud alta directa con el barbero (>= 0.47)
+              // 2. Coincidencia en la misma orientación facial (>= 0.44)
+              // 3. Afinidad relativa: se parece más al barbero que al resto del cliente (maxStaffSim > maxClientSim y maxStaffSim >= 0.28)
+              if (maxStaffSim >= 0.47 || maxStaffSamePoseSim >= 0.44 || (N > 1 && maxStaffSim > maxClientSim && maxStaffSim >= 0.28)) {
+                isStaffPhoto = true;
+                console.log(`[Appointment] ✂️ Purga de cluster: Eliminada foto #${i + 1} (${photoPose}) del corte por pertenecer al Barbero/Staff (StaffSim: ${maxStaffSim.toFixed(3)}, SamePoseSim: ${maxStaffSamePoseSim.toFixed(3)}, ClientSim: ${maxClientSim.toFixed(3)}).`);
+              }
             }
-            if (isStaffPhoto) {
-              console.log(`[Appointment] ✂️ Purga de cluster: Eliminada foto #${i + 1} del corte por coincidir con el Barbero/Staff (>= 0.52).`);
-            } else {
+
+            if (!isStaffPhoto) {
               cleanPhotos.push(session.photos[i]);
-              cleanEmbeddings.push(emb);
+              cleanEmbeddings.push(session.embeddings[i]);
             }
           }
           session.photos = cleanPhotos;
           session.embeddings = cleanEmbeddings;
         }
       }
-    }
-
-    // Filtrado de outliers en el cluster de fotos antes de clasificar
-    if (session.photos?.length >= 3 && session.embeddings?.length >= 3) {
-      const filtered = this.filterOutlierSamples(session.photos, session.embeddings);
-      session.photos = filtered.photos;
-      session.embeddings = filtered.embeddings;
     }
 
     // Deduplicación estricta de fotos de la sesión (elimina clones repetidos, conserva hasta 20 ángulos únicos)
@@ -1161,6 +1198,41 @@ export class VisitSessionService {
       } catch (dbErr) {
         console.error(`[Appointment] Error guardando atención en Firestore:`, dbErr.message);
       }
+    }
+
+    // Exportar auditoría fotográfica antes/después de closeSession
+    try {
+      const fs = await import("fs");
+      const path = await import("path");
+      const reportDir = path.resolve(process.cwd(), "data/audit_reports");
+      if (!fs.existsSync(reportDir)) fs.mkdirSync(reportDir, { recursive: true });
+      const auditPayload = {
+        appointmentId: appointmentRecord.id,
+        clientId: finalClient.id,
+        clientName: finalClient.name,
+        clientStatus: finalClient.status,
+        matchedClient: matchedClient ? { id: matchedClient.id, name: matchedClient.name, status: matchedClient.status } : null,
+        durationMinutes,
+        photosBeforeClose: (session.photosBeforeClose || []).map((p, i) => ({
+          idx: i + 1,
+          pose: p.pose,
+          poseLabel: p.poseLabel,
+          sharpnessScore: p.sharpnessScore,
+          thumbnailBase64: p.thumbnailBase64
+        })),
+        photosAfterClose: (session.photos || []).map((p, i) => ({
+          idx: i + 1,
+          pose: p.pose,
+          poseLabel: p.poseLabel,
+          sharpnessScore: p.sharpnessScore,
+          thumbnailBase64: p.thumbnailBase64
+        }))
+      };
+      const filePath = path.join(reportDir, `audit_${appointmentRecord.id}.json`);
+      fs.writeFileSync(filePath, JSON.stringify(auditPayload, null, 2));
+      console.log(`[Appointment] 📑 Reporte de auditoría de cierre exportado a: ${filePath}`);
+    } catch (auditErr) {
+      console.warn(`[Appointment] Error exportando auditoría:`, auditErr.message);
     }
 
     return appointmentRecord;
