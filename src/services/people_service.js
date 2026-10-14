@@ -5,7 +5,7 @@
  */
 
 import sharp from "sharp";
-import { extractFaceEmbedding, identifyFace, computeCosineSimilarity } from "../face_recognizer.js";
+import { extractFaceEmbedding, identifyFace, computeCosineSimilarity, arePosesCompatible } from "../face_recognizer.js";
 import { evaluateFaceQuality } from "./face_quality_service.js";
 import { isChairZone, isTransitZone } from "../core/barbershop_rules.js";
 import { customerService } from "./customer_service.js";
@@ -225,9 +225,9 @@ export function enrichPersonAngles(person, { embedding, faceThumbnailBase64, sha
  * @param {number} [staffThreshold=0.58]
  * @returns {{ isStaffMatch: boolean, maxStaffSim: number, staffProfile: Object|null }}
  */
-export function matchStaffFace(embedding, knownProfiles = [], staffThreshold = 0.58) {
+export function matchStaffFace(embedding, knownProfiles = [], staffThreshold = 0.46, options = {}) {
   if (!embedding || !Array.isArray(knownProfiles) || knownProfiles.length === 0) {
-    return { isStaffMatch: false, maxStaffSim: 0, staffProfile: null };
+    return { isStaffMatch: false, maxStaffSim: 0, maxSamePoseSim: 0, staffProfile: null };
   }
 
   const staffProfiles = knownProfiles.filter(p => {
@@ -236,37 +236,53 @@ export function matchStaffFace(embedding, knownProfiles = [], staffThreshold = 0
     return (p.isStaff === true && p.role !== "client") || p.role === "barber" || (String(p.id).startsWith("staff_") && p.role !== "client" && p.isStaff !== false);
   });
   if (staffProfiles.length === 0) {
-    return { isStaffMatch: false, maxStaffSim: 0, staffProfile: null };
+    return { isStaffMatch: false, maxStaffSim: 0, maxSamePoseSim: 0, staffProfile: null };
   }
 
   let bestStaff = null;
   let maxSim = -1;
+  let maxSamePoseSim = -1;
+  const queryPose = options.pose || null;
 
   for (const staff of staffProfiles) {
     const vectors = [];
     if (Array.isArray(staff.embeddings)) {
       for (const item of staff.embeddings) {
-        if (Array.isArray(item)) vectors.push(item);
-        else if (item && Array.isArray(item.vector)) vectors.push(item.vector);
+        if (Array.isArray(item)) {
+          vectors.push({ vector: item, pose: 'frontal' });
+        } else if (item && Array.isArray(item.vector)) {
+          vectors.push({ vector: item.vector, pose: item.pose || 'frontal', poseLabel: item.poseLabel || 'Frontal' });
+        }
       }
     }
     if (vectors.length === 0 && Array.isArray(staff.embedding)) {
-      vectors.push(staff.embedding);
+      vectors.push({ vector: staff.embedding, pose: 'frontal' });
     }
 
     for (const v of vectors) {
-      const s = computeCosineSimilarity(embedding, v);
+      const s = computeCosineSimilarity(embedding, v.vector);
       if (s > maxSim) {
         maxSim = s;
         bestStaff = staff;
       }
+      if (queryPose && arePosesCompatible(queryPose, v.pose)) {
+        if (s > maxSamePoseSim) {
+          maxSamePoseSim = s;
+        }
+      }
     }
   }
 
+  // Comparación con orientación correcta:
+  // Si coincide en la misma orientación y supera 0.42 -> es match positivo de staff con mayor oportunidad
+  const isMatchByPose = queryPose && maxSamePoseSim >= 0.42;
+  const isMatch = isMatchByPose || (maxSim >= staffThreshold);
+
   return {
-    isStaffMatch: maxSim >= staffThreshold,
+    isStaffMatch: isMatch,
     maxStaffSim: maxSim > -1 ? maxSim : 0,
-    staffProfile: maxSim >= staffThreshold ? bestStaff : null
+    maxSamePoseSim: maxSamePoseSim > -1 ? maxSamePoseSim : 0,
+    staffProfile: isMatch ? bestStaff : null
   };
 }
 
@@ -413,7 +429,7 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
       // 1. EVALUACIÓN PRIORITARIA Y EXCLUSIVA DEL BARBERO / STAFF
       // Regla: "Si se parece al barbero, no se guarda como cliente ni se asocia a visitas".
       // INMUTABILIDAD TOTAL: El streaming NUNCA sobrescribe, borra ni altera fotos de un perfil de Staff en caliente.
-      const staffMatch = matchStaffFace(embedding, allKnown, 0.58);
+      const staffMatch = matchStaffFace(embedding, allKnown, 0.48, { pose: quality.pose });
 
       if (staffMatch.isStaffMatch) {
         const staff = staffMatch.staffProfile;
@@ -439,6 +455,19 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
         // NUNCA procesar al barbero como cliente, ni en sesión de silla ni en debounce.
         // NUNCA alterar la galería de fotos del personal en streaming.
         continue;
+      }
+
+      // 2. EXCLUSIÓN ASIMÉTRICA POR SOSPECHA DE BARBERO / STAFF
+      // Para transeúntes fuera de la silla, si el rostro tiene similitud >= 0.45 con el barbero, se veta.
+      // Pero si está en una silla de corte activa (crop.zoneId), NO se veta en caliente para permitir capturar
+      // todos los ángulos del cliente; la purga estricta anti-barbero se ejecuta al final en closeSession().
+      const isChairCrop = Boolean(crop.zoneId && activeSessions.some(s => s.chairId === crop.zoneId || s.chairName === crop.zoneId));
+      if (!isChairCrop) {
+        const staffExclusionThreshold = Number(process.env.STAFF_EXCLUSION_THRESHOLD) || 0.45;
+        if (staffMatch.maxStaffSim >= staffExclusionThreshold) {
+          console.log(`[FaceRecognition] Rostro sospechoso de Barbero/Staff (Sim: ${staffMatch.maxStaffSim.toFixed(3)} >= ${staffExclusionThreshold.toFixed(2)}). Excluido de creación o adición a clientes.`);
+          continue;
+        }
       }
 
       // 3. GOBERNANZA TEMPORAL DE SESIÓN EN SILLA (PROTEGIDA CONTRA INTRUSIÓN)
@@ -491,8 +520,9 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
           : 1.0;
 
         // Validar que el rostro en la silla efectivamente corresponda al cliente de la sesión:
-        // Exigir similitud canónica >= 0.48 (o maxSim >= 0.55 con canónico >= 0.42)
-        const isMatchToSessionClient = canonicalSim >= 0.48 || (maxSim >= 0.55 && canonicalSim >= 0.42);
+        // En una sesión gobernada en silla, cualquier rostro que no sea personal (staffMatch.maxStaffSim < 0.45)
+        // pertenece al cliente sentado en la silla o al nuevo ángulo de su atención.
+        const isMatchToSessionClient = (canonicalSim >= 0.40 || maxSim >= 0.45) || (staffMatch.maxStaffSim < 0.45);
 
         if (isMatchToSessionClient) {
           sessionMatched = true;
@@ -508,14 +538,14 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
           const nowEpoch = Date.now();
           const lastPhotoTime = p.lastPhotoAtEpoch || (p.lastPhotoAt ? new Date(p.lastPhotoAt).getTime() : 0);
           const timeSinceLastPhoto = nowEpoch - lastPhotoTime;
-          const cadencePassed = timeSinceLastPhoto >= 20000;
+          const cadencePassed = timeSinceLastPhoto >= 2000; // 2s en fast-forward
           const canAddMorePhotos = pPhotosCount < 20 && (cadencePassed || pPhotosCount === 0);
 
-          const isNovelAngle = maxSim >= 0.50 && maxSim <= 0.88 && canonicalSim >= 0.48;
-          const hasHigherSharpness = quality.sharpnessScore > (p.bestFaceScore || 0) && canonicalSim >= 0.48;
+          const isNovelAngle = maxSim >= 0.45 && maxSim <= 0.88;
+          const hasHigherSharpness = quality.sharpnessScore > (p.bestFaceScore || 0);
 
           const currentPoses = new Set((p.photos || []).map(ph => ph.pose || 'frontal'));
-          const isUnrepresentedPose = quality.pose && !currentPoses.has(quality.pose) && canonicalSim >= 0.48;
+          const isUnrepresentedPose = quality.pose && !currentPoses.has(quality.pose);
 
           if (canAddMorePhotos || isNovelAngle || hasHigherSharpness || hasMissingPhotos || isUnrepresentedPose) {
             const enriched = enrichPersonAngles(p, {
@@ -525,7 +555,7 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
               pose: quality.pose,
               poseLabel: quality.poseLabel,
               nowEpoch
-            }, { minCanonicalSimilarity: 0.48, enforceCooldown: !canAddMorePhotos && !hasMissingPhotos });
+            }, { minCanonicalSimilarity: 0.35, skipCanonicalCheck: true, enforceCooldown: !canAddMorePhotos && !hasMissingPhotos });
 
             if (!enriched.rejected && !enriched.duplicate) {
               p.lastPhotoAtEpoch = nowEpoch;
@@ -561,6 +591,15 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
 
           if (galleryUpdated) {
             p.embeddings = currentGallery;
+            if (activeSession) {
+              activeSession.photos = [...p.photos];
+              activeSession.embeddings = [...currentGallery];
+              activeSession.lastPhotoAt = nowEpoch;
+              if (p.bestFaceScore > (activeSession.bestFaceScore || 0)) {
+                activeSession.bestFaceScore = p.bestFaceScore;
+                activeSession.thumbnailBase64 = p.thumbnailBase64;
+              }
+            }
           }
 
           // En streaming en tiempo real: actualizar solo en memoria RAM sin llamadas a Firestore cuadro a cuadro
@@ -584,6 +623,9 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
             faceBoxNorm: quality.faceBoxNorm,
             thumbnailBase64: faceThumbnailBase64 || p.photos?.[0]?.thumbnailBase64 || p.thumbnailBase64,
             sharpnessScore: quality.sharpnessScore,
+            embedding: embedding,
+            pose: quality.pose || 'frontal',
+            poseLabel: quality.poseLabel || 'Frontal',
             sessionGoverned: true,
             photos: p.photos || []
           });

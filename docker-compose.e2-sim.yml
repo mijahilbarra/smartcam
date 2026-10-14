@@ -31,6 +31,10 @@ services:
       - NODE_ENV=production
       - IS_LOCAL_SIMULATOR=true
       - MOCK_VIDEO_PATH=${MOCK_VIDEO_PATH:-}
+      - MOCK_VIDEO_LAST_MINUTES=${MOCK_VIDEO_LAST_MINUTES:-}
+      - MOCK_VIDEO_START_SS=${MOCK_VIDEO_START_SS:-}
+      - MOCK_VIDEO_DURATION_SS=${MOCK_VIDEO_DURATION_SS:-}
+      - MOCK_VIDEO_LOOP=${MOCK_VIDEO_LOOP:-false}
       - FIRESTORE_DATABASE_ID=test
       - FIREBASE_PROJECT_ID=skip-bigotes
       - STORAGE_BUCKET=skip-bigotes-test
@@ -39,4 +43,5 @@ services:
       - GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
       - NEOLINK_TOML_PATH=/opt/camera-catcher/neolink.toml
       - REALTIME_INTERVAL_MS=400
+      - STAFF_EXCLUSION_THRESHOLD=${STAFF_EXCLUSION_THRESHOLD:-0.25}
       - ML_MODEL_PATH=/opt/camera-catcher/src/models/yolov8n.onnx

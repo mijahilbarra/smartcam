@@ -53,7 +53,10 @@ assert.strictEqual(severeQuality.reason, "no_face_detected_or_back_of_head");
 
 // 5. Probar estimación de orientación / pose facial (estimateFacePose)
 console.log("\n[5] Probando estimación de orientación/pose facial (estimateFacePose)...");
-const validPoses = ['frontal', 'profile_left', 'profile_right', 'semi_left', 'semi_right', 'tilted_down', 'tilted_up'];
+const validPoses = [
+  'frontal', 'profile_left', 'profile_right', 'semi_left', 'semi_right',
+  'tilted_down', 'tilted_up', 'tilted_up_left', 'tilted_up_right', 'tilted_down_left', 'tilted_down_right'
+];
 const poseResult = await estimateFacePose({ faceBuffer: barberQuality.faceBuffer });
 console.log("-> Estimación de pose para rostro de barbero:", poseResult);
 assert.ok(validPoses.includes(poseResult.pose), `Pose debe ser una pose canónica válida: ${poseResult.pose}`);

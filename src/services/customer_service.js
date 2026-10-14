@@ -95,13 +95,20 @@ export class CustomerService {
                   const staffId = docSnap.id;
                   const isClientName = /^Cliente #\d+$/i.test(data.name?.trim() || "");
                   if (isClientName) return;
+                  const staffEmbeddings = (data.embeddings || []).map((item, idx) => ({
+                    vector: Array.isArray(item) ? item : (item?.vector || null),
+                    pose: item?.pose || data.photos?.[idx]?.pose || 'frontal',
+                    poseLabel: item?.poseLabel || data.photos?.[idx]?.poseLabel || 'Frontal',
+                    sharpnessScore: item?.sharpnessScore || data.photos?.[idx]?.sharpnessScore || 0
+                  })).filter(e => Array.isArray(e.vector));
+
                   const staffProfile = {
                     id: staffId,
                     name: data.name || "Barbero",
                     isStaff: true,
                     role: data.role || "barber",
-                    embedding: data.embedding || (data.embeddings?.[0] ? (Array.isArray(data.embeddings[0]) ? data.embeddings[0] : data.embeddings[0].vector) : null),
-                    embeddings: data.embeddings || (data.embedding ? [data.embedding] : []),
+                    embedding: staffEmbeddings[0]?.vector || data.embedding || null,
+                    embeddings: staffEmbeddings,
                     photos: data.photos || [],
                     thumbnailBase64: data.thumbnailBase64 || null,
                     bestFaceScore: data.bestFaceScore || 0
@@ -372,13 +379,31 @@ export class CustomerService {
       status: resolvedStatus
     };
 
-    // Si customerData proviene de una caché podada (photos: []) y no se solicitó explícitamente actualizar la galería,
-    // preservar las fotos existentes en SQLite para evitar borrados accidentales
-    if (!options.galleryUpdated && (!customerData.photos || customerData.photos.length === 0)) {
-      const existingInDb = this.sqliteClient?.getCustomerById?.(customerData.id);
-      if (existingInDb && Array.isArray(existingInDb.photos) && existingInDb.photos.length > 0) {
+    // Regla de Preservación de Galerías (Anti-Truncamiento):
+    // Si un perfil ya cuenta con una galería establecida (ej. staff_barbero con 20 fotos o clientes con >= 5 fotos),
+    // y llega un payload parcial con significativamente menos fotos (ej. 1 foto de miniatura),
+    // PRESERVAR la galería establecida en lugar de truncarla y borrar el 95% de las fotos.
+    const existingInDb = this.sqliteClient?.getCustomerById?.(customerData.id);
+    if (existingInDb && Array.isArray(existingInDb.photos) && existingInDb.photos.length > 0) {
+      const incomingPhotosCount = Array.isArray(customerData.photos) ? customerData.photos.length : 0;
+      const isStaffOrProtected = customerData.id === "staff_barbero" || customerData.isStaff === true || existingInDb.isStaff === true;
+
+      if (!options.galleryUpdated && incomingPhotosCount === 0) {
+        // Preservar si vino vacío
         dataToSave.photos = existingInDb.photos;
         dataToSave.thumbnailBase64 = dataToSave.thumbnailBase64 || existingInDb.thumbnailBase64;
+      } else if (isStaffOrProtected && incomingPhotosCount < existingInDb.photos.length) {
+        // Para staff/barbero: si el payload trae menos fotos de las que ya existen, preservar la galería completa
+        console.warn(`[CustomerService] 🛡️ Anti-Truncamiento: Preservando ${existingInDb.photos.length} fotos de Staff para "${customerData.id}" (intento entrante tenía solo ${incomingPhotosCount} fotos).`);
+        dataToSave.photos = existingInDb.photos;
+        dataToSave.thumbnailBase64 = dataToSave.thumbnailBase64 || existingInDb.thumbnailBase64;
+        if (Array.isArray(existingInDb.embeddings) && existingInDb.embeddings.length > 0) {
+          dataToSave.embeddings = existingInDb.embeddings;
+        }
+      } else if (existingInDb.photos.length >= 5 && incomingPhotosCount === 1 && !options.replaceFullGallery) {
+        // Para clientes establecidos con >= 5 fotos: si llega 1 foto accidental, enriquecer en vez de truncar a 1
+        console.warn(`[CustomerService] 🛡️ Anti-Truncamiento: Preservando galería de ${existingInDb.photos.length} fotos para "${customerData.name || customerData.id}" contra truncado a 1 foto.`);
+        dataToSave.photos = existingInDb.photos;
       }
     }
 

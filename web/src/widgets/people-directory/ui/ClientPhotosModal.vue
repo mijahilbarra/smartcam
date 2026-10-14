@@ -53,6 +53,14 @@ const getPoseIcon = (pose) => {
     case 'profile_right':
     case 'semi_right':
       return 'turn_right';
+    case 'tilted_up_left':
+      return 'north_west';
+    case 'tilted_up_right':
+      return 'north_east';
+    case 'tilted_down_left':
+      return 'south_west';
+    case 'tilted_down_right':
+      return 'south_east';
     case 'tilted_up':
       return 'arrow_upward';
     case 'tilted_down':

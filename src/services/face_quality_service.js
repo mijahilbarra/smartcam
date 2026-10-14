@@ -232,22 +232,41 @@ export async function estimateFacePose({ faceBuffer, faceBoxNorm, embedding } = 
   let pose = "frontal";
   let label = "Frontal";
 
-  if (yawScore <= -0.35) {
+  const isLeft = yawScore <= -0.12;
+  const isRight = yawScore >= 0.12;
+  const isDeepLeft = yawScore <= -0.35;
+  const isDeepRight = yawScore >= 0.35;
+  const isUp = pitchScore <= -0.16;
+  const isDown = pitchScore >= 0.16;
+
+  if (isUp && isLeft) {
+    pose = "tilted_up_left";
+    label = "Inclinado Arriba Izquierda";
+  } else if (isUp && isRight) {
+    pose = "tilted_up_right";
+    label = "Inclinado Arriba Derecha";
+  } else if (isDown && isLeft) {
+    pose = "tilted_down_left";
+    label = "Inclinado Abajo Izquierda";
+  } else if (isDown && isRight) {
+    pose = "tilted_down_right";
+    label = "Inclinado Abajo Derecha";
+  } else if (isDeepLeft) {
     pose = "profile_left";
     label = "Perfil Izquierdo";
-  } else if (yawScore <= -0.12) {
-    pose = "semi_left";
-    label = "Semi-perfil Izquierdo";
-  } else if (yawScore >= 0.35) {
+  } else if (isDeepRight) {
     pose = "profile_right";
     label = "Perfil Derecho";
-  } else if (yawScore >= 0.12) {
+  } else if (isLeft) {
+    pose = "semi_left";
+    label = "Semi-perfil Izquierdo";
+  } else if (isRight) {
     pose = "semi_right";
     label = "Semi-perfil Derecho";
-  } else if (pitchScore >= 0.18) {
+  } else if (isDown) {
     pose = "tilted_down";
     label = "Inclinado Abajo";
-  } else if (pitchScore <= -0.18) {
+  } else if (isUp) {
     pose = "tilted_up";
     label = "Inclinado Arriba";
   } else {
@@ -327,17 +346,30 @@ export async function evaluateFaceQuality(personCropBuffer, options = {}) {
     faceBoxNorm: detection.faceBoxNorm
   });
 
-  const validPoses = ['frontal', 'semi_left', 'semi_right'];
-  const isFrontalOrSemi = validPoses.includes(poseData.pose);
+  const validPoses = [
+    'frontal',
+    'semi_left',
+    'semi_right',
+    'profile_left',
+    'profile_right',
+    'tilted_up',
+    'tilted_down',
+    'tilted_up_left',
+    'tilted_up_right',
+    'tilted_down_left',
+    'tilted_down_right'
+  ];
+  const isValidPose = validPoses.includes(poseData.pose);
+  const isFrontalOrSemi = ['frontal', 'semi_left', 'semi_right', 'tilted_up', 'tilted_up_left', 'tilted_up_right'].includes(poseData.pose);
   const isConfidenceOk = (detection.confidence || 0) >= minConfidence;
 
-  // Si la pose no es frontal o semi-perfil válida, o la nitidez es insuficiente, o la confianza es baja:
-  const isValid = isSharp && isFrontalOrSemi && isConfidenceOk;
+  // Si la pose no es válida, o la nitidez es insuficiente, o la confianza es baja:
+  const isValid = isSharp && isValidPose && isConfidenceOk;
 
   let reason = "ok";
   if (!isSharp) {
     reason = "blurry_face";
-  } else if (!isFrontalOrSemi) {
+  } else if (!isValidPose) {
     reason = "non_frontal_pose_or_back_of_head";
   } else if (!isConfidenceOk) {
     reason = "low_confidence_face";

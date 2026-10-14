@@ -141,6 +141,27 @@ if (fs.existsSync(mockVideoPath)) {
 
   mockServer.stopFfmpegStream(true);
   console.log(`-> Fotograma de Mock Video decodificado exitosamente (${frame.length} bytes, formato JPEG verificado).`);
+
+  console.log("\n[8] Probando StreamServer con MOCK_VIDEO_LAST_MINUTES=5 y MOCK_VIDEO_START_SS...");
+  const duration = mockServer.getVideoDuration(mockVideoPath);
+  assert.ok(duration && duration > 0, "La duración detectada del video de prueba debe ser positiva");
+
+  const seekServerMinutes = new StreamServer({
+    mockVideoPath,
+    mockVideoLastMinutes: 5,
+    fps: 3.5
+  });
+  const offsetMinutes = seekServerMinutes.getMockVideoStartOffset();
+  const expectedOffset = Math.max(0, Math.floor(duration - 5 * 60));
+  assert.strictEqual(offsetMinutes, expectedOffset, `El offset calculado (${offsetMinutes}) debe coincidir con duración - 5min (${expectedOffset})`);
+
+  const seekServerSs = new StreamServer({
+    mockVideoPath,
+    mockVideoStartSs: 450,
+    fps: 3.5
+  });
+  assert.strictEqual(seekServerSs.getMockVideoStartOffset(), 450, "El offset de startSs debe ser exactamente 450");
+  console.log(`-> Cálculo de offset con MOCK_VIDEO_LAST_MINUTES (offset: ${offsetMinutes}s) y MOCK_VIDEO_START_SS (450s) validado exitosamente.`);
 } else {
   console.log("-> Archivo mock_stream.mp4 no encontrado en disco, prueba omitida.");
 }
