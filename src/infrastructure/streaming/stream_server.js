@@ -13,9 +13,9 @@ const JPEG_EOI = Buffer.from([0xff, 0xd9]);
 
 export class StreamServer {
   constructor(options = {}) {
-    this.rtspUrl = options.rtspUrl || process.env.RTSP_STREAM_URL || "rtsp://127.0.0.1:8554/barberia/main";
-    this.fps = options.fps || Number(process.env.STREAM_FPS) || 3;
-    this.jpegQuality = options.jpegQuality || Number(process.env.STREAM_JPEG_QUALITY) || 3;
+    this.rtspUrl = options.rtspUrl || process.env.RTSP_STREAM_URL || "rtsp://127.0.0.1:8554/barberia/sub";
+    this.fps = options.fps || Number(process.env.STREAM_FPS) || 3.5;
+    this.jpegQuality = options.jpegQuality || Number(process.env.STREAM_JPEG_QUALITY) || 4;
     this.mockVideoPath = options.mockVideoPath || process.env.MOCK_VIDEO_PATH || null;
     this.mockVideoLastMinutes = options.mockVideoLastMinutes != null
       ? Number(options.mockVideoLastMinutes)

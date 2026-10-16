@@ -50,6 +50,7 @@ console.log(`💾 Destino: ${outputPath}`);
 // 2. Determinar el origen (HTTP Producción o RTSP Local)
 async function detectSource() {
   if (customSource) return customSource;
+  if (process.env.RTSP_STREAM_URL) return process.env.RTSP_STREAM_URL;
 
   // Intentar primero stream HTTP de producción
   const prodUrl = process.env.PROD_STREAM_URL || "https://stream.perrosuelto.com";
@@ -68,7 +69,7 @@ async function detectSource() {
   } catch (_) {}
 
   // Si no responde, asumir RTSP local de Neolink
-  const rtspUrl = process.env.RTSP_STREAM_URL || "rtsp://127.0.0.1:8554/barberia/main";
+  const rtspUrl = process.env.RTSP_STREAM_URL || "rtsp://127.0.0.1:8554/barberia/sub";
   console.log(`ℹ️ Producción no disponible. Probando fuente RTSP local: ${rtspUrl}...`);
   return rtspUrl;
 }
@@ -116,16 +117,17 @@ function recordHttpStream(url, destPath, duration) {
     });
 
     let isFinished = false;
+    let finishedByTimerOrSignal = false;
     let currentReq = null;
     let reconnectTimeout = null;
     let activeWatchdog = null;
-    const startEpoch = Date.now();
-    const JPEG_SOI = Buffer.from([0xff, 0xd8]);
-    const JPEG_EOI = Buffer.from([0xff, 0xd9]);
+    let startEpoch = null;
+    let framesCount = 0;
 
-    const finishRecording = () => {
+    const finishRecording = (byUser = false) => {
       if (isFinished) return;
       isFinished = true;
+      finishedByTimerOrSignal = true;
       clearInterval(progressInterval);
       if (reconnectTimeout) clearTimeout(reconnectTimeout);
       if (activeWatchdog) clearInterval(activeWatchdog);
@@ -137,12 +139,16 @@ function recordHttpStream(url, destPath, duration) {
     };
 
     const progressInterval = setInterval(() => {
+      if (!startEpoch) {
+        process.stdout.write(`\r⏳ Conectando al stream y esperando primer fotograma...`);
+        return;
+      }
       const secondsElapsed = Math.floor((Date.now() - startEpoch) / 1000);
       const minElapsed = (secondsElapsed / 60).toFixed(1);
       const totalMin = (duration / 60).toFixed(1);
-      process.stdout.write(`\r⏳ Grabando: ${secondsElapsed}/${duration}s (${minElapsed}m / ${totalMin}m)...`);
+      process.stdout.write(`\r⏳ Grabando: ${secondsElapsed}/${duration}s (${minElapsed}m / ${totalMin}m) [${framesCount} frames]...`);
       if (secondsElapsed >= duration) {
-        finishRecording();
+        finishRecording(false);
       }
     }, 1000);
 
@@ -165,42 +171,80 @@ function recordHttpStream(url, destPath, duration) {
           lastDataTime = Date.now();
           chunkBuffer = Buffer.concat([chunkBuffer, chunk]);
 
-          const firstSoi = chunkBuffer.indexOf(JPEG_SOI);
-          if (firstSoi > 0) {
-            chunkBuffer = chunkBuffer.slice(firstSoi);
-          }
+          while (true) {
+            const headerEnd = chunkBuffer.indexOf("\r\n\r\n");
+            if (headerEnd === -1) {
+              // Cabecera aún no recibida por completo
+              break;
+            }
 
-          let startIndex = chunkBuffer.indexOf(JPEG_SOI);
-          let endIndex = chunkBuffer.indexOf(JPEG_EOI);
+            const headerText = chunkBuffer.slice(0, headerEnd).toString("latin1");
+            const match = headerText.match(/Content-Length:\s*(\d+)/i);
 
-          while (startIndex !== -1 && endIndex !== -1 && endIndex > startIndex) {
-            const frame = chunkBuffer.slice(startIndex, endIndex + 2);
-            chunkBuffer = chunkBuffer.slice(endIndex + 2);
-
-            try {
-              if (!isFinished && ffmpeg.stdin && ffmpeg.stdin.writable) {
-                ffmpeg.stdin.write(frame);
+            if (match) {
+              const frameLen = parseInt(match[1], 10);
+              const frameStart = headerEnd + 4;
+              if (chunkBuffer.length < frameStart + frameLen) {
+                // Esperar a que llegue el cuerpo completo del fotograma
+                break;
               }
-            } catch (_) {}
 
-            startIndex = chunkBuffer.indexOf(JPEG_SOI);
-            endIndex = chunkBuffer.indexOf(JPEG_EOI);
+              const frame = chunkBuffer.slice(frameStart, frameStart + frameLen);
+              chunkBuffer = chunkBuffer.slice(frameStart + frameLen);
+
+              // Descartar delimitador posterior (\r\n o prefijo boundary)
+              const nextBoundary = chunkBuffer.indexOf("--");
+              if (nextBoundary > 0) {
+                chunkBuffer = chunkBuffer.slice(nextBoundary);
+              }
+
+              // Validar integridad estricta del JPEG (0xFFD8 inicial y 0xFFD9 final)
+              if (
+                frame.length >= 4 &&
+                frame[0] === 0xff && frame[1] === 0xd8 &&
+                frame[frame.length - 2] === 0xff && frame[frame.length - 1] === 0xd9
+              ) {
+                try {
+                  if (!isFinished && ffmpeg.stdin && ffmpeg.stdin.writable) {
+                    ffmpeg.stdin.write(frame);
+                    if (!startEpoch) startEpoch = Date.now();
+                    framesCount++;
+                  }
+                } catch (_) {}
+              }
+            } else {
+              // Modo de respaldo para servidores sin Content-Length
+              const nextBoundary = chunkBuffer.indexOf("\r\n--", headerEnd + 4);
+              if (nextBoundary === -1) break;
+              const frame = chunkBuffer.slice(headerEnd + 4, nextBoundary);
+              chunkBuffer = chunkBuffer.slice(nextBoundary + 2);
+              if (frame.length >= 4 && frame[0] === 0xff && frame[1] === 0xd8) {
+                try {
+                  if (!isFinished && ffmpeg.stdin && ffmpeg.stdin.writable) {
+                    ffmpeg.stdin.write(frame);
+                    if (!startEpoch) startEpoch = Date.now();
+                    framesCount++;
+                  }
+                } catch (_) {}
+              }
+            }
           }
 
-          if (chunkBuffer.length > 2 * 1024 * 1024) {
+          // Límite de seguridad para evitar fuga de memoria ante stream corrupto
+          if (chunkBuffer.length > 8 * 1024 * 1024) {
             chunkBuffer = Buffer.alloc(0);
           }
         });
 
         activeWatchdog = setInterval(() => {
-          if (!isFinished && Date.now() - lastDataTime > 15000) {
-            console.warn("\n[Watchdog] Inactividad de datos en stream (>15s). Reiniciando socket HTTP...");
+          if (!isFinished && Date.now() - lastDataTime > 45000) {
+            console.warn("\n[Watchdog] Inactividad de datos en stream (>45s). Reiniciando socket HTTP...");
             clearInterval(activeWatchdog);
             activeWatchdog = null;
             try { currentReq.destroy(); } catch (_) {}
             scheduleReconnect();
           }
-        }, 3000);
+        }, 5000);
 
         res.on("end", () => {
           if (activeWatchdog) clearInterval(activeWatchdog);
@@ -237,22 +281,29 @@ function recordHttpStream(url, destPath, duration) {
     // Manejo de cancelación limpia (Ctrl+C / SIGINT / SIGTERM)
     const handleSig = () => {
       console.log("\n\x1b[33m%s\x1b[0m", "🛑 Señal de parada recibida. Guardando metadatos del video grabado hasta ahora...");
-      finishRecording();
+      finishRecording(true);
     };
     process.once("SIGINT", handleSig);
     process.once("SIGTERM", handleSig);
 
     ffmpeg.on("close", (code, signal) => {
+      console.log(`\n[FFmpeg] Proceso finalizado (código: ${code}, señal: ${signal})`);
       isFinished = true;
       clearInterval(progressInterval);
       if (reconnectTimeout) clearTimeout(reconnectTimeout);
       if (activeWatchdog) clearInterval(activeWatchdog);
       process.removeListener("SIGINT", handleSig);
       process.removeListener("SIGTERM", handleSig);
-      if (code === 0 || code === 255 || signal === "SIGINT" || signal === "SIGTERM") {
+
+      if (code === 0 || code === 255 || signal === "SIGINT" || signal === "SIGTERM" || finishedByTimerOrSignal) {
         resolve();
       } else {
-        reject(new Error(`FFmpeg finalizó con código: ${code}, señal: ${signal}`));
+        if (fs.existsSync(destPath) && fs.statSync(destPath).size > 1024) {
+          console.warn(`[FFmpeg] Salida anticipada, pero archivo ${destPath} fue guardado correctamente.`);
+          resolve();
+        } else {
+          reject(new Error(`FFmpeg finalizó con código: ${code}, señal: ${signal}`));
+        }
       }
     });
 

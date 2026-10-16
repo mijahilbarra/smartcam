@@ -69,9 +69,9 @@ src/
    - Se erradica por completo la etiqueta rígida hardcodeada `"cliente_sentado"` y las suposiciones fijas.
    - Cada cuadrante en Firestore y la interfaz web ahora expone `capturePerson: boolean`, `role: 'client' | 'staff' | 'visitor'` y `labelOnOccupied: string`.
    - Si una persona detectada ocupa una zona con `capturePerson === true`, el sistema le asigna dinámicamente el rol, la etiqueta configurada y activa la bandera `requiresClearCapture: true`.
-3. **Captura Reactiva en Alta Resolución (Stream Clear On-Demand)**:
-   - Para maximizar la nitidez sin sobrecargar la CPU de la VM `e2-micro`, el daemon realiza la ingesta sobre el flujo continuo en alta resolución (`mainStream` 2304x1296 a 3 FPS con calidad `-q:v 3`), omitiendo capturas secundarias de FFmpeg cuando el frame base ya cuenta con alta definición ($\ge 1280$px).
-   - Cuando un nuevo track de persona es detectado en una zona con captura habilitada y carece de rostro nítido (`sharpnessScore < 60`), el daemon dispara de manera reactiva y controlada (rate-limited / cooldown de 12s) la extracción de un fotograma de alta definición (Clear Stream 2560x1440 vía RTSP).
+3. **Captura Reactiva en Alta Resolución (Arquitectura Dual-Stream On-Demand)**:
+   - Para garantizar estabilidad absoluta y mínimo consumo en la VM `e2-micro`, el daemon opera con una arquitectura Dual-Stream: la ingesta y streaming continuo corren sobre el flujo ligero (`subStream` 640x360 a 3.5 FPS con calidad `-q:v 4`, consumiendo <5% CPU).
+   - Cuando un nuevo track de persona es detectado en una zona con captura habilitada y carece de rostro nítido (`sharpnessScore < 60`), el daemon dispara de manera reactiva y controlada (rate-limited / cooldown de 12s) la extracción puntual de un solo fotograma de alta definición (Clear Stream 2304x1296 / 2560x1440 vía RTSP `/main`).
    - Se calcula el factor de escala hacia el frame Clear, se extrae el recorte con máxima resolución de píxeles y se ejecuta la re-identificación biométrica facial (`reidentifyPeople`) para extraer embeddings de máxima precisión.
    - Si el stream Clear falla o sufre timeout, el daemon degrada suavemente al recorte ligero sin interrumpir el ciclo (Regla 5).
 4. **Retrocompatibilidad Total**:

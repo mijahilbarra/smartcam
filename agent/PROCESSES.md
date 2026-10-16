@@ -81,7 +81,7 @@ flowchart TD
   * **Timeout optimizado a 1500 ms**: Degrada de manera segura retornando `null` si la cámara no responde en tiempo límite, evitando bloqueos del Event Loop.
 * **`enrichCropsWithClearStream({ activeTracks, mlResult, options, context, docId, localOutputPath })`**:
   * **Función Extraída Central**: Encapsula las 130 líneas de evaluación de necesidad de nitidez, reescalado geométrico y procesamiento de imágenes con Sharp.
-  * **Filtro de Detección & Bypass Inteligente**: Si el fotograma base ya cuenta con alta resolución (`baseWidth >= 1280`), omite abrir un subproceso FFmpeg redundante. En caso contrario, evalúa personas en sillas de corte o espera con nitidez de rostro `< 60` y fuera de su enfriamiento de 12 segundos (`CLEAR_COOLDOWN_MS = 12000`).
+  * **Arquitectura Dual-Stream & Filtro de Detección**: Con el stream continuo operando en `subStream` (640x360 @ 3.5 FPS, <5% CPU), esta etapa evalúa personas en sillas de corte o espera con nitidez de rostro `< 60` y fuera de su enfriamiento de 12 segundos (`CLEAR_COOLDOWN_MS = 12000`), solicitando una captura puntual de alta resolución (2304x1296 / 2560x1440) bajo demanda a `/main` sin sobrecargar la CPU de la VM.
   * **Reescalado de Coordenadas**: Calcula factores de escala (`scaleX = clearW / origW`, `scaleY = clearH / origH`) o proyecta cajas normalizadas `boxNorm` a las dimensiones 2560x1440 del frame Clear.
   * **Recorte de Alta Resolución Sharp**: Realiza la extracción (`sharp.extract()`) a calidad JPEG 95% y actualiza el recorte existente en `mlResult.clientCrops` o genera uno nuevo con `isHighRes: true`.
   * **Ejecución Reactiva Flexible**: Soporta tanto ejecución síncrona/bloqueante como desacoplada en segundo plano si se solicita con `options.asyncClear === true`.

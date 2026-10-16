@@ -21,7 +21,7 @@ export async function acquireClearFrame({
   rtspUrl = process.env.RTSP_STREAM_URL ? process.env.RTSP_STREAM_URL.replace(/\/sub$/, '/main') : "rtsp://127.0.0.1:8554/barberia/main",
   timeoutMs = 1500
 } = {}) {
-  if (process.env.ENABLE_MAIN_STREAM !== "true") {
+  if (process.env.ENABLE_MAIN_STREAM === "false") {
     return null;
   }
   if (Date.now() < clearStreamDisabledUntil) {
@@ -51,18 +51,14 @@ export async function enrichCropsWithClearStream({
   localOutputPath
 } = {}) {
   const isCustomAcquire = Boolean(options.acquireClearFrame || context.acquireClearFrame);
-  if (process.env.ENABLE_MAIN_STREAM !== "true" && !isCustomAcquire) {
-    return;
-  }
-  const baseWidth = mlResult?.origWidth || mlResult?.imageDimensions?.width || 0;
-  if (!isCustomAcquire && baseWidth >= 1280) {
+  if (process.env.ENABLE_MAIN_STREAM === "false" && !isCustomAcquire) {
     return;
   }
   const acquireClearFn = options.acquireClearFrame || context.acquireClearFrame || acquireClearFrame;
   const defaultClearRtspUrl = process.env.RTSP_STREAM_URL
     ? process.env.RTSP_STREAM_URL.replace(/\/sub$/, '/main')
     : "rtsp://127.0.0.1:8554/barberia/main";
-  const clearRtspUrl = options.clearRtspUrl || context.clearRtspUrl || defaultClearRtspUrl;
+  const clearRtspUrl = options.rtspUrl || (context.rtspUrl ? context.rtspUrl.replace(/\/sub$/, '/main') : defaultClearRtspUrl);
   const effectiveLocalOutputPath = localOutputPath || context.localOutputPath;
   const now = Date.now();
   const CLEAR_COOLDOWN_MS = 12000; // 12 segundos de enfriamiento por track

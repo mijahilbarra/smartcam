@@ -57,8 +57,8 @@ const workingHours = new WorkingHoursManager({
 const mockVideoPath = process.env.MOCK_VIDEO_PATH ? path.resolve(PROJECT_ROOT, process.env.MOCK_VIDEO_PATH) : null;
 
 const streamServer = new StreamServer({
-  rtspUrl: process.env.RTSP_STREAM_URL || "rtsp://127.0.0.1:8554/barberia/main",
-  fps: Number(process.env.STREAM_FPS) || 3,
+  rtspUrl: process.env.RTSP_STREAM_URL || "rtsp://127.0.0.1:8554/barberia/sub",
+  fps: Number(process.env.STREAM_FPS) || 3.5,
   streamFastForward: process.env.STREAM_FAST_FORWARD === "true",
   mockVideoPath,
   mockVideoLastMinutes: process.env.MOCK_VIDEO_LAST_MINUTES ? Number(process.env.MOCK_VIDEO_LAST_MINUTES) : null,
