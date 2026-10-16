@@ -13,8 +13,9 @@ const JPEG_EOI = Buffer.from([0xff, 0xd9]);
 
 export class StreamServer {
   constructor(options = {}) {
-    this.rtspUrl = options.rtspUrl || process.env.RTSP_STREAM_URL || "rtsp://127.0.0.1:8554/barberia/sub";
-    this.fps = options.fps || Number(process.env.STREAM_FPS) || 3.5;
+    this.rtspUrl = options.rtspUrl || process.env.RTSP_STREAM_URL || "rtsp://127.0.0.1:8554/barberia/main";
+    this.fps = options.fps || Number(process.env.STREAM_FPS) || 3;
+    this.jpegQuality = options.jpegQuality || Number(process.env.STREAM_JPEG_QUALITY) || 3;
     this.mockVideoPath = options.mockVideoPath || process.env.MOCK_VIDEO_PATH || null;
     this.mockVideoLastMinutes = options.mockVideoLastMinutes != null
       ? Number(options.mockVideoLastMinutes)
@@ -300,7 +301,7 @@ export class StreamServer {
             "-r", String(this.fps),
             "-threads", isFastForward ? "0" : "1",
             "-f", "image2pipe",
-            "-q:v", "5",
+            "-q:v", String(this.jpegQuality),
             "-vcodec", "mjpeg",
             "pipe:1"
           ]
@@ -313,7 +314,7 @@ export class StreamServer {
             "-r", String(this.fps),
             "-threads", "1",
             "-f", "image2pipe",
-            "-q:v", "5",
+            "-q:v", String(this.jpegQuality),
             "-vcodec", "mjpeg",
             "pipe:1"
           ];
@@ -381,7 +382,7 @@ export class StreamServer {
         }
 
         // Si el buffer crece demasiado por datos corruptos, reiniciar
-        if (chunkBuffer.length > 2 * 1024 * 1024) {
+        if (chunkBuffer.length > 8 * 1024 * 1024) {
           chunkBuffer = Buffer.alloc(0);
         }
       });

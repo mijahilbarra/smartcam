@@ -54,6 +54,10 @@ export async function enrichCropsWithClearStream({
   if (process.env.ENABLE_MAIN_STREAM !== "true" && !isCustomAcquire) {
     return;
   }
+  const baseWidth = mlResult?.origWidth || mlResult?.imageDimensions?.width || 0;
+  if (!isCustomAcquire && baseWidth >= 1280) {
+    return;
+  }
   const acquireClearFn = options.acquireClearFrame || context.acquireClearFrame || acquireClearFrame;
   const defaultClearRtspUrl = process.env.RTSP_STREAM_URL
     ? process.env.RTSP_STREAM_URL.replace(/\/sub$/, '/main')

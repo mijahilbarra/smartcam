@@ -68,7 +68,7 @@ async function detectSource() {
   } catch (_) {}
 
   // Si no responde, asumir RTSP local de Neolink
-  const rtspUrl = process.env.RTSP_STREAM_URL || "rtsp://127.0.0.1:8554/barberia/sub";
+  const rtspUrl = process.env.RTSP_STREAM_URL || "rtsp://127.0.0.1:8554/barberia/main";
   console.log(`ℹ️ Producción no disponible. Probando fuente RTSP local: ${rtspUrl}...`);
   return rtspUrl;
 }
@@ -103,22 +103,32 @@ function recordHttpStream(url, destPath, duration) {
       "-t", String(duration),
       "-c:v", "libx264",
       "-pix_fmt", "yuv420p",
-      "-movflags", "+faststart",
+      "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
       destPath
     ];
 
     const ffmpeg = spawn("ffmpeg", ffmpegArgs, { stdio: ["pipe", "inherit", "inherit"] });
 
+    ffmpeg.stdin.on("error", (err) => {
+      if (err.code !== "EPIPE") {
+        console.warn("[FFmpeg Stdin]:", err.message);
+      }
+    });
+
     let isFinished = false;
-    let secondsElapsed = 0;
     let currentReq = null;
     let reconnectTimeout = null;
+    let activeWatchdog = null;
+    const startEpoch = Date.now();
+    const JPEG_SOI = Buffer.from([0xff, 0xd8]);
+    const JPEG_EOI = Buffer.from([0xff, 0xd9]);
 
     const finishRecording = () => {
       if (isFinished) return;
       isFinished = true;
       clearInterval(progressInterval);
       if (reconnectTimeout) clearTimeout(reconnectTimeout);
+      if (activeWatchdog) clearInterval(activeWatchdog);
       if (currentReq) {
         try { currentReq.destroy(); } catch (_) {}
       }
@@ -127,7 +137,7 @@ function recordHttpStream(url, destPath, duration) {
     };
 
     const progressInterval = setInterval(() => {
-      secondsElapsed++;
+      const secondsElapsed = Math.floor((Date.now() - startEpoch) / 1000);
       const minElapsed = (secondsElapsed / 60).toFixed(1);
       const totalMin = (duration / 60).toFixed(1);
       process.stdout.write(`\r⏳ Grabando: ${secondsElapsed}/${duration}s (${minElapsed}m / ${totalMin}m)...`);
@@ -138,6 +148,10 @@ function recordHttpStream(url, destPath, duration) {
 
     const connectStream = () => {
       if (isFinished) return;
+      if (activeWatchdog) clearInterval(activeWatchdog);
+
+      let lastDataTime = Date.now();
+      let chunkBuffer = Buffer.alloc(0);
 
       currentReq = client.get(url, { headers: { "Cache-Control": "no-cache" } }, (res) => {
         if (res.statusCode !== 200) {
@@ -147,9 +161,49 @@ function recordHttpStream(url, destPath, duration) {
           return;
         }
 
-        res.pipe(ffmpeg.stdin, { end: false });
+        res.on("data", (chunk) => {
+          lastDataTime = Date.now();
+          chunkBuffer = Buffer.concat([chunkBuffer, chunk]);
+
+          const firstSoi = chunkBuffer.indexOf(JPEG_SOI);
+          if (firstSoi > 0) {
+            chunkBuffer = chunkBuffer.slice(firstSoi);
+          }
+
+          let startIndex = chunkBuffer.indexOf(JPEG_SOI);
+          let endIndex = chunkBuffer.indexOf(JPEG_EOI);
+
+          while (startIndex !== -1 && endIndex !== -1 && endIndex > startIndex) {
+            const frame = chunkBuffer.slice(startIndex, endIndex + 2);
+            chunkBuffer = chunkBuffer.slice(endIndex + 2);
+
+            try {
+              if (!isFinished && ffmpeg.stdin && ffmpeg.stdin.writable) {
+                ffmpeg.stdin.write(frame);
+              }
+            } catch (_) {}
+
+            startIndex = chunkBuffer.indexOf(JPEG_SOI);
+            endIndex = chunkBuffer.indexOf(JPEG_EOI);
+          }
+
+          if (chunkBuffer.length > 2 * 1024 * 1024) {
+            chunkBuffer = Buffer.alloc(0);
+          }
+        });
+
+        activeWatchdog = setInterval(() => {
+          if (!isFinished && Date.now() - lastDataTime > 15000) {
+            console.warn("\n[Watchdog] Inactividad de datos en stream (>15s). Reiniciando socket HTTP...");
+            clearInterval(activeWatchdog);
+            activeWatchdog = null;
+            try { currentReq.destroy(); } catch (_) {}
+            scheduleReconnect();
+          }
+        }, 3000);
 
         res.on("end", () => {
+          if (activeWatchdog) clearInterval(activeWatchdog);
           if (!isFinished) {
             console.warn("\n[Aviso] Stream desconectado temporalmente. Reconectando en 2s...");
             scheduleReconnect();
@@ -157,6 +211,7 @@ function recordHttpStream(url, destPath, duration) {
         });
 
         res.on("error", (err) => {
+          if (activeWatchdog) clearInterval(activeWatchdog);
           if (!isFinished) {
             console.warn("\n[Aviso] Error en conexión de stream:", err.message);
             scheduleReconnect();
@@ -165,6 +220,7 @@ function recordHttpStream(url, destPath, duration) {
       });
 
       currentReq.on("error", (err) => {
+        if (activeWatchdog) clearInterval(activeWatchdog);
         if (!isFinished) {
           console.warn("\n[Aviso] Error en request:", err.message, ". Reintentando en 3s...");
           scheduleReconnect();
@@ -186,16 +242,17 @@ function recordHttpStream(url, destPath, duration) {
     process.once("SIGINT", handleSig);
     process.once("SIGTERM", handleSig);
 
-    ffmpeg.on("close", (code) => {
+    ffmpeg.on("close", (code, signal) => {
       isFinished = true;
       clearInterval(progressInterval);
       if (reconnectTimeout) clearTimeout(reconnectTimeout);
+      if (activeWatchdog) clearInterval(activeWatchdog);
       process.removeListener("SIGINT", handleSig);
       process.removeListener("SIGTERM", handleSig);
-      if (code === 0 || code === 255) {
+      if (code === 0 || code === 255 || signal === "SIGINT" || signal === "SIGTERM") {
         resolve();
       } else {
-        reject(new Error(`FFmpeg finalizó con código de error ${code}`));
+        reject(new Error(`FFmpeg finalizó con código: ${code}, señal: ${signal}`));
       }
     });
 
@@ -203,6 +260,7 @@ function recordHttpStream(url, destPath, duration) {
       isFinished = true;
       clearInterval(progressInterval);
       if (reconnectTimeout) clearTimeout(reconnectTimeout);
+      if (activeWatchdog) clearInterval(activeWatchdog);
       reject(err);
     });
 

@@ -141,6 +141,7 @@ Puedes abrir en tu navegador:
 Todos los videos para pruebas offline deben guardarse en:
 ```text
 data/recordings/
+├── barberia_stream_9h.mp4                  # Sesión de 6 horas y 1 min (15.6 MB)
 ├── barberia_stream_1h.mp4                  # Grabación completa de 1 hora (90 MB, 10,764 frames)
 ├── barberia_stream_20261012.mp4            # Grabación recortada de 15 minutos (34 MB)
 ├── barberia_stream_20261012_full27m.mp4    # Respaldo de la sesión de 27m 40s (57 MB)

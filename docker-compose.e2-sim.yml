@@ -39,7 +39,7 @@ services:
       - FIREBASE_PROJECT_ID=skip-bigotes
       - STORAGE_BUCKET=skip-bigotes-test
       - PORT=8085
-      - RTSP_STREAM_URL=rtsp://host.docker.internal:8554/barberia/sub
+      - RTSP_STREAM_URL=rtsp://host.docker.internal:8554/barberia/main
       - GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
       - NEOLINK_TOML_PATH=/opt/camera-catcher/neolink.toml
       - REALTIME_INTERVAL_MS=400

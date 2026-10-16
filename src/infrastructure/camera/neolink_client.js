@@ -138,7 +138,7 @@ export async function stopNeolinkDaemon(containerName = DEFAULT_DAEMON_CONTAINER
  * @returns {Promise<Buffer>}
  */
 export async function captureSnapshotFromRtsp({
-  rtspUrl = "rtsp://127.0.0.1:8554/barberia/sub",
+  rtspUrl = "rtsp://127.0.0.1:8554/barberia/main",
   localOutputPath,
   timeoutMs = 15000
 }) {

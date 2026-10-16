@@ -354,8 +354,8 @@ let animationFrameId = null;
 
 const syncIncomingTelemetry = (telemetry) => {
   if (!telemetry) return;
-  const frameW = telemetry.frameWidth || 640;
-  const frameH = telemetry.frameHeight || 360;
+  const frameW = telemetry.frameWidth || 2304;
+  const frameH = telemetry.frameHeight || 1296;
 
   // 1. Sync Humans / Tracks
   const tracksToDraw = (telemetry.tracks && telemetry.tracks.length > 0)
@@ -679,7 +679,7 @@ onUnmounted(() => {
               <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
               <span>YOLOv8: {{ canvasImageData.tracks?.length || canvasImageData.humanBoxes?.length || 0 }} pers. ({{ canvasImageData.inferenceMs }} ms)</span>
             </div>
-            <AppBadge variant="default" class="text-[10px] font-mono">1024x576</AppBadge>
+            <AppBadge variant="default" class="text-[10px] font-mono">{{ canvasImageData.frameWidth && canvasImageData.frameHeight ? `${canvasImageData.frameWidth}x${canvasImageData.frameHeight}` : '2304x1296' }}</AppBadge>
           </div>
 
           <!-- Layers Switches -->

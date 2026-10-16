@@ -5,8 +5,8 @@ import { getSystemMemoryMetrics } from "../../core/system_metrics.js";
  * 9. Emisión de telemetría de baja latencia por Server-Sent Events (SSE).
  */
 export function broadcastTelemetry({ docId, mlResult, activeTracks = [], identifiedPeople = [], occupancy }) {
-  const frameWidth = mlResult.origWidth || mlResult.imageDimensions?.width || 640;
-  const frameHeight = mlResult.origHeight || mlResult.imageDimensions?.height || 360;
+  const frameWidth = mlResult.origWidth || mlResult.imageDimensions?.width || 2304;
+  const frameHeight = mlResult.origHeight || mlResult.imageDimensions?.height || 1296;
 
   telemetryStream.broadcast({
     type: "yolo_telemetry",

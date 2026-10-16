@@ -17,8 +17,10 @@ export function useDaemonState() {
   const canvasImageData = ref({
     imageUrl: '',
     docId: '',
-    width: 1024,
-    height: 576,
+    width: 2304,
+    height: 1296,
+    frameWidth: 2304,
+    frameHeight: 1296,
     quadrants: [],
     humanBoxes: [],
     tracks: [],
@@ -315,8 +317,8 @@ export function useDaemonState() {
             canvasImageData.value = {
               ...canvasImageData.value,
               docId: data.docId || canvasImageData.value.docId || 'En Vivo',
-              frameWidth: data.frameWidth || 640,
-              frameHeight: data.frameHeight || 360,
+              frameWidth: data.frameWidth || 2304,
+              frameHeight: data.frameHeight || 1296,
               humanBoxes: data.humanBoxes || [],
               tracks: data.tracks || [],
               quadrants: data.quadrants || canvasImageData.value.quadrants || [],
