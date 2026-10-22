@@ -51,7 +51,7 @@ export async function enrichCropsWithClearStream({
   localOutputPath
 } = {}) {
   const isCustomAcquire = Boolean(options.acquireClearFrame || context.acquireClearFrame);
-  if (process.env.ENABLE_MAIN_STREAM === "false" && !isCustomAcquire) {
+  if ((process.env.ENABLE_MAIN_STREAM === "false" || process.env.MOCK_VIDEO_PATH || context.streamServer?.mockVideoPath) && !isCustomAcquire) {
     return;
   }
   const acquireClearFn = options.acquireClearFrame || context.acquireClearFrame || acquireClearFrame;
@@ -187,3 +187,10 @@ export async function enrichCropsWithClearStream({
     await processClearCapture();
   }
 }
+
+export const STEP_NAME = "Enriquecimiento en Alta Resolución";
+export const STEP_DESCRIPTION = (highResCount = 0) =>
+  `Captura reactiva bajo demanda en 2560x1440 para ${highResCount} recortes faciales con nitidez mejorada.`;
+export const formatStepSummary = (imagesCount = 0, appointmentsCount = 0, details = "") =>
+  `**${STEP_NAME}:** ${imagesCount.toLocaleString()} imágenes, ${appointmentsCount} atenciones.${details ? `\n   - *${details}*` : ""}`;
+

@@ -61,3 +61,10 @@ export function broadcastTelemetry({ docId, mlResult, activeTracks = [], identif
     memory: getSystemMemoryMetrics()
   });
 }
+
+export const STEP_NAME = "Emisión de Telemetría (SSE)";
+export const STEP_DESCRIPTION = (tracksCount = 0, inferenceMs = 0) =>
+  `Transmisión en tiempo real SSE: ${tracksCount} tracks rastreados, inferencia ${inferenceMs}ms.`;
+export const formatStepSummary = (imagesCount = 0, appointmentsCount = 0, details = "") =>
+  `**${STEP_NAME}:** ${imagesCount.toLocaleString()} eventos emitidos, ${appointmentsCount} atenciones.${details ? `\n   - *${details}*` : ""}`;
+

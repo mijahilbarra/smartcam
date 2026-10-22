@@ -6,7 +6,10 @@
  * - Reflejo asíncrono a Firebase (Firestore y Storage) cuando hay cambios significativos
  */
 
-import { sqliteClient as defaultSqliteClient, getSqliteClient } from "../infrastructure/storage/sqlite_client.js";
+import fs from "fs";
+import path from "path";
+import Database from "better-sqlite3";
+import { sqliteClient as defaultSqliteClient, getSqliteClient, blobToVector } from "../infrastructure/storage/sqlite_client.js";
 import { getResolvedDatabaseId } from "../infrastructure/firebase/firebase_admin.js";
 import { uploadFaceCrop } from "../infrastructure/firebase/storage_client.js";
 
@@ -56,6 +59,60 @@ export class CustomerService {
   }
 
   /**
+   * Semilla el perfil del staff (barbero) desde la base de datos de producción local data/barberia.db
+   * si la base de datos actual (ej. barberia_test.db) no tiene al staff cargado.
+   * Esto garantiza funcionamiento 100% offline sin depender de Firestore en modo test.
+   * @private
+   */
+  _seedStaffFromProductionDb() {
+    try {
+      if (this.sqliteClient?.dbPath === ":memory:") {
+        return;
+      }
+      const prodPath = path.resolve(process.cwd(), "data", "barberia.db");
+      if (!fs.existsSync(prodPath)) return;
+
+      if (this.sqliteClient?.dbPath && path.resolve(this.sqliteClient.dbPath) === prodPath) {
+        return;
+      }
+
+      const prodDb = new Database(prodPath, { readonly: true });
+      try {
+        const staffRow = prodDb.prepare("SELECT * FROM customers WHERE is_staff = 1 OR id = 'staff_barbero' LIMIT 1").get();
+        if (!staffRow) return;
+
+        const embRows = prodDb.prepare("SELECT * FROM customer_embeddings WHERE customer_id = ? ORDER BY embedding_index ASC").all(staffRow.id);
+        const vectors = embRows.map(r => ({
+          vector: blobToVector(r.embedding_blob),
+          pose: r.pose || "frontal",
+          poseLabel: r.pose_label || "Frontal",
+          sharpnessScore: r.sharpness_score || 0
+        })).filter(e => Array.isArray(e.vector));
+
+        const staffProfile = {
+          id: staffRow.id,
+          name: staffRow.name || "Barbero",
+          isStaff: true,
+          role: staffRow.role || "barber",
+          embedding: vectors[0]?.vector || null,
+          embeddings: vectors,
+          photos: staffRow.photos_json ? JSON.parse(staffRow.photos_json) : [],
+          thumbnailBase64: staffRow.thumbnail_base64 || null,
+          bestFaceScore: staffRow.best_face_score || 0
+        };
+
+        this.sqliteClient.upsertCustomer(staffProfile);
+        this.profilesCache.set(staffRow.id, staffProfile);
+        console.log(`[CustomerService] Staff '${staffRow.id}' sembrado localmente con ${vectors.length} embeddings desde data/barberia.db`);
+      } finally {
+        prodDb.close();
+      }
+    } catch (err) {
+      console.warn(`[CustomerService] Aviso al sembrar staff desde data/barberia.db:`, err.message);
+    }
+  }
+
+  /**
    * Carga los perfiles desde SQLite en memoria RAM.
    * Si se suministra 'db', también sincroniza staff desde 'camera_catcher/staff'.
    * @param {Object} [options]
@@ -69,11 +126,19 @@ export class CustomerService {
       this.initForDatabase(firestoreDbId, options);
     }
 
-    const profiles = this.sqliteClient.getAllComparisonProfiles();
+    let profiles = this.sqliteClient.getAllComparisonProfiles();
     this.profilesCache.clear();
     for (const p of profiles) {
       this.profilesCache.set(p.id, p);
     }
+
+    // Asegurar presencia del staff (barbero) desde la BD local data/barberia.db si no existe en la base actual
+    const hasStaff = Array.from(this.profilesCache.values()).some(p => p.isStaff || p.id === "staff_barbero");
+    if (!hasStaff) {
+      this._seedStaffFromProductionDb();
+      profiles = this.sqliteClient.getAllComparisonProfiles();
+    }
+
     this.isLoaded = true;
 
     // Si SQLite está vacío o se pide sincronización y se proporcionó Firestore db:
@@ -102,16 +167,19 @@ export class CustomerService {
                     sharpnessScore: item?.sharpnessScore || data.photos?.[idx]?.sharpnessScore || 0
                   })).filter(e => Array.isArray(e.vector));
 
+                  const existingStaff = this.profilesCache.get(staffId);
+                  const existingEmbs = existingStaff?.embeddings || [];
+                  const finalStaffEmbeddings = existingEmbs.length > staffEmbeddings.length ? existingEmbs : staffEmbeddings;
                   const staffProfile = {
                     id: staffId,
-                    name: data.name || "Barbero",
+                    name: data.name || existingStaff?.name || "Barbero",
                     isStaff: true,
                     role: data.role || "barber",
-                    embedding: staffEmbeddings[0]?.vector || data.embedding || null,
-                    embeddings: staffEmbeddings,
-                    photos: data.photos || [],
-                    thumbnailBase64: data.thumbnailBase64 || null,
-                    bestFaceScore: data.bestFaceScore || 0
+                    embedding: finalStaffEmbeddings[0]?.vector || (Array.isArray(finalStaffEmbeddings[0]) ? finalStaffEmbeddings[0] : null) || data.embedding || null,
+                    embeddings: finalStaffEmbeddings,
+                    photos: (data.photos && data.photos.length > 0) ? data.photos : (existingStaff?.photos || []),
+                    thumbnailBase64: data.thumbnailBase64 || existingStaff?.thumbnailBase64 || null,
+                    bestFaceScore: data.bestFaceScore || existingStaff?.bestFaceScore || 0
                   };
                   this.sqliteClient.upsertCustomer(staffProfile);
                   this.profilesCache.set(staffId, staffProfile);
@@ -126,6 +194,10 @@ export class CustomerService {
             const members = staffDoc.data()?.members || [];
             for (const staff of members) {
               const staffId = staff.id || `staff_${staff.name}`;
+              const existingStaff = this.profilesCache.get(staffId);
+              if (existingStaff && Array.isArray(existingStaff.embeddings) && existingStaff.embeddings.length > 0) {
+                continue;
+              }
               const staffProfile = {
                 id: staffId,
                 name: staff.name || "Staff",
@@ -235,17 +307,30 @@ export class CustomerService {
             const role = isStaff ? "barber" : "client";
             const visitCount = docData?.visitCount || 1;
             const status = docData?.status || (visitCount > 1 ? "frequent" : "new");
+            const existing = this.profilesCache.get(id);
+            const rawIncomingEmbs = docData?.embeddings || (docData?.embedding ? [docData.embedding] : []);
+            const incomingEmbs = isStaff
+              ? rawIncomingEmbs.map((item, idx) => ({
+                  vector: Array.isArray(item) ? item : (item?.vector || null),
+                  pose: item?.pose || docData?.photos?.[idx]?.pose || "frontal",
+                  poseLabel: item?.poseLabel || docData?.photos?.[idx]?.poseLabel || "Frontal",
+                  sharpnessScore: item?.sharpnessScore || docData?.photos?.[idx]?.sharpnessScore || 0
+                })).filter(e => Array.isArray(e.vector))
+              : rawIncomingEmbs.map(item => Array.isArray(item) ? item : (item?.vector || item));
+            const finalEmbs = (isStaff && existing?.embeddings?.length > incomingEmbs.length)
+              ? existing.embeddings
+              : incomingEmbs;
             const profile = {
               id,
               name: docData?.name || "Cliente",
               isStaff,
               role,
               status,
-              embedding: docData?.embedding || (docData?.embeddings?.[0] ? (Array.isArray(docData.embeddings[0]) ? docData.embeddings[0] : docData.embeddings[0].vector) : null),
-              embeddings: docData?.embeddings || (docData?.embedding ? [docData.embedding] : []),
-              photos: docData?.photos || [],
-              thumbnailBase64: docData?.thumbnailBase64 || null,
-              bestFaceScore: docData?.bestFaceScore || 0,
+              embedding: docData?.embedding || (finalEmbs?.[0] ? (Array.isArray(finalEmbs[0]) ? finalEmbs[0] : finalEmbs[0].vector) : null),
+              embeddings: finalEmbs,
+              photos: (docData?.photos && docData.photos.length > 0) ? docData.photos : (existing?.photos || []),
+              thumbnailBase64: docData?.thumbnailBase64 || existing?.thumbnailBase64 || null,
+              bestFaceScore: docData?.bestFaceScore || existing?.bestFaceScore || 0,
               visitCount,
               appointmentCount: docData?.appointmentCount || docData?.visitCount || 1
             };

@@ -81,6 +81,13 @@ npm run dev:mock:fast
 docker compose -f docker-compose.fast-sim.yml up -d --force-recreate
 ```
 
+### Opción 1C: Tester Oficial y Monitor Integral (`scripts/run-and-monitor.js`) ⭐
+> [!IMPORTANT]
+> **RUNNER OFICIAL ÚNICO**: Para pruebas completas de extremo a extremo, monitoreo en vivo y generación automática de reportes fotográficos, utiliza **siempre** `scripts/run-and-monitor.js`. Prohibido crear scripts descartables ad-hoc.
+```bash
+node scripts/run-and-monitor.js [ruta-al-video.mp4]
+```
+
 ### Opción 2: Desarrollo Local Directo (Ligero, sin Docker Desktop)
 Arranca el daemon directamente en Node.js y el frontend Vite en paralelo:
 ```bash

@@ -260,7 +260,16 @@ export function mapDetectionsToBarbershopQuadrants(detections, width, height, co
       case "barber_chair": {
         // Una silla SOLO está ocupada si hay una PERSONA real detectada dentro de la zona
         const isOccupied = matchingPersonDets.length > 0;
-        const primaryPerson = matchingPersonDets[0];
+        // Si hay más de una persona solapando la silla (ej. barbero de pie + cliente sentado),
+        // priorizar a la persona sentada (menor elongación vertical y cabeza más baja en el encuadre)
+        const sortedChairDets = matchingPersonDets.length > 1
+          ? [...matchingPersonDets].sort((a, b) => {
+              const hA = a.box ? (a.box[3] - a.box[1]) : 0;
+              const hB = b.box ? (b.box[3] - b.box[1]) : 0;
+              return hA - hB;
+            })
+          : matchingPersonDets;
+        const primaryPerson = sortedChairDets[0];
 
         quadrants.push({
           id: zone.id,
@@ -281,23 +290,25 @@ export function mapDetectionsToBarbershopQuadrants(detections, width, height, co
           description: isOccupied ? `Sillón de barbero ocupado (${labelOnOcc})` : `Sillón de barbero disponible`
         });
 
-        // Generar persona detectada en la zona
+        // Generar persona(s) detectada(s) en la zona (primaria y secundarias si coexisten en el ROI)
         if (isOccupied && primaryPerson) {
-          quadrants.push({
-            id: `person_${zone.id}`,
-            zoneId: zone.id,
-            label: labelOnOcc,
-            category: role === "staff" ? "personal" : "cliente",
-            type: "barber_chair",
-            isConfiguredZone: false,
-            color: role === "staff" ? "#FF4500" : "#32DC32",
-            confidence: primaryPerson.score,
-            box: primaryPerson.box,
-            role,
-            capturePerson: shouldCapture,
-            requiresClearCapture: shouldCapture,
-            status: "en_corte",
-            description: `${labelOnOcc} recibiendo servicio en ${zone.name || zone.id}`
+          sortedChairDets.forEach((pDet, pIdx) => {
+            quadrants.push({
+              id: pIdx === 0 ? `person_${zone.id}` : `person_${zone.id}_${pIdx + 1}`,
+              zoneId: zone.id,
+              label: pIdx === 0 ? labelOnOcc : `${labelOnOcc} (${pIdx + 1})`,
+              category: role === "staff" ? "personal" : "cliente",
+              type: "barber_chair",
+              isConfiguredZone: false,
+              color: role === "staff" ? "#FF4500" : "#32DC32",
+              confidence: pDet.score,
+              box: pDet.box,
+              role,
+              capturePerson: shouldCapture,
+              requiresClearCapture: shouldCapture,
+              status: "en_corte",
+              description: `${labelOnOcc} recibiendo servicio en ${zone.name || zone.id}`
+            });
           });
         }
         break;

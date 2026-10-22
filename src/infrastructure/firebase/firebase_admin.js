@@ -75,6 +75,28 @@ export function getResolvedStorageBucket(options = {}) {
 }
 
 export function initFirebaseAdmin(options = {}) {
+  const isTestMode =
+    process.env.IS_LOCAL_SIMULATOR === "true" ||
+    process.env.USE_FIREBASE === "false" ||
+    process.env.NO_FIREBASE === "true" ||
+    options.disableFirebase === true;
+
+  if (isTestMode) {
+    console.log(`[Firebase] 🧪 Modo Test activo (IS_LOCAL_SIMULATOR=true / USE_FIREBASE=false). Conexión a Firebase omitida. Operando 100% con SQLite.`);
+    currentDatabaseId = "test";
+    currentBucketName = null;
+    currentDb = null;
+    currentBucket = null;
+    isInitialized = true;
+    return {
+      admin: null,
+      db: null,
+      bucket: null,
+      databaseId: "test",
+      bucketName: null
+    };
+  }
+
   const databaseId = getResolvedDatabaseId(options);
   const bucketName = getResolvedStorageBucket(options);
 
@@ -106,11 +128,11 @@ export function initFirebaseAdmin(options = {}) {
 }
 
 export function getFirebaseAdmin() {
-  if (!isInitialized || !currentDb || !currentBucket) {
+  if (!isInitialized) {
     return initFirebaseAdmin();
   }
   return {
-    admin,
+    admin: admin.apps.length ? admin : null,
     db: currentDb,
     bucket: currentBucket,
     databaseId: currentDatabaseId,

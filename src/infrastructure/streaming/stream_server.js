@@ -33,10 +33,15 @@ export class StreamServer {
       ? Boolean(options.streamFastForward)
       : (process.env.STREAM_FAST_FORWARD === "true");
     this.onEnsureRtspSource = options.onEnsureRtspSource || null;
+    this.onMockVideoEnd = options.onMockVideoEnd || null;
     this.clients = new Set();
     this.ffmpegProcess = null;
     this.latestFrameBuffer = null;
     this.latestFrameTimestamp = null;
+    this.latestFrameVirtualNow = null;
+    this.framesEmitted = 0;
+    this.streamStartEpoch = null;
+    this.streamEndedAt = null;
     this.isActive = false;
     this.isRemoteRelay = false;
     this.remoteRelayUrl = null;
@@ -46,6 +51,26 @@ export class StreamServer {
     this.relayReconnectTimer = null;
     this.reconnectAttempts = 0;
     this.reconnectTimer = null;
+    this.isFramePendingConsumption = false;
+  }
+
+  /**
+   * Retorna el reloj virtual sincronizado con los fotogramas del video en modo Fast-Forward,
+   * o Date.now() en modo tiempo real / producción.
+   * @returns {number} Epoch en milisegundos
+   */
+  getVirtualNow() {
+    if (this.mockVideoPath && (this.latestConsumedVirtualNow || this.latestFrameVirtualNow)) {
+      return this.latestConsumedVirtualNow || this.latestFrameVirtualNow;
+    }
+    if (this.mockVideoPath && this.streamFastForward && this.streamStartEpoch) {
+      const videoElapsedMs = Math.round(((this.framesEmitted || 0) / (this.fps || 3.5)) * 1000);
+      const postEndMs = (!this.isActive && this.streamEndedAt)
+        ? Math.round((Date.now() - this.streamEndedAt) * 10)
+        : 0;
+      return this.streamStartEpoch + videoElapsedMs + postEndMs;
+    }
+    return Date.now();
   }
 
   /**
@@ -326,6 +351,10 @@ export class StreamServer {
         console.log(`[Stream] Iniciando ingesta FFmpeg on-demand desde: ${this.rtspUrl} a ${this.fps} FPS...`);
       }
 
+      this.framesEmitted = 0;
+      this.streamStartEpoch = Date.now() + (seekOffset * 1000);
+      this.streamEndedAt = null;
+      this.isFramePendingConsumption = false;
       this.ffmpegProcess = spawn("ffmpeg", args, { stdio: ["ignore", "pipe", "pipe"] });
       this.isActive = true;
       let lastFrameTime = Date.now();
@@ -333,7 +362,7 @@ export class StreamServer {
       // Watchdog de inactividad: Si FFmpeg no entrega fotogramas en 20 segundos, reiniciar
       if (this.watchdogInterval) clearInterval(this.watchdogInterval);
       this.watchdogInterval = setInterval(() => {
-        if (this.isActive && Date.now() - lastFrameTime > 20000) {
+        if (this.isActive && !this.isFramePendingConsumption && Date.now() - lastFrameTime > 20000) {
           console.warn("[Stream Watchdog] Inactividad de fotogramas detectada (>20s). Reiniciando ingesta FFmpeg...");
           this.stopFfmpegStream(true);
         }
@@ -350,8 +379,10 @@ export class StreamServer {
 
       let chunkBuffer = Buffer.alloc(0);
 
-      this.ffmpegProcess.stdout.on("data", (data) => {
-        chunkBuffer = Buffer.concat([chunkBuffer, data]);
+      const processChunks = () => {
+        if (this.mockVideoPath && this.streamFastForward && this.isFramePendingConsumption) {
+          return;
+        }
 
         // Descartar bytes corruptos previos al primer SOI (0xFF, 0xD8)
         const firstSoi = chunkBuffer.indexOf(JPEG_SOI);
@@ -369,9 +400,26 @@ export class StreamServer {
 
           lastFrameTime = Date.now();
           this.latestFrameTimestamp = Date.now();
+          this.framesEmitted = (this.framesEmitted || 0) + 1;
           this.reconnectAttempts = 0;
           this.latestFrameBuffer = frame;
+
+          const videoElapsedMs = this.mockVideoPath
+            ? Math.round(((this.framesEmitted || 0) / (this.fps || 3.5)) * 1000)
+            : 0;
+          this.latestFrameVirtualNow = this.mockVideoPath
+            ? (this.streamStartEpoch + videoElapsedMs)
+            : Date.now();
+
           this.broadcastFrame(frame);
+
+          if (this.mockVideoPath && this.streamFastForward) {
+            this.isFramePendingConsumption = true;
+            if (this.ffmpegProcess && this.ffmpegProcess.stdout && !this.ffmpegProcess.stdout.isPaused()) {
+              this.ffmpegProcess.stdout.pause();
+            }
+            break;
+          }
 
           const nextSoi = chunkBuffer.indexOf(JPEG_SOI);
           if (nextSoi > 0) {
@@ -385,15 +433,25 @@ export class StreamServer {
         if (chunkBuffer.length > 8 * 1024 * 1024) {
           chunkBuffer = Buffer.alloc(0);
         }
+      };
+
+      this._processPendingStreamChunks = processChunks;
+
+      this.ffmpegProcess.stdout.on("data", (data) => {
+        chunkBuffer = Buffer.concat([chunkBuffer, data]);
+        processChunks();
       });
 
       this.ffmpegProcess.on("exit", (code) => {
+        this.isFramePendingConsumption = false;
+        this._processPendingStreamChunks = null;
         console.log(`[Stream] Proceso FFmpeg finalizó con código: ${code}`);
         if (code !== 0 && stderrBuffer.trim().length > 0) {
           console.warn(`[Stream FFmpeg Último Detalle]:\n${stderrBuffer.trim()}`);
         }
         this.ffmpegProcess = null;
         this.isActive = false;
+        this.streamEndedAt = Date.now();
         if (this.watchdogInterval) clearInterval(this.watchdogInterval);
         if (this.reconnectTimer) {
           clearTimeout(this.reconnectTimer);
@@ -404,6 +462,13 @@ export class StreamServer {
         if (this.mockVideoPath && !this.mockVideoLoop && code === 0) {
           console.log("[Stream] 🎬 Reproducción de video mock finalizada (reproducción única completa).");
           this.isPersistent = false;
+          this.latestFrameBuffer = null;
+          this.latestFrameTimestamp = null;
+          if (typeof this.onMockVideoEnd === "function") {
+            Promise.resolve(this.onMockVideoEnd(this.getVirtualNow())).catch(err => {
+              console.warn("[Stream] Aviso en onMockVideoEnd:", err.message);
+            });
+          }
           return;
         }
 
@@ -478,6 +543,8 @@ export class StreamServer {
         } catch (_) {}
       }, 500);
     }
+    this.isFramePendingConsumption = false;
+    this._processPendingStreamChunks = null;
     this.isActive = false;
   }
 
@@ -501,6 +568,16 @@ export class StreamServer {
   }
 
   /**
+   * Consume y retorna el fotograma más reciente en memoria, liberando el backpressure
+   * y reanudando la ingesta de FFmpeg si la simulación rápida está activa.
+   * @param {number} [maxAgeMs=15000]
+   * @returns {Buffer|null}
+   */
+  consumeLatestFrame(maxAgeMs = 15000) {
+    return this.getLatestFrame(maxAgeMs);
+  }
+
+  /**
    * Retorna el fotograma más reciente en memoria si no está obsoleto
    * @param {number} [maxAgeMs=15000]
    * @returns {Buffer|null}
@@ -509,6 +586,19 @@ export class StreamServer {
     if (this.latestFrameTimestamp && (Date.now() - this.latestFrameTimestamp > maxAgeMs)) {
       return null;
     }
-    return this.latestFrameBuffer;
+    const frame = this.latestFrameBuffer;
+    this.latestConsumedVirtualNow = this.latestFrameVirtualNow;
+
+    if (this.mockVideoPath && this.streamFastForward && this.isFramePendingConsumption) {
+      this.isFramePendingConsumption = false;
+      if (this.ffmpegProcess && this.ffmpegProcess.stdout && this.ffmpegProcess.stdout.isPaused()) {
+        this.ffmpegProcess.stdout.resume();
+      }
+      if (typeof this._processPendingStreamChunks === "function") {
+        this._processPendingStreamChunks();
+      }
+    }
+
+    return frame;
   }
 }

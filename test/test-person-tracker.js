@@ -125,20 +125,21 @@ const barberChairZone = {
   boxNorm: [0.70, 0.30, 0.95, 0.70] // y: 403-547, x: 307-716 en 1024x576
 };
 
+const t0 = 1700000000000;
 // 7a. Transeúnte que pasa caminando por 2 fotogramas (con su pecho en tránsito o cruzando brevemente)
 const walkerDet = [{ class: "person", score: 0.88, box: [400, 380, 500, 560] }]; // chestY = 380 + 180*0.38 = 448 -> norm 0.77 (en la silla)
-debounceTracker.update(walkerDet, [barberChairZone]); // Frame 1
-debounceTracker.update(walkerDet, [barberChairZone]); // Frame 2
+debounceTracker.update(walkerDet, [barberChairZone], 1024, 576, t0); // Frame 1
+debounceTracker.update(walkerDet, [barberChairZone], 1024, 576, t0 + 500); // Frame 2
 let events = debounceTracker.consumeEvents();
 const hasSittingEventWalker = events.some(e => e.text.includes("se sienta"));
 assert.strictEqual(hasSittingEventWalker, false, "Transeúnte de 2 fotogramas NO debe disparar 'Persona se sienta'");
 console.log("-> Transeúnte efímero (2 frames) ignorado correctamente sin disparar 'Persona se sienta'.");
 
 // 7b. Cliente que permanece sentado por 6 fotogramas
-debounceTracker.update(walkerDet, [barberChairZone]); // Frame 3
-debounceTracker.update(walkerDet, [barberChairZone]); // Frame 4
-debounceTracker.update(walkerDet, [barberChairZone]); // Frame 5
-debounceTracker.update(walkerDet, [barberChairZone]); // Frame 6 (alcanza minChairFrames = 6)
+debounceTracker.update(walkerDet, [barberChairZone], 1024, 576, t0 + 1000); // Frame 3
+debounceTracker.update(walkerDet, [barberChairZone], 1024, 576, t0 + 1500); // Frame 4
+debounceTracker.update(walkerDet, [barberChairZone], 1024, 576, t0 + 2000); // Frame 5
+debounceTracker.update(walkerDet, [barberChairZone], 1024, 576, t0 + 2500); // Frame 6 (alcanza minChairFrames = 6 y minChairDurationMs = 2000)
 events = debounceTracker.consumeEvents();
 const hasSittingEventClient = events.some(e => e.text.includes("se sienta"));
 assert.strictEqual(hasSittingEventClient, true, "Cliente con 6 fotogramas DEBE disparar 'Persona se sienta'");
@@ -147,8 +148,8 @@ assert.strictEqual(clientTrackObj.isFormallySeated, true);
 console.log("-> Cliente confirmado tras 6 fotogramas consecutivos emite evento formal de sentado.");
 
 // 7c. Oclusión temporal de 2 fotogramas (el barbero pasa las tijeras o YOLO pierde la caja 2 frames)
-debounceTracker.update([], [barberChairZone]); // Frame 1 fuera
-debounceTracker.update([], [barberChairZone]); // Frame 2 fuera
+debounceTracker.update([], [barberChairZone], 1024, 576, t0 + 3000); // Frame 1 fuera
+debounceTracker.update([], [barberChairZone], 1024, 576, t0 + 3500); // Frame 2 fuera
 events = debounceTracker.consumeEvents();
 const hasFalseLeaveEvent = events.some(e => e.text.includes("se levantó"));
 assert.strictEqual(hasFalseLeaveEvent, false, "Oclusión de 2 fotogramas NO debe disparar falso 'se levantó'");
@@ -182,9 +183,10 @@ console.log("-> Personal/Barbero excluido al 100% de eventos de sentado en la si
 // 7f. Memoria extendida de silla (maxChairMissedFrames) y persistencia inmutable de TrackId
 console.log("\n[7f] Probando persistencia inmutable de TrackId ante oclusión prolongada en silla (15 frames)...");
 const occlusionTracker = new PersonTracker({ minChairFrames: 6, maxChairMissedFrames: 50 });
+const tOcc = 1700000000000;
 // Cliente se sienta y cumple 6 frames
 for (let f = 0; f < 6; f++) {
-  occlusionTracker.update([walkerDet[0]], [barberChairZone]);
+  occlusionTracker.update([walkerDet[0]], [barberChairZone], 1024, 576, tOcc + f * 500);
 }
 const seatedTrack1 = occlusionTracker.getTrack(1);
 assert.strictEqual(seatedTrack1.isFormallySeated, true);
@@ -192,14 +194,14 @@ assert.strictEqual(seatedTrack1.trackId, 1);
 
 // YOLO pierde la detección por 15 fotogramas completos (el barbero bloquea la cámara)
 for (let f = 0; f < 15; f++) {
-  occlusionTracker.update([], [barberChairZone]);
+  occlusionTracker.update([], [barberChairZone], 1024, 576, tOcc + (6 + f) * 500);
 }
 // El track 1 DEBE seguir vivo en memoria (missedFrames = 15 < maxChairMissedFrames = 50)
 assert.strictEqual(occlusionTracker.activeTracks.has(1), true, "Track 1 debe conservarse vivo en la silla");
 assert.strictEqual(occlusionTracker.getTrack(1).missedFrames, 15);
 
 // El cliente es detectado de nuevo en la silla
-const resumedTracks = occlusionTracker.update([walkerDet[0]], [barberChairZone]);
+const resumedTracks = occlusionTracker.update([walkerDet[0]], [barberChairZone], 1024, 576, tOcc + 22 * 500);
 assert.strictEqual(resumedTracks.length, 1);
 assert.strictEqual(resumedTracks[0].trackId, 1, "Debe REUTILIZAR trackId = 1 en lugar de crear un track nuevo (#2)");
 assert.strictEqual(resumedTracks[0].missedFrames, 0);
@@ -256,12 +258,12 @@ const bendChairZone = {
 // Cliente sentado solo durante 6 frames
 const sittingClientDet = [{ class: "person", score: 0.90, box: [100, 180, 250, 380] }]; // h = 200, y1 = 180
 const tEntered = 1700000000000;
-bendTracker.update(sittingClientDet, [bendChairZone], 1024, 576);
+bendTracker.update(sittingClientDet, [bendChairZone], 1024, 576, tEntered);
 let clientTrackBend = bendTracker.getTrack(1);
 assert.ok(clientTrackBend.chairEnteredAt, "chairEnteredAt debe fijarse en el primer fotograma en la silla");
 
 for (let i = 2; i <= 6; i++) {
-  bendTracker.update(sittingClientDet, [bendChairZone], 1024, 576);
+  bendTracker.update(sittingClientDet, [bendChairZone], 1024, 576, tEntered + (i - 1) * 500);
 }
 assert.strictEqual(clientTrackBend.isFormallySeated, true, "Cliente debe estar formalmente sentado tras 6 frames");
 assert.strictEqual(clientTrackBend.role, "client");
@@ -271,7 +273,7 @@ const bendFrameDets = [
   { class: "person", score: 0.90, box: [100, 180, 250, 380] }, // Cliente: y1=180, h=200
   { class: "person", score: 0.92, box: [220, 200, 350, 490] }  // Barbero agachado: y1=200 (cabeza más baja), h=290
 ];
-const updatedTracks = bendTracker.update(bendFrameDets, [bendChairZone], 1024, 576);
+const updatedTracks = bendTracker.update(bendFrameDets, [bendChairZone], 1024, 576, tEntered + 3000);
 assert.strictEqual(updatedTracks.length, 2);
 
 const cTrack = updatedTracks.find(t => t.trackId === 1);

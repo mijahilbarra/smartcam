@@ -47,17 +47,18 @@ src/services/
 flowchart TD
     START(["Inicio del Ciclo (runProcessCycle)"]) --> S1["1. acquireFrame<br/>(acquisition_step.js: RAM 0ms en realtime / P2P Neolink en manual)"]
     S1 --> S2["2. uploadDiagnosticSnapshot<br/>(acquisition_step.js: Solo si es manual / arranque)"]
-    S2 --> S3["3. detectScene<br/>(detection_step.js: ONNX Runtime + YOLOv8 + Cuadrantes)"]
-    S3 --> S4["4. trackEntities<br/>(tracking_step.js: PersonTracker espacial trackId)"]
-    S4 --> TEL_EARLY["⚡ broadcastTelemetry Inmediato<br/>(telemetry_step.js: SSE <50ms Cajas y Tracks)"]
+    S2 --> VNOW["⏱️ virtualNow Resolution<br/>(virtual clock en simulador / Date.now() en vivo)"]
+    VNOW --> S3["3. detectScene<br/>(detection_step.js: ONNX Runtime + YOLOv8 + Cuadrantes)"]
+    S3 --> S4["4. trackEntities(tracker, mlResult, virtualNow)<br/>(tracking_step.js: PersonTracker espacial trackId)"]
+    S4 --> TEL_EARLY["⚡ 4a. broadcastTelemetry Inmediato<br/>(telemetry_step.js: SSE <50ms Cajas, Tracks e immediateOccupancy)"]
     TEL_EARLY --> CLEAR["4b. enrichCropsWithClearStream<br/>(clear_stream_step.js: Snapshot RTSP 2560x1440, reescalado y recortes Sharp)"]
     CLEAR --> S5A["5a. extractClientCrops<br/>(biometrics_step.js: Recortes y storage manual)"]
-    S5A --> S5B["5b. reidentifyPeople<br/>(biometrics_step.js: ArcFace + CustomerService SQLite WAL)"]
-    S5B --> S6["6. matchIdentitiesToTracks<br/>(tracking_step.js: Asociación Espacial IoU Box-to-Track)"]
-    S6 --> S7["7. updateVisits<br/>(visits_step.js: VisitSessionService Check-in / Check-out)"]
+    S5A --> S5B["5b. reidentifyPeople(nowEpoch: virtualNow)<br/>(biometrics_step.js: ArcFace + CustomerService SQLite WAL)"]
+    S5B --> S6["6. matchIdentitiesToTracks(now: virtualNow)<br/>(tracking_step.js: Asociación Espacial IoU Box-to-Track)"]
+    S6 --> S7["7. updateVisits(now: virtualNow)<br/>(visits_step.js: VisitSessionService Check-in / Check-out)"]
     S7 --> S8["8. computeOccupancy<br/>(occupancy_step.js: Cálculo Funcional Puro de Ocupación)"]
     S8 --> TEL_FINAL["9. broadcastTelemetry Enriquecido<br/>(telemetry_step.js: SSE con Identidades y Ocupación)"]
-    TEL_FINAL --> S10["10. persistCycleData<br/>(persistence_step.js: SQLite Local + Tick Atómico / Firestore Manual)"]
+    TEL_FINAL --> S10["10. persistCycleData<br/>(persistence_step.js: SQLite Local + Tick Atómico / 100% Offline en Test)"]
     S10 --> END(["Fin del Ciclo"])
 ```
 
@@ -114,17 +115,17 @@ flowchart TD
   * **Respeto Absoluto a Roles de Usuario**: Perfiles modificados manualmente por el usuario (`role: "client"` o `isStaff: false`) no son revertidos a Staff por el backend, independientemente del prefijo del ID.
 
 ### 6. `visits_step.js`
-* **`updateVisits({ visitService, tracker, activeTracks })`**:
-  * **Filtro Canónico Anti-Nuca en Sesión**: `addFaceSample` exige similitud coseno $\ge 0.45$ con la foto inicial de la sesión, rechazando fotos de nucas o espaldas que produzcan embeddings desvinculados.
+* **`updateVisits({ visitService, tracker, activeTracks, now })`**:
+  * **Filtro Canónico Anti-Nuca y Cuotas de Pose**: `addFaceSample` exige consistencia biométrica con la galería, protege las primeras 3 fotos ancla y limita poses reclinadas (`tilted_up*`) a un máximo de 4/20 para evitar desplazar fotos frontales nítidas.
   * **Protección de Miniatura de Atención**: La miniatura de la atención solo se actualiza ante poses frontales o semi-frontales con mayor nitidez.
   * **Ciclo de Vida de Estados (`to_verify` $\rightarrow$ `new` / `frequent` / Borrado Físico)**:
     * Al abrir sesión en la silla se asigna `status: "to_verify"`.
-    * Al concluir la atención ($\ge 10$ min), realiza evaluación Set-to-Set:
-      * **Si coincide con Barbero/Staff ($\ge 0.46$)**: **Borrado Físico Completo (Hard Delete)** en Firestore y SQLite (`deleteCustomer`). Cero citas y cero clientes creados.
-      * **Si coincide con cliente recurrente ($\ge 0.60$)**: Se vincula la cita, se incrementa `appointmentCount`, se asigna `status: "frequent"` y se elimina físicamente el ID temporal `to_verify`.
-      * **Si es cliente nuevo legítimo**: Se crea el perfil formal con `status: "new"`.
+    * **Cero Tiempos Estáticos y Embudo de 3 Preguntas al Cerrar la Sesión**:
+      1. **Pregunta 1 (¿Evidencia fotográfica real y suficiente?)**: Se descartan sesiones de 1 sola foto si no es frontal (ej. ruido lateral o cabecera de silla). Si la sesión acumula $\ge 3$ fotos válidas de cliente, **NUNCA se descarta por una regla rígida de tiempo mínimo**.
+      2. **Pregunta 2 (¿Es el Barbero / Staff?)**: Purga de recortes individuales de staff y descarte íntegro del segmento si la similitud promedio es $\ge 0.48$ o el ratio de fotos del barbero es $\ge 0.50$, ejecutando **Borrado Físico Completo (Hard Delete)** del ID `to_verify` sin alterar el puntero al cliente anterior.
+      3. **Pregunta 3 (¿Se parece al Cliente Anterior o es Nuevo?)**: Comparación estrictamente cronológica contra el último segmento de cliente de la misma silla usando métricas Set-to-Set (`computeSetToSetMetrics`: `top3AvgSim`, `maxCompatiblePoseSim`, `medianSim`). Si coinciden, se consolida la cita; si no, se formaliza el nuevo cliente.
   * **Filtro de Permanencia / Debounce de Asiento (`consecutiveChairFrames >= 6`)**: Requiere de 2 a 3 segundos de permanencia continua en la silla antes de disparar `"Persona se sienta"` e iniciar la sesión, descartando transeúntes que cruzan caminando.
-  * **Ventana de Gracia de Liberación (30 segundos)**: Si el cliente se levanta transitoriamente o el barbero ocluye la silla, la atención permanece en estado `"esperando_liberacion"`. Si retorna antes de 30s se reanuda limpiamente sin cerrar la atención.
+  * **Ventana de Gracia de Liberación Calibrada (`45000` ms / 45 segundos)**: Si el cliente se levanta transitoriamente o el barbero ocluye la silla, la atención permanece en estado `"esperando_liberacion"`. Si retorna antes de 45s se reanuda limpiamente sin fragmentar la atención.
   * **Blindaje contra Personal**: El barbero de pie en la zona de corte queda forzado incondicionalmente como Staff por diferencia de altura (`PersonTracker`), excluyéndose de la atención.
 
 ### 7. `occupancy_step.js`
@@ -135,13 +136,13 @@ flowchart TD
 ### 8. `telemetry_step.js`
 * **`broadcastTelemetry({ docId, mlResult, activeTracks, identifiedPeople, occupancy })`**:
   * Emisión SSE en tiempo real hacia `/api/yolo/stream` (frontend web).
-  * **Emisión Temprana Inmediata (< 50 ms)**: Emite cajas visuales de tracking con `identifiedPeople: null`, omitiendo la clave para evitar parpadeos visuales en el Canvas web antes de completar la biometría.
+  * **Emisión Temprana Inmediata (< 50 ms)**: Emite cajas visuales de tracking con `identifiedPeople: null` e `immediateOccupancy`, omitiendo la clave de personas para evitar parpadeos visuales en el Canvas web antes de completar la biometría.
   * **Emisión Final Enriquecida**: Envía metadatos biométricos completos, ocupación depurada y **métricas de memoria RAM del sistema** (`rssMB`, `heapUsedMB`, `heapTotalMB`, `osFreeMB`).
 
 ### 9. `persistence_step.js`
 * **`persistCycleData({ db, docId, timestamp, storagePath, clientRecords, identifiedPeople, mlResult, visitService, activeTracks, occupancy, isRealtime })`**:
-  * Modo tiempo real: Emite tick atómico a través de `daemonReporter` sin generar escrituras ruidosas en Firestore.
-  * Modo manual: Persiste el documento histórico completo en `camera_catcher/photos/photos/<docId>` con sanitización estricta.
+  * **Modo tiempo real / simulador offline**: Emite tick atómico a través de `daemonReporter`. En entornos de test o con `USE_FIREBASE=false`, opera 100% desconectado de Firestore contra SQLite local (`barberia_test.db` o `barberia.db`).
+  * **Modo manual**: Persiste el documento histórico completo en `camera_catcher/photos/photos/<docId>` con sanitización estricta si Firestore está disponible.
 
 ---
 

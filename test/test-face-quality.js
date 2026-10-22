@@ -79,4 +79,108 @@ const boxPose = await estimateFacePose({ faceBoxNorm: [0.1, 0.2, 0.3, 0.4] });
 console.log("-> Estimación de pose con faceBoxNorm sintético:", boxPose);
 assert.ok(validPoses.includes(boxPose.pose));
 
+// 6. Probar estimación geométrica directa con 5 Landmarks (SCRFD)
+console.log("\n[6] Probando estimación geométrica directa con 5 landmarks (SCRFD)...");
+const frontalLandmarks = [
+  [0.35, 0.30], // ojo izq
+  [0.65, 0.30], // ojo der
+  [0.50, 0.45], // nariz
+  [0.38, 0.60], // boca izq
+  [0.62, 0.60]  // boca der
+];
+const frontalPose = await estimateFacePose({ landmarks: frontalLandmarks });
+console.log("-> Pose frontal desde landmarks:", frontalPose);
+assert.strictEqual(frontalPose.pose, "frontal", "Landmarks simétricos deben estimar pose frontal");
+assert.strictEqual(frontalPose.label, "Frontal");
+assert.ok(Math.abs(frontalPose.yawScore) < 0.1, "Yaw debe ser cercano a 0 en frontal");
+
+const leftProfileLandmarks = [
+  [0.579, 0.089],
+  [0.661, 0.094],
+  [0.573, 0.119],
+  [0.580, 0.142],
+  [0.643, 0.146]
+];
+const leftProfilePose = await estimateFacePose({ landmarks: leftProfileLandmarks });
+console.log("-> Pose perfil izquierdo desde landmarks:", leftProfilePose);
+assert.strictEqual(leftProfilePose.pose, "profile_left", "Debe clasificar perfil izquierdo correctamente");
+assert.ok(leftProfilePose.yawScore <= -0.35, "yawScore debe indicar giro hacia la izquierda");
+
+// 7. Probar validación anatómica con isValidFaceGeometry (descarte de tijeras/orejas/manos)
+console.log("\n[7] Probando descarte de geometrías no faciales con isValidFaceGeometry...");
+const { isValidFaceGeometry } = await import("../src/services/face_quality_service.js");
+
+// Caso válido:
+assert.strictEqual(isValidFaceGeometry(frontalLandmarks, [0.2, 0.2, 0.8, 0.7]), true, "Geometría facial simétrica debe ser válida");
+
+// Caso inválido: ojos invertidos horizontalmente (artefacto de tijera o textura cruzada)
+const invertedEyesLandmarks = [
+  [0.65, 0.30], // ojo izq a la derecha
+  [0.35, 0.30], // ojo der a la izquierda
+  [0.50, 0.45],
+  [0.38, 0.60],
+  [0.62, 0.60]
+];
+assert.strictEqual(isValidFaceGeometry(invertedEyesLandmarks), false, "Ojos invertidos deben ser rechazados");
+
+// Caso inválido: nariz debajo de la boca (manos o tijeras verticales)
+const noseBelowMouth = [
+  [0.35, 0.30],
+  [0.65, 0.30],
+  [0.50, 0.75], // nariz por debajo de la boca
+  [0.38, 0.60],
+  [0.62, 0.60]
+];
+assert.strictEqual(isValidFaceGeometry(noseBelowMouth), false, "Nariz debajo de boca debe ser rechazada");
+
+// Caso inválido: boca arriba de los ojos
+const mouthAboveEyes = [
+  [0.35, 0.50],
+  [0.65, 0.50],
+  [0.50, 0.40],
+  [0.38, 0.20], // boca arriba
+  [0.62, 0.20]
+];
+assert.strictEqual(isValidFaceGeometry(mouthAboveEyes), false, "Boca encima de ojos debe ser rechazada");
+
+// 8. Probar conmutación configurable FACE_DETECTOR=rfb vs scrfd
+console.log("\n[8] Probando conmutación configurable FACE_DETECTOR=rfb...");
+process.env.FACE_DETECTOR = "rfb";
+const rfbDetection = await detectFace(barberImg);
+console.log("-> Detección con RFB-320:", { hasFace: rfbDetection.hasFace, confidence: rfbDetection.confidence });
+assert.strictEqual(rfbDetection.hasFace, true, "RFB-320 debe detectar el rostro");
+assert.ok(rfbDetection.confidence > 0.8, "Confianza RFB debe superar 0.8");
+
+delete process.env.FACE_DETECTOR;
+const scrfdDetection = await detectFace(barberImg);
+console.log("-> Detección por defecto (SCRFD-500M):", {
+  hasFace: scrfdDetection.hasFace,
+  confidence: scrfdDetection.confidence,
+  landmarks: Boolean(scrfdDetection.landmarks)
+});
+assert.strictEqual(scrfdDetection.hasFace, true, "SCRFD debe detectar el rostro");
+// 9. Probar cálculo de frontalidad continua (computeFrontalityScore)
+console.log("\n[9] Probando cálculo de frontalidad continua (computeFrontalityScore)...");
+const { computeFrontalityScore, hasTwoEyesVisible } = await import("../src/services/face_quality_service.js");
+const frontalScore = computeFrontalityScore(frontalLandmarks, [0.2, 0.2, 0.8, 0.7]);
+console.log("-> Score de frontalidad para rostro frontal:", frontalScore);
+assert.ok(frontalScore >= 0.70, "Rostro frontal debe tener frontalityScore alto (>= 0.70)");
+
+const profileScore = computeFrontalityScore(leftProfileLandmarks, [0.55, 0.05, 0.70, 0.20]);
+console.log("-> Score de frontalidad para perfil:", profileScore);
+assert.strictEqual(profileScore, 0, "Perfil extremo debe tener frontalityScore = 0");
+
+// 10. Probar regla maestra de Dos Ojos Mínimo (hasTwoEyesVisible)
+console.log("\n[10] Probando regla anatómica hasTwoEyesVisible...");
+assert.strictEqual(hasTwoEyesVisible(frontalLandmarks, [0.2, 0.2, 0.8, 0.7], "frontal"), true, "Frontal con landmarks válidos debe tener 2 ojos");
+assert.strictEqual(hasTwoEyesVisible(leftProfileLandmarks, [0.55, 0.05, 0.70, 0.20], "profile_left"), false, "Perfil unilateral con landmarks debe ser false");
+assert.strictEqual(hasTwoEyesVisible(null, null, "frontal"), true, "Fallback por pose frontal debe ser true");
+assert.strictEqual(hasTwoEyesVisible(null, null, "semi_left"), true, "Fallback por pose semi-perfil debe ser true");
+assert.strictEqual(hasTwoEyesVisible(null, null, "tilted_up"), true, "Fallback por pose inclinada debe ser true");
+assert.strictEqual(hasTwoEyesVisible(null, null, "profile_left"), false, "Fallback por pose profile_left debe ser false");
+assert.strictEqual(hasTwoEyesVisible(null, null, "profile_right"), false, "Fallback por pose profile_right debe ser false");
+console.log("-> hasTwoEyesVisible validada exitosamente para landmarks y fallback por pose.");
+
 console.log("\n🎉 ¡Todos los tests de Face Quality, Nitidez y Estimación de Pose pasaron exitosamente!");
+
+

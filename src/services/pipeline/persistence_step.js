@@ -90,3 +90,9 @@ export async function persistCycleData({
 
   return record;
 }
+
+export const STEP_NAME = "Persistencia y Reporte Final";
+export const STEP_DESCRIPTION = () =>
+  `Persistencia atómica de citas, clientes y fotos analíticas en la base de datos y reporte de estado.`;
+export const formatStepSummary = (recordsCount = 0, details = "") =>
+  `10. **${STEP_NAME}:** ${recordsCount} registros persistidos.${details ? `\n   - *${details}*` : ""}`;

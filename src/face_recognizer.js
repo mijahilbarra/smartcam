@@ -24,8 +24,8 @@ export async function getFaceInferenceSession() {
     faceSession = await ort.InferenceSession.create(FACE_MODEL_PATH, {
       executionProviders: ["cpu"],
       graphOptimizationLevel: "basic",
-      intraOpNumThreads: 1, // Cap to 1 thread for low CPU footprint
-      interOpNumThreads: 1,
+      intraOpNumThreads: Number(process.env.ONNX_THREADS) || 1,
+      interOpNumThreads: Number(process.env.ONNX_THREADS) || 1,
       enableCpuMemArena: false,
       enableMemPattern: false
     });
@@ -105,8 +105,9 @@ export async function extractFaceEmbedding(imageBuffer) {
 
   // Resize and normalize to 112x112 RGB Float32Array (InsightFace format)
   // Input pixel normalization: (pixel - 127.5) / 127.5
+  // Usar fit: "fill" para preservar el rostro completo (ojos, nariz, boca y mentón)
   const { data } = await sharp(imageBuffer)
-    .resize(112, 112, { fit: "cover", position: "top" }) // Focus on top (face/head)
+    .resize(112, 112, { fit: "fill" })
     .removeAlpha()
     .raw()
     .toBuffer({ resolveWithObject: true });

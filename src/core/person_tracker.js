@@ -7,14 +7,17 @@
 import { calculateIoU, isPointInsideZone } from "./geometry.js";
 import { isChairZone, isTransitZone } from "./barbershop_rules.js";
 import { computeCosineSimilarity } from "../face_recognizer.js";
+import { PIPELINE_CONFIG } from "./pipeline_config.js";
 
 export class PersonTracker {
   constructor(options = {}) {
-    this.iouThreshold = options.iouThreshold || 0.30;
+    this.iouThreshold = options.iouThreshold ?? PIPELINE_CONFIG.tracking.iouThreshold;
     this.maxMissedFrames = options.maxMissedFrames || 8;
     this.maxChairMissedFrames = options.maxChairMissedFrames || 75; // ~30s de memoria para cliente sentado en silla
-    this.minChairFrames = options.minChairFrames || 6; // Debounce de asiento: 6 fotogramas (~2s de quietud)
-    this.leaveDebounceFrames = options.leaveDebounceFrames || 6; // Debounce de levantarse: 6 fotogramas continuos fuera
+    this.minChairFrames = options.minChairFrames ?? PIPELINE_CONFIG.tracking.minChairFrames; // Debounce de asiento: 6 fotogramas
+    this.leaveDebounceFrames = options.leaveDebounceFrames ?? PIPELINE_CONFIG.tracking.leaveDebounceFrames; // Debounce de levantarse: 6 fotogramas
+    this.minChairDurationMs = options.minChairDurationMs !== undefined ? options.minChairDurationMs : PIPELINE_CONFIG.tracking.minChairDurationMs;
+    this.leaveDebounceDurationMs = options.leaveDebounceDurationMs !== undefined ? options.leaveDebounceDurationMs : PIPELINE_CONFIG.tracking.leaveDebounceDurationMs;
     this.nextTrackId = 1;
     this.activeTracks = new Map(); // trackId -> TrackedPerson
     this.historyTracks = [];
@@ -37,6 +40,7 @@ export class PersonTracker {
   }
 
   _updateChairSittingState(track, now = Date.now()) {
+    if ((track.missedFrames || 0) > 0) return;
     const isStaff = track.isStaffHint === true || track.identity?.isStaff === true || track.role === "staff";
     const inChair = !isStaff && track.currentQuadrant && isChairZone(track.currentQuadrant);
 
@@ -46,6 +50,7 @@ export class PersonTracker {
       }
       track.consecutiveChairFrames = (track.consecutiveChairFrames || 0) + 1;
       track.consecutiveNonChairFrames = 0;
+      track.chairLeftAt = null;
 
       // Si ya estaba formalmente sentado y cambia de silla
       if (track.isFormallySeated && track.lastChairQuadrant && track.lastChairQuadrant.id !== track.currentQuadrant.id) {
@@ -54,24 +59,39 @@ export class PersonTracker {
         this.emitEvent(`🚶 Persona (Track #${track.trackId}) se levantó de ${oldName}`, "process");
         this.emitEvent(`💺 Persona (Track #${track.trackId}) se sienta en ${newName}`, "process");
         track.lastChairQuadrant = track.currentQuadrant;
-      } else if (track.consecutiveChairFrames >= this.minChairFrames && !track.isFormallySeated) {
-        // Disparo formal de asiento tras >= minChairFrames (6 a 8) consecutivos
+      } else if (
+        !track.isFormallySeated &&
+        track.consecutiveChairFrames >= this.minChairFrames &&
+        (now - track.chairEnteredAt) >= (this.minChairDurationMs || 2000)
+      ) {
+        // Disparo formal de asiento tras >= minChairFrames y duración >= minChairDurationMs
         track.isFormallySeated = true;
         track.lastChairQuadrant = track.currentQuadrant;
         const quadName = track.currentQuadrant.label || track.currentQuadrant.name || 'Silla de corte';
         this.emitEvent(`💺 Persona (Track #${track.trackId}) se sienta en ${quadName}`, "process");
       }
     } else {
+      if (!track.chairLeftAt || track.consecutiveNonChairFrames === 0) {
+        track.chairLeftAt = now;
+      }
       track.consecutiveNonChairFrames = (track.consecutiveNonChairFrames || 0) + 1;
       track.consecutiveChairFrames = 0;
       track.chairEnteredAt = null;
 
-      // Disparo de levantarse: requiere al menos leaveDebounceFrames (6) consecutivos fuera
-      // Evita falsos 'se levantó / entra y sale' ante movimientos de brazos del barbero o caídas de 1-2 frames
-      if (track.isFormallySeated && track.consecutiveNonChairFrames >= this.leaveDebounceFrames) {
+      // Disparo de levantarse: requiere al menos leaveDebounceFrames consecutivos fuera
+      // o (now - (track.chairLeftAt || now)) >= (this.leaveDebounceDurationMs || 2000)
+      if (
+        track.isFormallySeated &&
+        (track.consecutiveNonChairFrames >= this.leaveDebounceFrames ||
+         (now - (track.chairLeftAt || now)) >= (this.leaveDebounceDurationMs || 2000))
+      ) {
         track.isFormallySeated = false;
+        track.latestFace = null;
+        if (track.bestFace) track.bestFace._consumedByVisit = true;
         const quadName = track.lastChairQuadrant?.label || track.lastChairQuadrant?.name || 'Silla de corte';
         this.emitEvent(`🚶 Persona (Track #${track.trackId}) se levantó de ${quadName}`, "process");
+        track.lastChairQuadrant = null;
+        track.chairLeftAt = null;
       }
     }
   }
@@ -82,10 +102,10 @@ export class PersonTracker {
    * @param {Array<Object>} quadrants - Cuadrantes de la barbería
    * @param {number} imgWidth
    * @param {number} imgHeight
+   * @param {number} [now=Date.now()]
    * @returns {Array<Object>} Lista de personas activas con su trackId y cuadrante actual
    */
-  update(detections, quadrants = [], imgWidth = 1024, imgHeight = 576) {
-    const now = Date.now();
+  update(detections, quadrants = [], imgWidth = 1024, imgHeight = 576, now = Date.now()) {
     const personDetections = (detections || []).filter(d => d.class === "person");
 
     const trackEntries = Array.from(this.activeTracks.entries());
@@ -164,7 +184,24 @@ export class PersonTracker {
 
         const trackW = Math.abs(track.box[2] - track.box[0]);
         const trackH = Math.abs(track.box[3] - track.box[1]);
-        const allowedDist = Math.max(trackW, trackH, 90) * 1.6;
+        const isSeatedClientTrack = track.isFormallySeated || (track.currentQuadrant && isChairZone(track.currentQuadrant));
+        const chairId = (track.lastChairQuadrant || track.currentQuadrant)?.id;
+
+        if (isSeatedClientTrack && chairId) {
+          const detQuadrant = this.findMatchingQuadrant(det.box, quadrants, imgWidth, imgHeight);
+          if (detQuadrant && detQuadrant.id !== chairId) {
+            // Un cliente sentado en silla nunca salta por centroide hacia otro cuadrante distinto (ej. silla de espera)
+            continue;
+          }
+          const detH = Math.abs(det.box[3] - det.box[1]);
+          if (trackH > 0 && detH > trackH * 1.38) {
+            // Evitar que el track del cliente sentado salte hacia el barbero de pie (caja mucho más alta)
+            continue;
+          }
+        }
+        const allowedDist = isSeatedClientTrack
+          ? Math.min(Math.max(trackW, trackH, 90) * 1.3, 140)
+          : Math.max(trackW, trackH, 90) * 1.6;
 
         if (dist <= Math.min(allowedDist, maxCentroidDist)) {
           centroidMatches.push({ tId, dIdx, dist });
@@ -206,43 +243,53 @@ export class PersonTracker {
     }
 
     // 1c. Etapa 3: Emparejamiento por continuidad espacial en Silla de Barbero
-    // Si un cliente confirmado o sentado quedó sin emparejar en este cuadro (por ej. oclusión temporal de brazos del barbero),
-    // y en esa misma silla aparece una detección no emparejada:
-    // Vincula inmediatamente la detección al track existente para preservar de forma inmutable su trackId.
+    // Si un cliente confirmado o sentado quedó sin emparejar brevemente (oclusión temporal de brazos del barbero <= 12 frames),
+    // y en esa misma silla aparece una detección compatible en altura (sentado):
+    // Vincula inmediatamente la detección de menor altura al track existente para preservar su trackId sin saltar al barbero de pie.
     for (const [tId, track] of trackEntries) {
       if (matchedTrackIds.has(tId)) continue;
+      if ((track.missedFrames || 0) > 12) continue;
       if (!track.isFormallySeated && (!track.currentQuadrant || !isChairZone(track.currentQuadrant))) continue;
       const chairId = (track.lastChairQuadrant || track.currentQuadrant)?.id;
       if (!chairId) continue;
 
+      const trackH = track.box ? Math.abs(track.box[3] - track.box[1]) : 0;
+      const candidateDetsInChair = [];
       for (let dIdx = 0; dIdx < personDetections.length; dIdx++) {
         if (matchedDetectionIndices.has(dIdx)) continue;
         const det = personDetections[dIdx];
         const detQuadrant = this.findMatchingQuadrant(det.box, quadrants, imgWidth, imgHeight);
         if (detQuadrant?.id === chairId) {
-          matchedTrackIds.add(tId);
-          matchedDetectionIndices.add(dIdx);
-
-          track.box = det.box;
-          track.boxNorm = [
-            Number((det.box[1] / imgHeight).toFixed(4)),
-            Number((det.box[0] / imgWidth).toFixed(4)),
-            Number((det.box[3] / imgHeight).toFixed(4)),
-            Number((det.box[2] / imgWidth).toFixed(4))
-          ];
-          track.confidence = det.score;
-          track.lastSeen = now;
-          track.missedFrames = 0;
-          track.centroid = {
-            x: Math.round((det.box[0] + det.box[2]) / 2),
-            y: Math.round((det.box[1] + det.box[3]) / 2)
-          };
-          track.seenCount = (track.seenCount || 0) + 1;
-          const prevQuadrant = track.currentQuadrant;
-          track.currentQuadrant = detQuadrant;
-          this._handleQuadrantChange(track, prevQuadrant, track.currentQuadrant, now);
-          break;
+          const detH = det.box ? Math.abs(det.box[3] - det.box[1]) : 0;
+          if (trackH > 0 && detH > trackH * 1.35) continue;
+          candidateDetsInChair.push({ dIdx, det, detQuadrant, detH });
         }
+      }
+
+      if (candidateDetsInChair.length > 0) {
+        candidateDetsInChair.sort((a, b) => a.detH - b.detH);
+        const chosen = candidateDetsInChair[0];
+        matchedTrackIds.add(tId);
+        matchedDetectionIndices.add(chosen.dIdx);
+
+        track.box = chosen.det.box;
+        track.boxNorm = [
+          Number((chosen.det.box[1] / imgHeight).toFixed(4)),
+          Number((chosen.det.box[0] / imgWidth).toFixed(4)),
+          Number((chosen.det.box[3] / imgHeight).toFixed(4)),
+          Number((chosen.det.box[2] / imgWidth).toFixed(4))
+        ];
+        track.confidence = chosen.det.score;
+        track.lastSeen = now;
+        track.missedFrames = 0;
+        track.centroid = {
+          x: Math.round((chosen.det.box[0] + chosen.det.box[2]) / 2),
+          y: Math.round((chosen.det.box[1] + chosen.det.box[3]) / 2)
+        };
+        track.seenCount = (track.seenCount || 0) + 1;
+        const prevQuadrant = track.currentQuadrant;
+        track.currentQuadrant = chosen.detQuadrant;
+        this._handleQuadrantChange(track, prevQuadrant, track.currentQuadrant, now);
       }
     }
 
@@ -258,8 +305,11 @@ export class PersonTracker {
           track.leftAt = now;
           if (track.isFormallySeated) {
             track.isFormallySeated = false;
+            track.latestFace = null;
+            if (track.bestFace) track.bestFace._consumedByVisit = true;
             const quadName = track.lastChairQuadrant?.label || track.lastChairQuadrant?.name || 'Silla de corte';
             this.emitEvent(`🚶 Persona (Track #${tId}) se levantó de ${quadName}`, "process");
+            track.lastChairQuadrant = null;
           }
           this.historyTracks.push({ ...track });
           this.activeTracks.delete(tId);
@@ -281,6 +331,7 @@ export class PersonTracker {
           consecutiveChairFrames: 0,
           consecutiveNonChairFrames: 0,
           chairEnteredAt: null,
+          chairLeftAt: null,
           isFormallySeated: false,
           lastChairQuadrant: null,
           box: det.box,
@@ -305,6 +356,7 @@ export class PersonTracker {
           isStaffHint: false,
           role: "client",
           bestFace: null,
+          latestFace: null,
           topFaces: [], // Almacena hasta las 10 mejores caras
           lastPhotoTime: 0,
           lastPose: null
@@ -316,9 +368,11 @@ export class PersonTracker {
     }
 
     // 4. Resolución de conflicto en Sillas de Barbero:
-    // En una silla de corte solo puede haber 1 cliente sentado. El acompañante de pie es el barbero.
+    // En una silla de corte solo puede haber 1 cliente sentado visible en el cuadro actual. El acompañante de pie es el barbero.
+    // IMPORTANTE: Ignorar tracks con missedFrames > 0 para que un track ocluido nunca envenene al track visible como "staff".
     const chairTracksMap = new Map();
     for (const track of this.activeTracks.values()) {
+      if ((track.missedFrames || 0) > 0) continue;
       if (track.currentQuadrant?.type === "barber_chair") {
         const qId = track.currentQuadrant.id;
         if (!chairTracksMap.has(qId)) chairTracksMap.set(qId, []);
@@ -361,9 +415,26 @@ export class PersonTracker {
         }
       } else if (tracksInChair.length === 1) {
         const singleTrack = tracksInChair[0];
+        const boxH = singleTrack.box ? (singleTrack.box[3] - singleTrack.box[1]) : 0;
+        const boxTop = singleTrack.box ? singleTrack.box[1] : imgHeight;
+        const isClearStandingGeometry = imgHeight > 0 && (boxH / imgHeight) >= 0.58 && (boxTop / imgHeight) <= 0.20;
+        const isStandingPosture = imgHeight > 0 && ((boxH / imgHeight) >= 0.55 || (boxTop / imgHeight) <= 0.22);
+
         if (singleTrack.identity?.isStaff === true) {
           singleTrack.isStaffHint = true;
           singleTrack.role = "staff";
+        } else if (!singleTrack.isFormallySeated && singleTrack.isStaffHint === true && (isClearStandingGeometry || isStandingPosture)) {
+          singleTrack.isStaffHint = true;
+          singleTrack.role = "staff";
+        } else if (singleTrack.isFormallySeated === true && singleTrack.role === "client") {
+          singleTrack.isStaffHint = false;
+          singleTrack.role = "client";
+        } else if ((singleTrack.isStaffHint === true || singleTrack.role === "staff") && isStandingPosture) {
+          singleTrack.isStaffHint = true;
+          singleTrack.role = "staff";
+        } else {
+          singleTrack.isStaffHint = false;
+          singleTrack.role = "client";
         }
       }
     }
@@ -475,7 +546,7 @@ export class PersonTracker {
   /**
    * Actualiza la identidad y el buffer de mejores caras para un track
    */
-  updateIdentityAndFace(trackId, { identity, faceBuffer, faceBoxNorm, sharpnessScore, thumbnailBase64, embedding, pose }) {
+  updateIdentityAndFace(trackId, { identity, faceBuffer, faceBoxNorm, sharpnessScore, thumbnailBase64, embedding, pose, now: overrideNow }) {
     const track = this.activeTracks.get(trackId);
     if (!track) return false;
 
@@ -485,7 +556,7 @@ export class PersonTracker {
     }
 
     if (faceBuffer && sharpnessScore) {
-      const now = Date.now();
+      const now = typeof overrideNow === "number" && overrideNow > 0 ? overrideNow : Date.now();
       const incomingPose = pose || identity?.pose || null;
       const targetEmbedding = embedding || identity?.embedding || null;
 
@@ -496,8 +567,11 @@ export class PersonTracker {
         thumbnailBase64: thumbnailBase64 || identity?.thumbnailBase64 || null,
         embedding: targetEmbedding,
         pose: incomingPose || 'frontal',
-        timestamp: new Date().toISOString()
+        poseLabel: identity?.poseLabel || null,
+        timestamp: new Date(now).toISOString()
       };
+
+      track.latestFace = faceShot;
 
       // 1. Deduplicación por fotograma idéntico / congelado (sim >= 0.985)
       let duplicateIdx = -1;
@@ -528,8 +602,9 @@ export class PersonTracker {
       }
 
       // 2. Control de cadencia temporal ("de vez en cuando"):
-      // Si la última foto tomada fue hace menos de 20,000 ms y la pose es la misma, omitir adición
-      if (track.lastPhotoTime && (now - track.lastPhotoTime < 20000) && incomingPose && track.lastPose === incomingPose) {
+      // Si la última foto tomada fue hace menos de 20,000 ms (o 12,000 ms virtuales) y la pose es la misma, omitir adición
+      const cooldownMs = (typeof overrideNow === "number" && overrideNow > 0) ? 12000 : (process.env.STREAM_FAST_FORWARD === "true" ? 2000 : 20000);
+      if (track.lastPhotoTime && (now - track.lastPhotoTime < cooldownMs) && incomingPose && track.lastPose === incomingPose) {
         // Si supera la nitidez de la foto de esta pose, actualizarla
         const samePoseIdx = track.topFaces.findIndex(f => f.pose === incomingPose);
         const updateIdx = samePoseIdx !== -1 ? samePoseIdx : (track.topFaces.length - 1);

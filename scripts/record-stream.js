@@ -8,7 +8,7 @@
  *   npm run record -- --duration 120
  */
 
-import { spawn } from "node:child_process";
+import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import http from "node:http";
@@ -52,26 +52,8 @@ async function detectSource() {
   if (customSource) return customSource;
   if (process.env.RTSP_STREAM_URL) return process.env.RTSP_STREAM_URL;
 
-  // Intentar primero stream HTTP de producción
   const prodUrl = process.env.PROD_STREAM_URL || "https://stream.perrosuelto.com";
-  const snapshotUrl = `${prodUrl}/api/snapshot`;
-
-  console.log(`🔍 Probando disponibilidad de stream en producción: ${snapshotUrl}...`);
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 4000);
-    const res = await fetch(snapshotUrl, { signal: controller.signal });
-    clearTimeout(timeout);
-    if (res.ok) {
-      console.log(`✅ Stream de producción disponible en ${prodUrl}`);
-      return `${prodUrl}/api/stream`;
-    }
-  } catch (_) {}
-
-  // Si no responde, asumir RTSP local de Neolink
-  const rtspUrl = process.env.RTSP_STREAM_URL || "rtsp://127.0.0.1:8554/barberia/sub";
-  console.log(`ℹ️ Producción no disponible. Probando fuente RTSP local: ${rtspUrl}...`);
-  return rtspUrl;
+  return `${prodUrl}/api/stream`;
 }
 
 const sourceUrl = await detectSource();
@@ -95,27 +77,6 @@ function recordHttpStream(url, destPath, duration) {
     const isHttps = url.startsWith("https");
     const client = isHttps ? https : http;
 
-    const ffmpegArgs = [
-      "-y",
-      "-use_wallclock_as_timestamps", "1",
-      "-f", "image2pipe",
-      "-vcodec", "mjpeg",
-      "-i", "pipe:0",
-      "-t", String(duration),
-      "-c:v", "libx264",
-      "-pix_fmt", "yuv420p",
-      "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
-      destPath
-    ];
-
-    const ffmpeg = spawn("ffmpeg", ffmpegArgs, { stdio: ["pipe", "inherit", "inherit"] });
-
-    ffmpeg.stdin.on("error", (err) => {
-      if (err.code !== "EPIPE") {
-        console.warn("[FFmpeg Stdin]:", err.message);
-      }
-    });
-
     let isFinished = false;
     let finishedByTimerOrSignal = false;
     let currentReq = null;
@@ -123,6 +84,89 @@ function recordHttpStream(url, destPath, duration) {
     let activeWatchdog = null;
     let startEpoch = null;
     let framesCount = 0;
+
+    let currentSegmentIndex = 1;
+    const segmentFiles = [];
+    let currentFfmpeg = null;
+
+    const startNewSegment = () => {
+      if (isFinished) return null;
+      const segmentPath = path.join(
+        outDir,
+        `.tmp_seg_${Date.now()}_${String(currentSegmentIndex).padStart(3, "0")}.mp4`
+      );
+      segmentFiles.push(segmentPath);
+      const segNum = currentSegmentIndex;
+      currentSegmentIndex++;
+
+      const ffmpegArgs = [
+        "-y",
+        "-use_wallclock_as_timestamps", "1",
+        "-f", "image2pipe",
+        "-vcodec", "mjpeg",
+        "-i", "pipe:0",
+        "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1",
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-pix_fmt", "yuv420p",
+        "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
+        segmentPath
+      ];
+
+      const proc = spawn("ffmpeg", ffmpegArgs, { stdio: ["pipe", "inherit", "inherit"] });
+
+      proc.stdin.on("error", (err) => {
+        if (err.code !== "EPIPE") {
+          console.warn("[FFmpeg Stdin]:", err.message);
+        }
+      });
+
+      proc.on("close", (code, signal) => {
+        console.log(`\n[FFmpeg Segmento ${segNum}] Cerrado (código: ${code}, señal: ${signal})`);
+        if (currentFfmpeg === proc) {
+          currentFfmpeg = null;
+        }
+        if (!isFinished) {
+          console.log(`🔄 Reanudando grabación automáticamente en nuevo segmento...`);
+          startNewSegment();
+        }
+      });
+
+      currentFfmpeg = proc;
+      return proc;
+    };
+
+    const consolidateSegments = () => {
+      const validSegments = segmentFiles.filter(
+        (f) => fs.existsSync(f) && fs.statSync(f).size > 1024
+      );
+
+      if (validSegments.length === 0) {
+        if (fs.existsSync(destPath) && fs.statSync(destPath).size > 1024) {
+          return;
+        }
+        throw new Error("No se registraron fotogramas de video válidos.");
+      }
+
+      if (validSegments.length === 1) {
+        fs.copyFileSync(validSegments[0], destPath);
+        try { fs.unlinkSync(validSegments[0]); } catch (_) {}
+      } else {
+        process.stdout.write(`\n📦 Consolidando ${validSegments.length} segmentos en archivo final: ${destPath}...\n`);
+        const listFile = path.join(outDir, `.concat_list_${Date.now()}.txt`);
+        fs.writeFileSync(listFile, validSegments.map((f) => `file '${f}'`).join("\n"));
+        try {
+          execSync(`ffmpeg -y -f concat -safe 0 -i "${listFile}" -c copy "${destPath}"`, {
+            stdio: "inherit"
+          });
+          for (const f of validSegments) {
+            try { fs.unlinkSync(f); } catch (_) {}
+          }
+        } finally {
+          try { fs.unlinkSync(listFile); } catch (_) {}
+        }
+      }
+    };
 
     const finishRecording = (byUser = false) => {
       if (isFinished) return;
@@ -134,8 +178,19 @@ function recordHttpStream(url, destPath, duration) {
       if (currentReq) {
         try { currentReq.destroy(); } catch (_) {}
       }
-      process.stdout.write("\nFinalizando y cerrando contenedor MP4...\n");
-      try { ffmpeg.stdin.end(); } catch (_) {}
+      process.stdout.write("\nFinalizando y cerrando codificador...\n");
+      if (currentFfmpeg) {
+        try { currentFfmpeg.stdin.end(); } catch (_) {}
+      }
+
+      setTimeout(() => {
+        try {
+          consolidateSegments();
+          resolve();
+        } catch (err) {
+          reject(err);
+        }
+      }, 1500);
     };
 
     const progressInterval = setInterval(() => {
@@ -146,7 +201,7 @@ function recordHttpStream(url, destPath, duration) {
       const secondsElapsed = Math.floor((Date.now() - startEpoch) / 1000);
       const minElapsed = (secondsElapsed / 60).toFixed(1);
       const totalMin = (duration / 60).toFixed(1);
-      process.stdout.write(`\r⏳ Grabando: ${secondsElapsed}/${duration}s (${minElapsed}m / ${totalMin}m) [${framesCount} frames]...`);
+      process.stdout.write(`\r⏳ Grabando: ${secondsElapsed}/${duration}s (${minElapsed}m / ${totalMin}m) [${framesCount} frames, seg ${currentSegmentIndex - 1}]...`);
       if (secondsElapsed >= duration) {
         finishRecording(false);
       }
@@ -174,7 +229,6 @@ function recordHttpStream(url, destPath, duration) {
           while (true) {
             const headerEnd = chunkBuffer.indexOf("\r\n\r\n");
             if (headerEnd === -1) {
-              // Cabecera aún no recibida por completo
               break;
             }
 
@@ -185,52 +239,57 @@ function recordHttpStream(url, destPath, duration) {
               const frameLen = parseInt(match[1], 10);
               const frameStart = headerEnd + 4;
               if (chunkBuffer.length < frameStart + frameLen) {
-                // Esperar a que llegue el cuerpo completo del fotograma
                 break;
               }
 
               const frame = chunkBuffer.slice(frameStart, frameStart + frameLen);
               chunkBuffer = chunkBuffer.slice(frameStart + frameLen);
 
-              // Descartar delimitador posterior (\r\n o prefijo boundary)
               const nextBoundary = chunkBuffer.indexOf("--");
               if (nextBoundary > 0) {
                 chunkBuffer = chunkBuffer.slice(nextBoundary);
               }
 
-              // Validar integridad estricta del JPEG (0xFFD8 inicial y 0xFFD9 final)
               if (
                 frame.length >= 4 &&
                 frame[0] === 0xff && frame[1] === 0xd8 &&
                 frame[frame.length - 2] === 0xff && frame[frame.length - 1] === 0xd9
               ) {
                 try {
-                  if (!isFinished && ffmpeg.stdin && ffmpeg.stdin.writable) {
-                    ffmpeg.stdin.write(frame);
-                    if (!startEpoch) startEpoch = Date.now();
-                    framesCount++;
+                  if (!isFinished) {
+                    if (!currentFfmpeg) {
+                      startNewSegment();
+                    }
+                    if (currentFfmpeg && currentFfmpeg.stdin && currentFfmpeg.stdin.writable) {
+                      currentFfmpeg.stdin.write(frame);
+                      if (!startEpoch) startEpoch = Date.now();
+                      framesCount++;
+                    }
                   }
                 } catch (_) {}
               }
             } else {
-              // Modo de respaldo para servidores sin Content-Length
               const nextBoundary = chunkBuffer.indexOf("\r\n--", headerEnd + 4);
               if (nextBoundary === -1) break;
               const frame = chunkBuffer.slice(headerEnd + 4, nextBoundary);
               chunkBuffer = chunkBuffer.slice(nextBoundary + 2);
               if (frame.length >= 4 && frame[0] === 0xff && frame[1] === 0xd8) {
                 try {
-                  if (!isFinished && ffmpeg.stdin && ffmpeg.stdin.writable) {
-                    ffmpeg.stdin.write(frame);
-                    if (!startEpoch) startEpoch = Date.now();
-                    framesCount++;
+                  if (!isFinished) {
+                    if (!currentFfmpeg) {
+                      startNewSegment();
+                    }
+                    if (currentFfmpeg && currentFfmpeg.stdin && currentFfmpeg.stdin.writable) {
+                      currentFfmpeg.stdin.write(frame);
+                      if (!startEpoch) startEpoch = Date.now();
+                      framesCount++;
+                    }
                   }
                 } catch (_) {}
               }
             }
           }
 
-          // Límite de seguridad para evitar fuga de memoria ante stream corrupto
           if (chunkBuffer.length > 8 * 1024 * 1024) {
             chunkBuffer = Buffer.alloc(0);
           }
@@ -286,35 +345,7 @@ function recordHttpStream(url, destPath, duration) {
     process.once("SIGINT", handleSig);
     process.once("SIGTERM", handleSig);
 
-    ffmpeg.on("close", (code, signal) => {
-      console.log(`\n[FFmpeg] Proceso finalizado (código: ${code}, señal: ${signal})`);
-      isFinished = true;
-      clearInterval(progressInterval);
-      if (reconnectTimeout) clearTimeout(reconnectTimeout);
-      if (activeWatchdog) clearInterval(activeWatchdog);
-      process.removeListener("SIGINT", handleSig);
-      process.removeListener("SIGTERM", handleSig);
-
-      if (code === 0 || code === 255 || signal === "SIGINT" || signal === "SIGTERM" || finishedByTimerOrSignal) {
-        resolve();
-      } else {
-        if (fs.existsSync(destPath) && fs.statSync(destPath).size > 1024) {
-          console.warn(`[FFmpeg] Salida anticipada, pero archivo ${destPath} fue guardado correctamente.`);
-          resolve();
-        } else {
-          reject(new Error(`FFmpeg finalizó con código: ${code}, señal: ${signal}`));
-        }
-      }
-    });
-
-    ffmpeg.on("error", (err) => {
-      isFinished = true;
-      clearInterval(progressInterval);
-      if (reconnectTimeout) clearTimeout(reconnectTimeout);
-      if (activeWatchdog) clearInterval(activeWatchdog);
-      reject(err);
-    });
-
+    startNewSegment();
     connectStream();
   });
 }
