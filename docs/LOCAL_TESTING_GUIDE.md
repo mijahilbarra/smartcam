@@ -21,7 +21,7 @@ Antes de probar con video, siempre verifica que las 14 suites pasen al 100%:
 ```bash
 npm test
 ```
-*Verifica: desinfección de Firestore, reporter daemon, detector ONNX, horario comercial, modular core, nitidez facial, person tracker, visit sessions, debounce de procesos, unificación de clientes, cliente SQLite, servicio de clientes, pipeline de atenciones (24 pruebas) y resiliencia de stream (8 pruebas).*
+*Verifica: desinfección de Firestore, reporter daemon, detector ONNX, horario comercial, modular core, nitidez facial, person tracker, visit sessions, debounce de procesos, unificación de clientes, cliente SQLite, servicio de clientes, pipeline de atenciones (27 pruebas) y resiliencia de stream (8 pruebas).*
 
 ### B. Ejecutar pruebas dentro del contenedor Docker E2
 ```bash
@@ -106,10 +106,113 @@ npm run test:fast
 docker compose -f docker-compose.fast-sim.yml down
 ```
 
+### Modalidad 1C: Tester Oficial y Monitor Unificado (`scripts/run-and-monitor.js`) ⭐
+
+> [!IMPORTANT]
+> **ESTE ES EL ÚNICO RUNNER OFICIAL DE SIMULACIÓN Y PRUEBAS DEL PROYECTO**.
+> Queda **terminantemente prohibido** crear scripts adicionales, descartables o temporales de monitoreo/reporte (ej. `auto-report-on-finish.js`, `generate-vX-...js`). Todo agente o desarrollador DEBE utilizar exclusivamente este runner.
+
+Ejecuta el ciclo de simulación integral de extremo a extremo:
+1. **Limpieza profunda**: Limpia SQLite (`data/barberia_test.db`), borra archivos WAL temporales y purga Firestore `test`.
+2. **Reinicio limpio**: Levanta el contenedor `fast-sim` a 60 FPS con el video indicado.
+3. **Monitoreo calibrado**: Sigue en vivo el porcentaje y tiempo real transcurrido sobre los fotogramas del video.
+4. **Detección automática de cierre**: Espera a que FFmpeg finalice de reproducir el archivo.
+5. **Reporte fotográfico completo**: Exporta automáticamente los assets, genera la hoja de contacto consolidada (`sharp`) y crea el reporte Markdown bajo `docs/REPORTE_FOTOGRAFICO_<timestamp>.md`.
+
+```bash
+# Simulación con video de 7 horas (por defecto o pasando ruta):
+node scripts/run-and-monitor.js data/recordings/barberia_stream_7h.mp4
+
+# Simulación con video de 10 horas:
+node scripts/run-and-monitor.js data/recordings/barberia_stream_10h.mp4
+
+# Simulación con cualquier video arbitrario:
+node scripts/run-and-monitor.js ruta/a/tu_video.mp4
+```
+
 Logs del contenedor de alto rendimiento:
 ```bash
 docker logs -f fast-sim
 ```
+
+### Modalidad 1D: Pipeline Rápido en 2 Pasos (Cosecha Offline + Clasificación Ultrarrápida en 5s) ⚡⚡
+
+> [!TIP]
+> **METODOLOGÍA RECOMENDADA PARA ITERACIÓN RÁPIDA DE ALGORITMOS Y BIOMETRÍA**.
+> En lugar de esperar entre 20 y 40 minutos reproduciendo el video fotograma a fotograma en cada prueba de filtros o umbrales, el flujo se desacopla en dos etapas independientes:
+> 1. **Paso 1 (Cosecha)**: Extrae una sola vez todos los recortes de personas en la silla con YOLO y los almacena en SQLite (`data/experiments.db`).
+> 2. **Paso 2 (Clasificación)**: Ejecuta el pipeline completo de biometría, filtros y formación de citas en **~5 segundos** reutilizando exactamente los mismos procesos modulares de producción ([`src/services/processes.js`](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/src/services/processes.js)).
+
+#### Paso 1: Cosecha de Recortes de Silla (`scripts/step1_harvest_crops.js`)
+Ejecuta la decodificación del video y la detección espacial con YOLOv8, almacenando cada recorte de persona en la silla con sus metadatos (timestamp virtual, caja delimitadora, silla) en la tabla `harvested_crops` de `data/experiments.db`:
+
+```bash
+# Cosechar recortes del video de 7 horas (se ejecuta una sola vez):
+node scripts/step1_harvest_crops.js --video data/recordings/barberia_stream_7h.mp4
+
+# O cosechar del video de 10 horas:
+node scripts/step1_harvest_crops.js --video data/recordings/barberia_stream_10h.mp4
+```
+*Los datos cosechados permanecen intactos y persistidos en `data/experiments.db` para ser reutilizados indefinidamente en todas las pruebas de clasificación.*
+
+#### Paso 2: Clasificación y Formación de Citas (`scripts/step2_classify_sessions.js`)
+Lee los recortes cosechados y aplica la tubería oficial de producción o una variante experimental seleccionada dinámicamente mediante `--processes`:
+1. **Detección facial:** RFB-320 (`confidence >= 0.7`).
+2. **Textura y piel humana:** Validación colorimétrica YCbCr y calidez humana.
+3. **Nitidez y poses faciales válidas:** Validación anatómica (`VALID_CLIENT_FACE_POSES`), excluyendo nucas y orejas.
+4. **Exclusión de Barbero:** Umbral multi-métrica y geométrico (20 vectores de referencia).
+5. **Agrupación temporal en silla:** Agrupación cronológica continua con gracia de silla vacía y quórum de rotación.
+6. **Embudo de Cierre:** Consenso de barbero, filtro de evidencia mínima (`minPhotos >= 3`) y consolidación cronológica Set-to-Set contra el cliente anterior.
+
+##### Argumentos CLI Disponibles en el Paso 2:
+
+| Argumento | Alias | Descripción | Valor por Defecto |
+|---|---|---|---|
+| `--processes <path>` | `-p` | **Ruta al módulo de procesos a ejecutar** (permite probar variantes de algoritmos en paralelo) | `src/services/processes.js` |
+| `--video <nombre>` | | Nombre del video cosechado a evaluar | Detecta el más reciente |
+| `--db <path>` | | Ruta a la base de datos de experimentos | `data/experiments.db` |
+| `--staff-threshold <num>` | | Umbral de similitud para excluir al barbero/personal | `0.46` (desde `pipeline_config.json`) |
+| `--min-photos <num>` | | Mínimo de fotos para cliente legítimo sin tiempo mínimo | `3` (desde `pipeline_config.json`) |
+| `--min-sharpness <num>` | | Nitidez mínima para aceptar un rostro | `20.0` (desde `pipeline_config.json`) |
+| `--recompute-faces` | | Re-evalúa calidad facial y embeddings desde los recortes en disco | `false` |
+
+##### Ejemplos de Ejecución y Comparación A/B en Paralelo:
+
+```bash
+# A. Ejecutar con el motor por defecto de producción:
+node scripts/step2_classify_sessions.js
+
+# B. Ejecutar con el motor baseline de referencia (10 citas canónicas):
+node scripts/step2_classify_sessions.js -p src/services/processes_baseline.js
+
+# C. Ejecutar con una variante experimental en paralelo (A/B testing):
+node scripts/step2_classify_sessions.js -p src/services/processes_adaptive.js
+
+# D. Ajustar umbral de barbero y fotos mínimas al vuelo:
+node scripts/step2_classify_sessions.js -p src/services/processes_v2.js --staff-threshold 0.48 --min-photos 4
+```
+
+**Salidas generadas automáticamente:**
+- **Reporte Markdown del Funnel:** `docs/REPORTE_FUNNEL_<timestamp>.md` detallando el embudo paso a paso (recortes brutos $\to$ caras $\to$ piel $\to$ nitidez $\to$ barbero $\to$ sesiones $\to$ citas finales), tiempo de ejecución y el **motor de procesos exacto** utilizado.
+- **Hoja de Contacto:** `docs/assets/simulacion_7h/contact_sheet_funnel_<timestamp>.jpg` con la galería de fotos reales de cada cliente clasificado.
+- **Tablas de Experimento:** `experiment_appointments` y `experiment_customers` en `data/experiments.db` (sin tocar las bases de datos de producción).
+
+#### 🎯 Ground Truth Oficial de Referencia (`barberia_stream_7h.mp4`)
+
+Para evaluar la precisión de cualquier variante del pipeline, contrasta el reporte generado contra el documento canónico [`docs/GROUND_TRUTH_BARBERIA_7H.md`](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/docs/GROUND_TRUTH_BARBERIA_7H.md):
+
+* **Video:** `barberia_stream_7h.mp4` (Duración: 07:07:44 / 25,664 segundos).
+* **Clientes Reales:** **Exactamente 6 clientes**.
+* **Tiempos Exactos Verificados:**
+  1. **Cliente #1:** `00:40:06 - 01:09:47` (29 min 41s)
+  2. **Cliente #2:** `01:12:03 - 01:59:48` (47 min 45s)
+  3. **Cliente #3:** `02:00:45 - 02:51:35` (50 min 50s)
+  4. **Cliente #4:** `02:52:10 - 03:40:16` (48 min 06s)
+  5. **Cliente #5:** `03:43:33 - 04:39:09` (55 min 36s)
+  6. **Cliente #6:** `04:40:11 - 05:17:45` (37 min 34s)
+
+> [!CAUTION]
+> **RESTRICCIÓN CRÍTICA DE TIEMPO:** En esta barbería, los clientes consecutivos se sientan inmediatamente (gaps de 35 a 60 segundos entre que uno se levanta y el siguiente se sienta). **Está prohibido usar gaps ciegos de tiempo $\le 3\text{ min}$ para consolidar o separar clientes**. Toda consolidación de tramos debe basarse en compatibilidad biométrica (`similarity` y poses anatómicas), nunca en supuestos temporales.
 
 ### Modalidad 2: Desarrollo Completo con Frontend Web (Puerto 8085 + Vite 5173)
 
@@ -228,20 +331,47 @@ node scripts/restore-barber-photos.js
 
 ---
 
-## 8. Flujo Típico de Prueba Rápida (4 Pasos)
+## 8. Flujos Típicos de Desarrollo y Pruebas
 
-Si como agente realizas un cambio en el código y deseas validarlo de principio a fin:
+Dependiendo del tipo de cambio que estés realizando, elige el flujo más adecuado:
+
+### Flujo A: Iteración Instantánea de Filtros, Biometría y Motores en Paralelo (~5 segundos) ⚡ (Recomendado)
+Usa este flujo cuando experimentes con mejoras en la lógica de detección facial, umbrales de pose/nitidez, filtros de barbero o reglas de consolidación/cierre en `src/services/pipeline/` o variantes de `processes.js`:
 
 ```bash
-# 1. Correr la suite de pruebas unitarias
+# 1. Crear una variante experimental para no alterar el código base ni producción:
+cp src/services/processes.js src/services/processes_experimento.js
+
+# 2. Modificar tu variante experimental según la hipótesis a probar:
+# (ej. ajustar consolidación adaptativa, filtrado de teléfono, umbrales de nitidez, etc.)
+
+# 3. Ejecutar el motor de referencia baseline y la variante en paralelo:
+node scripts/step2_classify_sessions.js -p src/services/processes_baseline.js
+node scripts/step2_classify_sessions.js -p src/services/processes_experimento.js
+
+# 4. Inspeccionar y comparar los reportes del embudo y hojas de contacto generados:
+# (Comprueba si el número de clientes se acerca al Ground Truth oficial de exactamente 6)
+cat docs/REPORTE_FUNNEL_<timestamp>.md
+open docs/assets/simulacion_7h/contact_sheet_funnel_<timestamp>.jpg
+
+# 5. Contrastar los rangos de tiempo contra la Verdad de Terreno:
+cat docs/GROUND_TRUTH_BARBERIA_7H.md
+
+# 6. Si el experimento es exitoso y supera al baseline, promueve los cambios a producción y verifica la regresión:
+# cp src/services/processes_experimento.js src/services/processes.js
 npm test
+```
 
-# 2. Levantar el simulador con los últimos 5 minutos del video de corte
+---
+
+### Flujo B: Validación Completa E2E de Streaming en Vivo (Docker) 🎬
+Usa este flujo cuando modifiques la ingesta FFmpeg, decodificación RTSP/Neolink, tracking espacial en tiempo real o persistencia formal en SQLite/Firestore:
+
+```bash
+# Opción 1: Simulación completa con monitoreo automático y reporte fotográfico oficial
+node scripts/run-and-monitor.js data/recordings/barberia_stream_7h.mp4
+
+# Opción 2: Simulación rápida de los últimos 5 minutos (prueba cierre y salida)
 MOCK_VIDEO_PATH="data/recordings/mock_stream.mp4" MOCK_VIDEO_LAST_MINUTES=5 docker compose -f docker-compose.e2-sim.yml up -d --force-recreate
-
-# 3. Seguir los logs de la sesión y el cierre automático
 docker logs -f e2-micro-sim
-
-# 4. Al terminar el video, verificar la atención generada en SQLite
-sqlite3 data/barberia_test.db "SELECT id, clientName, durationMinutes, photoCount FROM appointments ORDER BY createdAt DESC LIMIT 1;"
 ```

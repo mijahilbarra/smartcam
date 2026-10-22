@@ -4,6 +4,8 @@ import { PersonTracker } from "../core/person_tracker.js";
 import { VisitSessionService } from "./visit_session_service.js";
 import { runProcessCycle } from "./processes.js";
 
+import { PIPELINE_CONFIG } from "../core/pipeline_config.js";
+
 /**
  * Controlador de Ciclo de Captura y Procesamiento
  * Mantiene el estado en memoria (tracker, sesiones activas, mutex de captura)
@@ -17,8 +19,25 @@ export class CaptureOrchestrator {
     this.streamServer = streamServer;
     this.isCapturing = false;
     this.tracker = new PersonTracker();
-    const minAppointmentMinutes = process.env.MIN_APPOINTMENT_MINUTES ? parseInt(process.env.MIN_APPOINTMENT_MINUTES, 10) : 7;
-    this.visitService = new VisitSessionService({ db, bucket, minAppointmentMinutes });
+    const minAppointmentMinutes = process.env.MIN_APPOINTMENT_MINUTES
+      ? parseInt(process.env.MIN_APPOINTMENT_MINUTES, 10)
+      : (PIPELINE_CONFIG.sessions?.minAppointmentMinutes ?? 8);
+    const emptyChairTimeoutMs = process.env.EMPTY_CHAIR_TIMEOUT_MS
+      ? parseInt(process.env.EMPTY_CHAIR_TIMEOUT_MS, 10)
+      : (PIPELINE_CONFIG.sessions?.emptyChairTimeoutMs ?? 45000);
+    const clockFn = streamServer && typeof streamServer.getVirtualNow === "function"
+      ? () => streamServer.getVirtualNow()
+      : null;
+    this.visitService = new VisitSessionService({ db, bucket, minAppointmentMinutes, emptyChairTimeoutMs, clockFn });
+
+    if (streamServer && !streamServer.onMockVideoEnd) {
+      streamServer.onMockVideoEnd = async (virtualNow) => {
+        const active = this.visitService.getActiveSessions();
+        for (const s of active) {
+          await this.visitService.closeSession(s.trackId, { endedAtEpoch: virtualNow });
+        }
+      };
+    }
   }
 
   /**

@@ -10,57 +10,61 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const auditFiles = [
-  'audit_appt_1792258636228_1.json',
-  'audit_appt_1792259157427_196.json',
-  'audit_appt_1792260361348_752.json'
+const dataDirName = process.env.SIM_DATA_DIR || 'data';
+const auditDir = path.join(__dirname, '..', dataDirName, 'audit_reports');
+const targetDirs = [
+  path.join(__dirname, '..', 'docs', 'assets', 'simulacion_7h'),
+  '/Users/javierli/.gemini/antigravity/brain/cc53144b-6a66-4bb4-a06c-b2ad7ae70455/assets/simulacion_7h'
 ];
 
-const auditDir = path.join(__dirname, '..', 'data', 'audit_reports');
-const baseOutDir = path.join(__dirname, '..', 'docs', 'assets', 'simulacion_7h');
+targetDirs.forEach(dir => {
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+});
 
-if (!fs.existsSync(baseOutDir)) {
-  fs.mkdirSync(baseOutDir, { recursive: true });
-}
+const auditFiles = fs.readdirSync(auditDir)
+  .filter(f => f.startsWith('audit_appt_') && f.endsWith('.json'))
+  .sort();
 
 auditFiles.forEach((file) => {
   const filePath = path.join(auditDir, file);
-  if (!fs.existsSync(filePath)) {
-    console.warn(`Archivo de auditoría no encontrado: ${filePath}`);
-    return;
-  }
-
   const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
   const apptId = data.appointmentId;
-  const outDir = path.join(baseOutDir, apptId);
-  fs.mkdirSync(outDir, { recursive: true });
 
-  const afterThumbs = new Set((data.photosAfterClose || []).map(p => p.thumbnailBase64));
+  targetDirs.forEach(baseOutDir => {
+    const outDir = path.join(baseOutDir, apptId);
+    fs.mkdirSync(outDir, { recursive: true });
 
-  // 1. Guardar fotos consolidadas finales
-  (data.photosAfterClose || []).forEach(p => {
-    const b64Data = p.thumbnailBase64.replace(/^data:image\/\w+;base64,/, '');
-    const buf = Buffer.from(b64Data, 'base64');
-    const filename = `photo_final_${p.idx}_${p.pose}_score${p.sharpnessScore}.jpg`;
-    fs.writeFileSync(path.join(outDir, filename), buf);
+    const afterThumbs = new Set((data.photosAfterClose || []).map(p => p.thumbnailBase64));
+
+    // 1. Guardar fotos consolidadas finales
+    (data.photosAfterClose || []).forEach(p => {
+      if (!p.thumbnailBase64) return;
+      const b64Data = p.thumbnailBase64.replace(/^data:image\/\w+;base64,/, '');
+      const buf = Buffer.from(b64Data, 'base64');
+      const filename = `photo_final_${p.idx}_${p.pose}_score${p.sharpnessScore}.jpg`;
+      fs.writeFileSync(path.join(outDir, filename), buf);
+    });
+
+    // 2. Guardar fotos antes de cierre y aislar las purgadas (si hubiera)
+    (data.photosBeforeClose || []).forEach(p => {
+      if (!p.thumbnailBase64) return;
+      const b64Data = p.thumbnailBase64.replace(/^data:image\/\w+;base64,/, '');
+      const buf = Buffer.from(b64Data, 'base64');
+      const isPurged = !afterThumbs.has(p.thumbnailBase64);
+
+      const beforeFilename = `photo_before_${p.idx}_${p.pose}_score${p.sharpnessScore}.jpg`;
+      fs.writeFileSync(path.join(outDir, beforeFilename), buf);
+
+      if (isPurged) {
+        const purgedFilename = `purged_barber_${p.idx}_${p.pose}_score${p.sharpnessScore}.jpg`;
+        fs.writeFileSync(path.join(outDir, purgedFilename), buf);
+      }
+    });
   });
 
-  // 2. Guardar fotos antes de cierre y aislar las purgadas
-  (data.photosBeforeClose || []).forEach(p => {
-    const b64Data = p.thumbnailBase64.replace(/^data:image\/\w+;base64,/, '');
-    const buf = Buffer.from(b64Data, 'base64');
-    const isPurged = !afterThumbs.has(p.thumbnailBase64);
-
-    const beforeFilename = `photo_before_${p.idx}_${p.pose}_score${p.sharpnessScore}.jpg`;
-    fs.writeFileSync(path.join(outDir, beforeFilename), buf);
-
-    if (isPurged) {
-      const purgedFilename = `purged_barber_${p.idx}_${p.pose}_score${p.sharpnessScore}.jpg`;
-      fs.writeFileSync(path.join(outDir, purgedFilename), buf);
-    }
-  });
-
-  console.log(`[Export] ${apptId}: ${fs.readdirSync(outDir).length} imágenes exportadas a ${outDir}`);
+  console.log(`[Export] ${apptId}: imágenes exportadas para ${targetDirs.length} destinos.`);
 });
 
 console.log('✅ Exportación de assets de simulación 7H finalizada con éxito.');

@@ -2,6 +2,7 @@ import assert from "assert";
 import { VisitSessionService } from "../src/services/visit_session_service.js";
 import { SQLiteClient } from "../src/infrastructure/storage/sqlite_client.js";
 import { CustomerService } from "../src/services/customer_service.js";
+import { PIPELINE_CONFIG } from "../src/core/pipeline_config.js";
 
 console.log("=== Suite de Pruebas: Pipeline de Atenciones (Appointments) Desacoplado de Clientes ===");
 
@@ -277,10 +278,10 @@ assert.ok(registeredClient, "Debe registrarse el cliente formal");
 assert.ok(!registeredClient.name.includes("confirmación"), "El cliente formal NO debe llamarse 'Cliente en confirmación'");
 console.log(`-> Candidato provisional filtrado y formalizado limpiamente como: "${registeredClient.name}".`);
 
-console.log("\n[9] Probando valor por defecto de minAppointmentMinutes (debe ser 10 min)...");
+console.log(`\n[9] Probando valor por defecto de minAppointmentMinutes (debe ser ${PIPELINE_CONFIG.sessions.minAppointmentMinutes} min)...`);
 const defaultService = new VisitSessionService();
-assert.strictEqual(defaultService.minAppointmentMinutes, 10, "minAppointmentMinutes debe ser 10 por defecto");
-console.log("-> Umbral por defecto de 10 minutos validado exitosamente.");
+assert.strictEqual(defaultService.minAppointmentMinutes, PIPELINE_CONFIG.sessions.minAppointmentMinutes, `minAppointmentMinutes debe ser ${PIPELINE_CONFIG.sessions.minAppointmentMinutes} por defecto`);
+console.log(`-> Umbral por defecto de ${PIPELINE_CONFIG.sessions.minAppointmentMinutes} minutos validado exitosamente.`);
 
 console.log("\n[10] Probando eliminación de atención (appointment) y cliente asociado en SQLite...");
 assert.strictEqual(sqlite.deleteAppointment(candidateCompletion.id), true, "Debe eliminar la atención de SQLite");
@@ -935,7 +936,222 @@ assert.strictEqual(purgedCount, 2, "Debe auto-eliminar 2 perfiles: el del barber
 // Verificar que fueron eliminados de la base
 assert.strictEqual(custService.getCustomerData("to_verify_barber_leak"), null, "El perfil del barbero debe haberse auto-eliminado");
 assert.strictEqual(custService.getCustomerData("to_verify_abandoned"), null, "El perfil huérfano debe haberse auto-eliminado");
-console.log("-> Auto-reconciliación y purga automática de perfiles 'to_verify' validadas exitosamente.");
+// [25] Blindaje de bestFace consumido (eliminar replay obsoleto y no reinyectar en espaldas/reclinado)
+console.log("\n[25] Probando blindaje de bestFace consumido (eliminar replay obsoleto)...");
+const consumedFaceService = new VisitSessionService({
+  db: mockDb,
+  sqliteClient: sqlite,
+  customerService: custService
+});
+
+const tConsStart = 5000000;
+const faceVecA = new Array(512).fill(0);
+faceVecA[10] = 1.0;
+const testTrack25 = {
+  trackId: 1025,
+  consecutiveChairFrames: 6,
+  chairEnteredAt: tConsStart,
+  currentQuadrant: { id: "silla_corte_25", label: "Silla 25", type: "barber_chair" },
+  bestFace: {
+    sharpnessScore: 85,
+    thumbnailBase64: "data:image/jpeg;base64,faceA",
+    embedding: faceVecA,
+    pose: "frontal"
+  }
+};
+
+const session25 = await consumedFaceService.processTrack(testTrack25, { now: tConsStart });
+assert.ok(session25, "Debe iniciar sesión para track 1025");
+assert.strictEqual(testTrack25.bestFace._consumedByVisit, true, "bestFace debe ser marcado como consumido de inmediato");
+assert.strictEqual(session25.photos.length, 1, "Debe tener 1 foto inicial");
+
+// Cuadro posterior sin rostro nuevo (cliente de espaldas o reclinado): latestFace es null, bestFace ya consumido
+await consumedFaceService.processTrack(testTrack25, { now: tConsStart + 5000 });
+assert.strictEqual(session25.photos.length, 1, "NO debe reinyectar bestFace consumido en cuadros posteriores");
+
+// Llega una cara de rotación (vector B ortogonal) en cuadro 3
+const faceVecB = new Array(512).fill(0);
+faceVecB[20] = 1.0;
+testTrack25.latestFace = {
+  sharpnessScore: 88,
+  thumbnailBase64: "data:image/jpeg;base64,faceB",
+  embedding: faceVecB,
+  pose: "frontal"
+};
+// Simulamos que pasaron 6 minutos para permitir candidatos de rotación
+session25.lastMatchedClientFaceEpoch = tConsStart - 6 * 60 * 1000;
+await consumedFaceService.processTrack(testTrack25, { now: tConsStart + 6 * 60 * 1000 });
+assert.strictEqual(session25.rotationCandidates.length, 1, "Candidato de rotación debe acumularse en el buffer");
+
+// En el siguiente cuadro, latestFace vuelve a ser null (cliente de espaldas): el buffer de rotación NO debe resetearse
+await consumedFaceService.processTrack(testTrack25, { now: tConsStart + 6 * 60 * 1000 + 1000 });
+assert.strictEqual(session25.rotationCandidates.length, 1, "El buffer de rotación NO debe resetearse por falta de rostro");
+console.log("-> Blindaje de bestFace consumido y persistencia de rotationCandidates validados exitosamente.");
+
+// [26] Blindaje de Rotación por el Factor Tiempo Real (In-Place Rotation)
+console.log("\n[26] Probando rotación por factor tiempo (< 5 min tolera ángulos; > 5 min permite rotar)...");
+const timeGatedService = new VisitSessionService({
+  db: mockDb,
+  sqliteClient: sqlite,
+  customerService: custService,
+  minAppointmentMinutes: 10
+});
+
+const tTimeStart = 6000000;
+const clientFrontalVec = new Array(512).fill(0);
+clientFrontalVec[100] = 1.0;
+const testTrack26 = {
+  trackId: 1026,
+  consecutiveChairFrames: 6,
+  chairEnteredAt: tTimeStart,
+  currentQuadrant: { id: "silla_corte_26", label: "Silla 26", type: "barber_chair" },
+  latestFace: {
+    sharpnessScore: 80,
+    thumbnailBase64: "data:image/jpeg;base64,frontal26",
+    embedding: clientFrontalVec,
+    pose: "frontal"
+  }
+};
+
+const session26 = await timeGatedService.processTrack(testTrack26, { now: tTimeStart });
+assert.ok(session26, "Sesión 26 iniciada");
+assert.strictEqual(session26.status, "en_corte");
+assert.strictEqual(session26.photos.length, 1);
+
+// A los 2 minutos (presencia continua en silla, !pendingRotationSplitEpoch, < 5 min transcurridos):
+// Cliente cambia de ángulo/pose a semi-perfil compatible con similitud de mismo cliente (sim = 0.70 >= 0.58)
+const clientAngledVec = new Array(512).fill(0);
+clientAngledVec[100] = 0.70;
+clientAngledVec[101] = Math.sqrt(1 - 0.70 * 0.70); // vector normalizado unitario, sim = 0.70 en pose compatible
+const t2Min = tTimeStart + 2 * 60 * 1000;
+testTrack26.latestFace = {
+  sharpnessScore: 85,
+  thumbnailBase64: "data:image/jpeg;base64,semi_left26",
+  embedding: clientAngledVec,
+  pose: "semi_left"
+};
+
+const resAngled = await timeGatedService.processTrack(testTrack26, { now: t2Min });
+assert.ok(resAngled, "La sesión debe continuar activa");
+assert.strictEqual(resAngled.status, "en_corte", "NO debe haber cerrado la sesión ni iniciado rotación");
+assert.strictEqual(resAngled.photos.length, 2, "La nueva pose debe haberse incorporado a la galería del cliente");
+assert.strictEqual(resAngled.rotationCandidates.length, 0, "No debe haber candidatos de rotación para el mismo cliente");
+
+// A los 3 minutos: muestra ortogonal (similitud < 0.20, ej. 0.05)
+const noiseVec = new Array(512).fill(0);
+noiseVec[100] = 0.05;
+noiseVec[102] = Math.sqrt(1 - 0.05 * 0.05);
+const t3Min = tTimeStart + 3 * 60 * 1000;
+testTrack26.latestFace = {
+  sharpnessScore: 70,
+  thumbnailBase64: "data:image/jpeg;base64,noise26",
+  embedding: noiseVec,
+  pose: "frontal"
+};
+const resNoise = await timeGatedService.processTrack(testTrack26, { now: t3Min });
+assert.strictEqual(resNoise.photos.length, 2, "Muestra ortogonal (sim < 0.20) no debe contaminar las fotos del cliente actual");
+assert.strictEqual(resNoise.rotationCandidates.length, 1, "Muestra ortogonal debe quedar en buffer de rotación para verificar consenso");
+assert.strictEqual(resNoise.status, "en_corte", "1 sola muestra aislada no debe rotar el corte");
+
+// A los 3 minutos y 1 segundo: llega una 2da muestra confirmatoria del nuevo cliente (consenso >= 2)
+testTrack26.latestFace = {
+  sharpnessScore: 75,
+  thumbnailBase64: "data:image/jpeg;base64,newClient26_b",
+  embedding: noiseVec,
+  pose: "frontal"
+};
+const resRotated = await timeGatedService.processTrack(testTrack26, { now: t3Min + 1000 });
+assert.ok(resRotated, "Debe iniciar la nueva sesión tras confirmar consenso ortogonal");
+assert.notStrictEqual(resRotated.id, session26.id, "Debe haber formalizado el cierre de la sesión previa y abierto una nueva");
+assert.strictEqual(resRotated.rotatedFromPrevSession, true, "La nueva sesión debe estar marcada como rotada");
+
+console.log("-> Ortogonalidad Biométrica (inmunidad a 1 cuadro de ruido y rotación inmediata con 2 muestras) validada exitosamente.");
+
+// [27] Consolidación Robusta de Tramos del Mismo Cliente y Descarte de < minMinutes no consolidados
+console.log("\n[27] Probando consolidación robusta de tramos (gap <= 10 min, maxS >= 0.45) y descarte de citas < minMinutes...");
+const mergeService = new VisitSessionService({
+  db: mockDb,
+  sqliteClient: sqlite,
+  customerService: custService,
+  minAppointmentMinutes: 10
+});
+
+const tMergeStart = 7000000;
+const mergeVec = new Array(512).fill(0);
+mergeVec[150] = 1.0;
+
+// Tramo 1: Cliente formaliza cita de 20 minutos
+const trackM1 = {
+  trackId: 1027,
+  consecutiveChairFrames: 6,
+  chairEnteredAt: tMergeStart,
+  currentQuadrant: { id: "silla_merge", label: "Silla Merge", type: "barber_chair" },
+  latestFace: {
+    sharpnessScore: 88,
+    thumbnailBase64: "data:image/jpeg;base64,m1",
+    embedding: mergeVec,
+    pose: "frontal"
+  }
+};
+await mergeService.processTrack(trackM1, { now: tMergeStart });
+const appt1 = await mergeService.closeSession(1027, {
+  endedAtEpoch: tMergeStart + 20 * 60 * 1000,
+  durationMinutes: 20
+});
+assert.ok(appt1, "Tramo 1 de 20 min debe registrarse exitosamente");
+assert.strictEqual(appt1.durationMinutes, 20);
+const initialApptCount = mergeService.completedAppointments.length;
+
+// Tramo 2: Misma persona en la misma silla 4 minutos después (gap = 4 min <= 10 min), duración 5 min (< 10 min)
+// Misma persona: similitud maxS = 0.50 >= 0.45, topAvgS = 0.50 >= 0.32
+const tMerge2Start = tMergeStart + 24 * 60 * 1000; // brecha de 4 min
+const trackM2 = {
+  trackId: 1028,
+  consecutiveChairFrames: 6,
+  chairEnteredAt: tMerge2Start,
+  currentQuadrant: { id: "silla_merge", label: "Silla Merge", type: "barber_chair" },
+  latestFace: {
+    sharpnessScore: 91,
+    thumbnailBase64: "data:image/jpeg;base64,m2",
+    embedding: mergeVec,
+    pose: "semi_right"
+  }
+};
+await mergeService.processTrack(trackM2, { now: tMerge2Start });
+const mergedAppt = await mergeService.closeSession(1028, {
+  endedAtEpoch: tMerge2Start + 5 * 60 * 1000,
+  durationMinutes: 5
+});
+assert.strictEqual(mergedAppt.id, appt1.id, "Debe consolidarse dentro de la cita previa appt1");
+assert.strictEqual(mergedAppt.durationMinutes, 29, "Duración total consolidada debe ser ~29 min (20 + 4 gap + 5)");
+assert.strictEqual(mergeService.completedAppointments.length, initialApptCount, "NO debe haber creado una nueva cita en completedAppointments");
+
+// Tramo 3: Sesión corta de 2 minutos que NO se consolida (persona diferente, vector ortogonal)
+const tMerge3Start = tMergeStart + 40 * 60 * 1000;
+const diffPersonVec = new Array(512).fill(0);
+diffPersonVec[200] = 1.0;
+const trackM3 = {
+  trackId: 1029,
+  consecutiveChairFrames: 6,
+  chairEnteredAt: tMerge3Start,
+  currentQuadrant: { id: "silla_merge", label: "Silla Merge", type: "barber_chair" },
+  latestFace: {
+    sharpnessScore: 85,
+    thumbnailBase64: "data:image/jpeg;base64,m3",
+    embedding: diffPersonVec,
+    pose: "frontal"
+  }
+};
+const sessionM3 = await mergeService.processTrack(trackM3, { now: tMerge3Start });
+const unmergedResult = await mergeService.closeSession(1029, {
+  endedAtEpoch: tMerge3Start + 2 * 60 * 1000,
+  durationMinutes: 2
+});
+assert.strictEqual(unmergedResult, null, "Sesión de 2 min no consolidada DEBE ser descartada (retornar null)");
+assert.strictEqual(mergeService.completedAppointments.length, initialApptCount, "completedAppointments no debe haber aumentado");
+assert.strictEqual(custService.getCustomerData(sessionM3.tempClientId), null, "El perfil temporal to_verify de la sesión descartada debe haber sido eliminado físicamente");
+console.log("-> Consolidación robusta y descarte de tramos < minMinutes validados exitosamente.");
 
 sqlite.close();
 console.log("\n🎉 ¡Todas las pruebas del pipeline de Atenciones pasaron al 100%!");
+

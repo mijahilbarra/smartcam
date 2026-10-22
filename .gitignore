@@ -19,14 +19,17 @@ npm-debug.log*
 .env.*
 !.env.example
 
-# Test outputs
+# Test & simulation outputs
 test/*-output.jpg
 test/*-crop.jpg
+docs/assets/
 
 # Local databases
 data/
+data_7h/
 *.db
 *.db-journal
 *.db-wal
 *.db-shm
+
 

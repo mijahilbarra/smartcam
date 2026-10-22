@@ -130,6 +130,27 @@ app.get(["/api/yolo/latest", "/api/telemetry/latest"], (req, res) => {
   res.json(telemetryStream.getLatestTelemetry() || { status: "no_data_yet" });
 });
 
+app.get("/api/simulation/progress", (req, res) => {
+  const ss = orchestrator?.streamServer;
+  const framesEmitted = ss?.framesEmitted || 0;
+  const fps = ss?.fps || 60;
+  const videoDuration = (ss?.mockVideoPath && typeof ss?.getVideoDuration === "function")
+    ? ss.getVideoDuration(ss.mockVideoPath)
+    : (ss?.mockVideoPath?.includes("7h") ? 20076.4 : (ss?.mockVideoPath?.includes("10h") ? 33939.5 : 20076.4));
+  const totalDurationSec = videoDuration || (ss?.mockVideoPath?.includes("10h") ? 33939.5 : 20076.4);
+  const totalFrames = Math.round(totalDurationSec * fps);
+  const elapsedSec = framesEmitted / fps;
+  const percent = totalFrames > 0 ? Math.min(100, (framesEmitted / totalFrames) * 100) : 0;
+  res.json({
+    framesEmitted,
+    totalFrames,
+    elapsedSec,
+    percent,
+    activeSessions: orchestrator?.visitService?.getActiveSessions?.()?.length || 0
+  });
+});
+
+
 app.post(["/api/session/close", "/api/appointments/close"], async (req, res) => {
   try {
     const sessions = orchestrator.visitService.getActiveSessions();

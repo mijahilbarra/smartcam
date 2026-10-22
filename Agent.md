@@ -143,6 +143,60 @@ El repositorio utiliza GitHub Actions con filtros por ruta (`paths:`):
 
 ---
 
+### 11. Herramientas Oficiales de Testing y Simulación (Cero Scripts Huérfanos)
+> [!CAUTION]
+> **PROHIBIDO CREAR NUEVOS SCRIPTS TEMPORALES O HUÉRFANOS PARA TESTEAR O SIMULAR**.
+> El proyecto cuenta con dos modalidades oficiales, estandarizadas y documentadas en [`docs/LOCAL_TESTING_GUIDE.md`](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/docs/LOCAL_TESTING_GUIDE.md):
+> 
+> 1. **Tester de Simulación Streaming E2E (`scripts/run-and-monitor.js`)**:
+>    - Para pruebas de extremo a extremo que validan la reproducción continua de video (7h, 10h), ingesta FFmpeg, Docker `fast-sim` y persistencia general:
+>      ```bash
+>      node scripts/run-and-monitor.js [ruta-al-video.mp4]
+>      ```
+> 
+> 2. **Pipeline Rápido en 2 Pasos (Cosecha + Clasificación en 5s)**:
+>    - Para iteración ultra-rápida de algoritmos, detección facial, nitidez, exclusión de personal y consolidación de citas sin esperar horas:
+>      - **Paso 1 (Cosecha de Recortes con YOLO, 1 sola vez)**:
+>        ```bash
+>        node scripts/step1_harvest_crops.js --video data/recordings/barberia_stream_7h.mp4
+>        ```
+>      - **Paso 2 (Clasificación instantánea en ~5 segundos usando `processes.js` o variante con `--processes`)**:
+>        ```bash
+>        # Motor de producción:
+>        node scripts/step2_classify_sessions.js --video barberia_stream_7h
+>        # O evaluar variantes de algoritmos en paralelo (A/B testing):
+>        node scripts/step2_classify_sessions.js -p src/services/processes_baseline.js
+>        ```
+> 
+> 3. **Prohibición Estricta de Scripts Ad-Hoc / Huérfanos**: Queda terminantemente prohibido crear scripts paralelos de monitoreo, generadores de reportes específicos de versión o scripts descartables (como `auto-report-on-finish.js`, `generate-vX-...js`, `test-runner-...js`, etc.).
+> 4. **Evolución Centralizada**: Cualquier mejora a los flujos de prueba debe realizarse dentro de estas herramientas oficiales y reutilizar los módulos de producción en [`src/services/processes.js`](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/src/services/processes.js).
+> 5. **Estandarización de Reportes**: Los reportes generados siguen estrictamente la convención cronológica genérica `docs/REPORTE_FOTOGRAFICO_${YYYY}${MM}${DD}_${HH}${mm}.md` o `docs/REPORTE_FUNNEL_${YYYY}${MM}${DD}_${HH}${mm}.md`.
+
+---
+
+### 12. Regla de Oro: Transparencia Total en el Embudo (Prohibido Ocultar Movimientos)
+> [!IMPORTANT]
+> **PROHIBIDO OCULTAR, AGRUPAR SILENCIOSAMENTE O CONDENSAR MOVIMIENTOS EN EL EMBUDO (FUNNEL)**.
+> Cada acción de filtrado, clasificación anatómica, descarte de artefactos/objetos, continuidad de silla o consolidación DEBE reportarse de manera explícita y transparente como un escalón numerado e independiente en el reporte del Embudo (`REPORTE_FUNNEL_*.md`).
+> 1. **Clasificación Anatómica y Geometría Facial**: La separación entre caras erguidas (anclas de identidad biométrica, proporción ~1x2, `h/w >= 1.5`) y caras chatas/reclinadas (destinadas exclusivamente a extender y computar duración de servicio) debe ser un paso explícito del embudo con su conteo exacto de fotos.
+> 2. **Filtro Anti-Objetos / Celulares**: Los descartes de pantallas, objetos o reflejos deben reflejarse como un filtro explícito con cantidad de sesiones/fotos eliminadas.
+> 3. **Continuidad Temporal en Silla**: La unión de micro-segmentos contiguos del mismo cliente sentado (gaps de silla menores a 45s o lavado) debe mostrarse como paso visible de agrupamiento continuo.
+> 4. **Delimitación de Vacancia Real**: La detección de vacancia de silla entre clientes diferentes (cambio de cliente) debe mostrarse con el número de cortes formalizados.
+> 5. **Consolidación Biocéntrica Final**: La unión final guiada por anclas erguidas debe reflejar las citas definitivas resultantes sin suposiciones ocultas.
+
+---
+
+### 13. Causalidad Temporal Estricta y Cero Lookahead Bias (Prohibido "Mirar al Futuro" en Simulaciones)
+> [!CAUTION]
+> **PROHIBIDO EL SESGO DE ANTICIPACIÓN (LOOKAHEAD BIAS) Y LA FUGA TEMPORAL EN SIMULACIONES O PROCESAMIENTO OFFLINE**.
+> Toda lógica algorítmica de detección, agrupamiento, tracking, sillas y cierre de citas DEBE respetar la causalidad temporal estricta:
+> 1. **Causalidad Estricta ($t_0 \rightarrow t_n$)**: En el instante $t_k$, el sistema SOLO puede conocer y operar sobre lo que ha ocurrido hasta $t_k$. Queda terminantemente prohibido hacer barridos globales hacia adelante y atrás sobre grabaciones históricas que tomen decisiones usando información que un sistema en vivo no tendría en ese instante.
+> 2. **Unificación Absoluta de Algoritmos (Mismo Código, Mismo Comportamiento)**:
+>    - La simulación NO puede tener su propia lógica paralela de agrupamiento o inferencia. Debe ser un simple "Replay Causal Acelerado" (Fast-Forward Replay) alimentando la misma máquina de estados y las mismas funciones que corren en producción ([`src/services/pipeline/`](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/src/services/pipeline) y [`VisitSessionService`](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/src/services/visit_session_service.js)).
+>    - Lo que se pruebe en simulación DEBE funcionar de forma idéntica en el streaming en vivo segundo a segundo.
+> 3. **Prohibición de "Hacer Trampa" en Benchmarks**: Diseñar algoritmos que solo funcionan cuando tienen el dataset completo en memoria mirando hacia el futuro es considerado una violación grave de arquitectura, pues genera reportes cosméticamente atractivos pero inoperables en la cámara en vivo.
+
+
 ## 🛠️ Resumen de Componentes Técnicos
 
 1. **Captura P2P (Neolink)**:

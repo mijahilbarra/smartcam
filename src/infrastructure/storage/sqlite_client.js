@@ -110,8 +110,14 @@ export class SQLiteClient {
    * Inicializa la conexión SQLite y crea las tablas si no existen.
    * @param {string} [dbPath] - Ruta al archivo sqlite (resuelto por defecto según entorno o ':memory:')
    */
-  constructor(dbPath) {
+  constructor(dbPath, options = {}) {
     this.dbPath = dbPath || getResolvedSqlitePath();
+    this.tables = {
+      customers: options.customersTable || options.tables?.customers || "customers",
+      customerEmbeddings: options.customerEmbeddingsTable || options.tables?.customerEmbeddings || "customer_embeddings",
+      appointments: options.appointmentsTable || options.tables?.appointments || "appointments"
+    };
+
     if (this.dbPath !== ":memory:") {
       const dir = path.dirname(this.dbPath);
       if (!fs.existsSync(dir)) {
@@ -119,7 +125,7 @@ export class SQLiteClient {
       }
     }
 
-    this.db = new Database(this.dbPath);
+    this.db = options.dbInstance || new Database(this.dbPath);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
 
@@ -133,7 +139,7 @@ export class SQLiteClient {
    */
   _initTables() {
     this.db.exec(`
-      CREATE TABLE IF NOT EXISTS customers (
+      CREATE TABLE IF NOT EXISTS ${this.tables.customers} (
         id TEXT PRIMARY KEY,
         name TEXT DEFAULT 'Cliente',
         is_staff INTEGER DEFAULT 0,
@@ -151,7 +157,7 @@ export class SQLiteClient {
         updated_at TEXT DEFAULT (datetime('now'))
       );
 
-      CREATE TABLE IF NOT EXISTS customer_embeddings (
+      CREATE TABLE IF NOT EXISTS ${this.tables.customerEmbeddings} (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         customer_id TEXT NOT NULL,
         embedding_index INTEGER NOT NULL,
@@ -160,14 +166,14 @@ export class SQLiteClient {
         pose TEXT DEFAULT 'frontal',
         pose_label TEXT DEFAULT 'Frontal',
         created_at TEXT DEFAULT (datetime('now')),
-        FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE,
+        FOREIGN KEY (customer_id) REFERENCES ${this.tables.customers}(id) ON DELETE CASCADE,
         UNIQUE(customer_id, embedding_index)
       );
 
-      CREATE INDEX IF NOT EXISTS idx_customer_embeddings_customer_id
-        ON customer_embeddings(customer_id);
+      CREATE INDEX IF NOT EXISTS idx_${this.tables.customerEmbeddings}_customer_id
+        ON ${this.tables.customerEmbeddings}(customer_id);
 
-      CREATE TABLE IF NOT EXISTS appointments (
+      CREATE TABLE IF NOT EXISTS ${this.tables.appointments} (
         id TEXT PRIMARY KEY,
         chair_id TEXT NOT NULL,
         chair_name TEXT,
@@ -175,41 +181,57 @@ export class SQLiteClient {
         client_name TEXT,
         started_at TEXT NOT NULL,
         ended_at TEXT,
+        started_epoch INTEGER,
+        ended_epoch INTEGER,
         duration_minutes INTEGER DEFAULT 0,
         status TEXT DEFAULT 'completed',
         best_face_score REAL DEFAULT 0,
         thumbnail_path TEXT,
         photos_json TEXT,
+        embeddings_count INTEGER DEFAULT 0,
         created_at TEXT DEFAULT (datetime('now')),
         updated_at TEXT DEFAULT (datetime('now')),
-        FOREIGN KEY (client_id) REFERENCES customers(id) ON DELETE SET NULL
+        FOREIGN KEY (client_id) REFERENCES ${this.tables.customers}(id) ON DELETE SET NULL
       );
 
-      CREATE INDEX IF NOT EXISTS idx_appointments_client_id ON appointments(client_id);
-      CREATE INDEX IF NOT EXISTS idx_appointments_started_at ON appointments(started_at);
+      CREATE INDEX IF NOT EXISTS idx_${this.tables.appointments}_client_id ON ${this.tables.appointments}(client_id);
+      CREATE INDEX IF NOT EXISTS idx_${this.tables.appointments}_started_at ON ${this.tables.appointments}(started_at);
     `);
 
-    // Asegurar compatibilidad si la tabla customers ya existía sin appointment_count o status
+    // Asegurar compatibilidad si las tablas ya existían con columnas faltantes
     try {
-      this.db.exec(`ALTER TABLE customers ADD COLUMN appointment_count INTEGER DEFAULT 0;`);
-    } catch (_) {
-      // La columna ya existe
-    }
+      this.db.exec(`ALTER TABLE ${this.tables.customers} ADD COLUMN appointment_count INTEGER DEFAULT 0;`);
+    } catch (_) {}
     try {
-      this.db.exec(`ALTER TABLE customers ADD COLUMN status TEXT DEFAULT 'new';`);
-    } catch (_) {
-      // La columna ya existe
-    }
+      this.db.exec(`ALTER TABLE ${this.tables.customers} ADD COLUMN status TEXT DEFAULT 'new';`);
+    } catch (_) {}
     try {
-      this.db.exec(`ALTER TABLE customer_embeddings ADD COLUMN pose TEXT DEFAULT 'frontal';`);
-    } catch (_) {
-      // La columna ya existe
-    }
+      this.db.exec(`ALTER TABLE ${this.tables.customers} ADD COLUMN thumbnail_path TEXT;`);
+    } catch (_) {}
     try {
-      this.db.exec(`ALTER TABLE customer_embeddings ADD COLUMN pose_label TEXT DEFAULT 'Frontal';`);
-    } catch (_) {
-      // La columna ya existe
-    }
+      this.db.exec(`ALTER TABLE ${this.tables.customers} ADD COLUMN updated_at TEXT DEFAULT CURRENT_TIMESTAMP;`);
+    } catch (_) {}
+    try {
+      this.db.exec(`ALTER TABLE ${this.tables.customerEmbeddings} ADD COLUMN pose TEXT DEFAULT 'frontal';`);
+    } catch (_) {}
+    try {
+      this.db.exec(`ALTER TABLE ${this.tables.customerEmbeddings} ADD COLUMN pose_label TEXT DEFAULT 'Frontal';`);
+    } catch (_) {}
+    try {
+      this.db.exec(`ALTER TABLE ${this.tables.appointments} ADD COLUMN thumbnail_path TEXT;`);
+    } catch (_) {}
+    try {
+      this.db.exec(`ALTER TABLE ${this.tables.appointments} ADD COLUMN updated_at TEXT DEFAULT CURRENT_TIMESTAMP;`);
+    } catch (_) {}
+    try {
+      this.db.exec(`ALTER TABLE ${this.tables.appointments} ADD COLUMN started_epoch INTEGER;`);
+    } catch (_) {}
+    try {
+      this.db.exec(`ALTER TABLE ${this.tables.appointments} ADD COLUMN ended_epoch INTEGER;`);
+    } catch (_) {}
+    try {
+      this.db.exec(`ALTER TABLE ${this.tables.appointments} ADD COLUMN embeddings_count INTEGER;`);
+    } catch (_) {}
   }
 
   /**
@@ -218,7 +240,7 @@ export class SQLiteClient {
    */
   _prepareStatements() {
     this.stmtUpsertCustomer = this.db.prepare(`
-      INSERT INTO customers (
+      INSERT INTO ${this.tables.customers} (
         id, name, is_staff, role, status, first_seen, last_seen, visit_count, appointment_count,
         best_face_score, thumbnail_base64, thumbnail_path, photos_json, updated_at
       ) VALUES (
@@ -226,23 +248,23 @@ export class SQLiteClient {
         @bestFaceScore, @thumbnailBase64, @thumbnailPath, @photosJson, datetime('now')
       )
       ON CONFLICT(id) DO UPDATE SET
-        name = COALESCE(excluded.name, customers.name),
-        is_staff = COALESCE(excluded.is_staff, customers.is_staff),
-        role = COALESCE(excluded.role, customers.role),
-        status = COALESCE(excluded.status, customers.status),
-        first_seen = COALESCE(customers.first_seen, excluded.first_seen),
-        last_seen = COALESCE(excluded.last_seen, customers.last_seen),
-        visit_count = COALESCE(excluded.visit_count, customers.visit_count),
-        appointment_count = COALESCE(excluded.appointment_count, customers.appointment_count),
-        best_face_score = CASE WHEN excluded.best_face_score IS NOT NULL AND excluded.best_face_score > customers.best_face_score THEN excluded.best_face_score ELSE customers.best_face_score END,
-        thumbnail_base64 = COALESCE(excluded.thumbnail_base64, customers.thumbnail_base64),
-        thumbnail_path = COALESCE(excluded.thumbnail_path, customers.thumbnail_path),
-        photos_json = COALESCE(excluded.photos_json, customers.photos_json),
+        name = COALESCE(excluded.name, ${this.tables.customers}.name),
+        is_staff = COALESCE(excluded.is_staff, ${this.tables.customers}.is_staff),
+        role = COALESCE(excluded.role, ${this.tables.customers}.role),
+        status = COALESCE(excluded.status, ${this.tables.customers}.status),
+        first_seen = COALESCE(${this.tables.customers}.first_seen, excluded.first_seen),
+        last_seen = COALESCE(excluded.last_seen, ${this.tables.customers}.last_seen),
+        visit_count = COALESCE(excluded.visit_count, ${this.tables.customers}.visit_count),
+        appointment_count = COALESCE(excluded.appointment_count, ${this.tables.customers}.appointment_count),
+        best_face_score = CASE WHEN excluded.best_face_score IS NOT NULL AND excluded.best_face_score > ${this.tables.customers}.best_face_score THEN excluded.best_face_score ELSE ${this.tables.customers}.best_face_score END,
+        thumbnail_base64 = COALESCE(excluded.thumbnail_base64, ${this.tables.customers}.thumbnail_base64),
+        thumbnail_path = COALESCE(excluded.thumbnail_path, ${this.tables.customers}.thumbnail_path),
+        photos_json = COALESCE(excluded.photos_json, ${this.tables.customers}.photos_json),
         updated_at = datetime('now')
     `);
 
     this.stmtUpsertEmbedding = this.db.prepare(`
-      INSERT INTO customer_embeddings (
+      INSERT INTO ${this.tables.customerEmbeddings} (
         customer_id, embedding_index, embedding_blob, sharpness_score, pose, pose_label, created_at
       ) VALUES (
         @customerId, @embeddingIndex, @embeddingBlob, @sharpnessScore, @pose, @poseLabel, datetime('now')
@@ -250,73 +272,78 @@ export class SQLiteClient {
       ON CONFLICT(customer_id, embedding_index) DO UPDATE SET
         embedding_blob = excluded.embedding_blob,
         sharpness_score = excluded.sharpness_score,
-        pose = COALESCE(excluded.pose, customer_embeddings.pose),
-        pose_label = COALESCE(excluded.pose_label, customer_embeddings.pose_label),
+        pose = COALESCE(excluded.pose, ${this.tables.customerEmbeddings}.pose),
+        pose_label = COALESCE(excluded.pose_label, ${this.tables.customerEmbeddings}.pose_label),
         created_at = datetime('now')
     `);
 
     this.stmtDeleteCustomerEmbeddings = this.db.prepare(`
-      DELETE FROM customer_embeddings WHERE customer_id = ?
+      DELETE FROM ${this.tables.customerEmbeddings} WHERE customer_id = ?
     `);
 
     this.stmtGetCustomerById = this.db.prepare(`
-      SELECT * FROM customers WHERE id = ?
+      SELECT * FROM ${this.tables.customers} WHERE id = ?
     `);
 
     this.stmtGetEmbeddingsByCustomerId = this.db.prepare(`
-      SELECT * FROM customer_embeddings WHERE customer_id = ? ORDER BY embedding_index ASC
+      SELECT * FROM ${this.tables.customerEmbeddings} WHERE customer_id = ? ORDER BY embedding_index ASC
     `);
 
     this.stmtGetAllCustomers = this.db.prepare(`
       SELECT id, name, is_staff, role, status, first_seen, last_seen, visit_count, appointment_count, best_face_score
-      FROM customers
+      FROM ${this.tables.customers}
     `);
 
     this.stmtGetAllEmbeddings = this.db.prepare(`
-      SELECT * FROM customer_embeddings ORDER BY customer_id ASC, embedding_index ASC
+      SELECT * FROM ${this.tables.customerEmbeddings} ORDER BY customer_id ASC, embedding_index ASC
     `);
 
     this.stmtDeleteCustomer = this.db.prepare(`
-      DELETE FROM customers WHERE id = ?
+      DELETE FROM ${this.tables.customers} WHERE id = ?
     `);
 
     this.stmtUpsertAppointment = this.db.prepare(`
-      INSERT INTO appointments (
+      INSERT INTO ${this.tables.appointments} (
         id, chair_id, chair_name, client_id, client_name, started_at, ended_at,
-        duration_minutes, status, best_face_score, thumbnail_path, photos_json, updated_at
+        started_epoch, ended_epoch, duration_minutes, status, best_face_score,
+        thumbnail_path, photos_json, embeddings_count, updated_at
       ) VALUES (
         @id, @chairId, @chairName, @clientId, @clientName, @startedAt, @endedAt,
-        @durationMinutes, @status, @bestFaceScore, @thumbnailPath, @photosJson, datetime('now')
+        @startedEpoch, @endedEpoch, @durationMinutes, @status, @bestFaceScore,
+        @thumbnailPath, @photosJson, @embeddingsCount, datetime('now')
       )
       ON CONFLICT(id) DO UPDATE SET
-        chair_id = COALESCE(excluded.chair_id, appointments.chair_id),
-        chair_name = COALESCE(excluded.chair_name, appointments.chair_name),
-        client_id = COALESCE(excluded.client_id, appointments.client_id),
-        client_name = COALESCE(excluded.client_name, appointments.client_name),
-        started_at = COALESCE(excluded.started_at, appointments.started_at),
-        ended_at = COALESCE(excluded.ended_at, appointments.ended_at),
-        duration_minutes = COALESCE(excluded.duration_minutes, appointments.duration_minutes),
-        status = COALESCE(excluded.status, appointments.status),
-        best_face_score = COALESCE(excluded.best_face_score, appointments.best_face_score),
-        thumbnail_path = COALESCE(excluded.thumbnail_path, appointments.thumbnail_path),
-        photos_json = COALESCE(excluded.photos_json, appointments.photos_json),
+        chair_id = COALESCE(excluded.chair_id, ${this.tables.appointments}.chair_id),
+        chair_name = COALESCE(excluded.chair_name, ${this.tables.appointments}.chair_name),
+        client_id = COALESCE(excluded.client_id, ${this.tables.appointments}.client_id),
+        client_name = COALESCE(excluded.client_name, ${this.tables.appointments}.client_name),
+        started_at = COALESCE(excluded.started_at, ${this.tables.appointments}.started_at),
+        ended_at = COALESCE(excluded.ended_at, ${this.tables.appointments}.ended_at),
+        started_epoch = COALESCE(excluded.started_epoch, ${this.tables.appointments}.started_epoch),
+        ended_epoch = COALESCE(excluded.ended_epoch, ${this.tables.appointments}.ended_epoch),
+        duration_minutes = COALESCE(excluded.duration_minutes, ${this.tables.appointments}.duration_minutes),
+        status = COALESCE(excluded.status, ${this.tables.appointments}.status),
+        best_face_score = COALESCE(excluded.best_face_score, ${this.tables.appointments}.best_face_score),
+        thumbnail_path = COALESCE(excluded.thumbnail_path, ${this.tables.appointments}.thumbnail_path),
+        photos_json = COALESCE(excluded.photos_json, ${this.tables.appointments}.photos_json),
+        embeddings_count = COALESCE(excluded.embeddings_count, ${this.tables.appointments}.embeddings_count),
         updated_at = datetime('now')
     `);
 
     this.stmtGetAppointmentById = this.db.prepare(`
-      SELECT * FROM appointments WHERE id = ?
+      SELECT * FROM ${this.tables.appointments} WHERE id = ?
     `);
 
     this.stmtGetAppointmentsByClient = this.db.prepare(`
-      SELECT * FROM appointments WHERE client_id = ? ORDER BY started_at DESC
+      SELECT * FROM ${this.tables.appointments} WHERE client_id = ? ORDER BY started_at DESC
     `);
 
     this.stmtGetAllAppointments = this.db.prepare(`
-      SELECT * FROM appointments ORDER BY started_at DESC
+      SELECT * FROM ${this.tables.appointments} ORDER BY started_at DESC
     `);
 
     this.stmtDeleteAppointment = this.db.prepare(`
-      DELETE FROM appointments WHERE id = ?
+      DELETE FROM ${this.tables.appointments} WHERE id = ?
     `);
   }
 
@@ -521,11 +548,14 @@ export class SQLiteClient {
       clientName: appointment.clientName || appointment.client_name || null,
       startedAt: appointment.startedAt || appointment.started_at || new Date().toISOString(),
       endedAt: appointment.endedAt || appointment.ended_at || null,
+      startedEpoch: appointment.startedEpoch || appointment.started_epoch || (appointment.startedAt ? new Date(appointment.startedAt).getTime() : null),
+      endedEpoch: appointment.endedEpoch || appointment.ended_epoch || (appointment.endedAt ? new Date(appointment.endedAt).getTime() : null),
       durationMinutes: typeof appointment.durationMinutes === "number" ? appointment.durationMinutes : (appointment.duration_minutes || 0),
       status: appointment.status || "completed",
       bestFaceScore: typeof appointment.bestFaceScore === "number" ? appointment.bestFaceScore : (appointment.best_face_score || 0),
       thumbnailPath: appointment.thumbnailPath || appointment.thumbnail_path || null,
-      photosJson
+      photosJson,
+      embeddingsCount: Array.isArray(appointment.embeddings) ? appointment.embeddings.length : (appointment.embeddingsCount || 0)
     });
 
     return appointment;
@@ -639,7 +669,7 @@ export class SQLiteClient {
    * Limpia todas las tablas (útil para pruebas unitarias)
    */
   clearAll() {
-    this.db.exec("DELETE FROM customer_embeddings; DELETE FROM customers;");
+    this.db.exec(`DELETE FROM ${this.tables.customerEmbeddings}; DELETE FROM ${this.tables.customers}; DELETE FROM ${this.tables.appointments};`);
   }
 
   /**

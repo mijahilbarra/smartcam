@@ -1,0 +1,48 @@
+{
+  "faceDetection": {
+    "minConfidence": 0.70,
+    "minSharpness": 20.0,
+    "skinRatioMin": 0.18,
+    "warmRatioMin": 0.22,
+    "validFacePoses": [
+      "frontal",
+      "tilted_up",
+      "tilted_down",
+      "semi_left",
+      "semi_right",
+      "tilted_up_left",
+      "tilted_up_right",
+      "tilted_down_left",
+      "tilted_down_right"
+    ]
+  },
+  "staffFilter": {
+    "staffExclusionThreshold": 0.46,
+    "staffMaxBarberRatio": 0.50
+  },
+  "tracking": {
+    "iouThreshold": 0.30,
+    "minChairFrames": 6,
+    "leaveDebounceFrames": 6,
+    "minChairDurationMs": 2000,
+    "leaveDebounceDurationMs": 2000
+  },
+  "sessions": {
+    "emptyChairTimeoutMs": 45000,
+    "minAppointmentMinutes": 8,
+    "minAppointmentPhotos": 3,
+    "maxGalleryPhotos": 20,
+    "rotationQuorumPhotos": 8,
+    "rotationQuorumSpanMs": 60000,
+    "rotationDisjunctionSim": 0.44
+  },
+  "consolidation": {
+    "maxMergeGapMs": 2700000,
+    "minMergeGapMs": -300000,
+    "minSimilarity": 0.42
+  },
+  "biometrics": {
+    "samePoseThreshold": 0.60,
+    "crossPoseThreshold": 0.48
+  }
+}

@@ -43,5 +43,5 @@ services:
       - GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
       - NEOLINK_TOML_PATH=/opt/camera-catcher/neolink.toml
       - REALTIME_INTERVAL_MS=400
-      - STAFF_EXCLUSION_THRESHOLD=${STAFF_EXCLUSION_THRESHOLD:-0.25}
+      - STAFF_EXCLUSION_THRESHOLD=${STAFF_EXCLUSION_THRESHOLD:-0.46}
       - ML_MODEL_PATH=/opt/camera-catcher/src/models/yolov8n.onnx

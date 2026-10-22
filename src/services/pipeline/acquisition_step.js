@@ -67,3 +67,10 @@ export async function uploadDiagnosticSnapshot({ bucket, docId, buffer, isManual
 
   return storagePath;
 }
+
+export const STEP_NAME = "Cosecha inicial";
+export const STEP_DESCRIPTION = (total = 0) =>
+  `Recortes brutos detectados por YOLO en la silla de corte durante el Paso 1.`;
+export const formatStepSummary = (imagesCount = 0, appointmentsCount = 0, details = "") =>
+  `1. **${STEP_NAME}:** ${imagesCount.toLocaleString()} fotos (${appointmentsCount} atenciones tentativas por track_id).${details ? `\n   - *${details}*` : ""}`;
+

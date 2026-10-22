@@ -135,3 +135,20 @@ export function applyNMS(boxes, iouThreshold = 0.45) {
   }
   return selected;
 }
+
+/**
+ * Determina si una persona está en postura de pie según proporciones de su bounding box
+ * @param {Array<number>} box - [x1, y1, x2, y2]
+ * @param {number} imgHeight - Altura de la imagen en píxeles (defecto 720)
+ * @returns {boolean}
+ */
+export function isStandingPosture(box, imgHeight = 720) {
+  if (typeof box === "string") {
+    try { box = JSON.parse(box); } catch (_) { return false; }
+  }
+  if (!box || !Array.isArray(box) || box.length < 4 || imgHeight <= 0) return false;
+  const boxTop = box[1];
+  const boxH = box[3] - box[1];
+  return (boxTop / imgHeight <= 0.22 || boxH / imgHeight >= 0.55);
+}
+

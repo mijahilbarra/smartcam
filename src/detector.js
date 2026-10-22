@@ -159,8 +159,8 @@ export async function getInferenceSession() {
     inferenceSession = await ort.InferenceSession.create(MODEL_PATH, {
       executionProviders: ["cpu"],
       graphOptimizationLevel: "basic",
-      intraOpNumThreads: 1,
-      interOpNumThreads: 1,
+      intraOpNumThreads: Number(process.env.ONNX_THREADS) || 1,
+      interOpNumThreads: Number(process.env.ONNX_THREADS) || 1,
       enableCpuMemArena: false,
       enableMemPattern: false
     });
@@ -286,7 +286,9 @@ export async function detectObjectsAndQuadrants(imageBuffer, options = {}) {
 
   if (canSkip) {
     consecutiveStaticSkips++;
-    console.log(`[Detector] Escena estática (variación ${diff.diffPercent}% < umbral ${changeThreshold}%). Reutilizando análisis previo (0% CPU / 0 ms) [${consecutiveStaticSkips}/${maxSkips}].`);
+    if (process.env.SILENT_DETECTOR !== "true") {
+      console.log(`[Detector] Escena estática (variación ${diff.diffPercent}% < umbral ${changeThreshold}%). Reutilizando análisis previo (0% CPU / 0 ms) [${consecutiveStaticSkips}/${maxSkips}].`);
+    }
     return {
       ...lastDetectionResult,
       inferenceMs: 0,

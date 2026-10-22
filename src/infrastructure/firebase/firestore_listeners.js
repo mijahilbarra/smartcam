@@ -3,6 +3,8 @@
  * Escucha cambios de configuración (prompt/horario laboral) y calibración de cuadrantes.
  */
 
+import fs from "fs";
+import path from "path";
 import { setCustomQuadrants } from "../../detector.js";
 
 /**
@@ -12,6 +14,9 @@ import { setCustomQuadrants } from "../../detector.js";
  * @returns {Promise<Object>}
  */
 export async function getDynamicConfig(db, defaultPrompt = "Describe what do you see in the image") {
+  if (!db) {
+    return { prompt: defaultPrompt, workStartTime: "00:00", workEndTime: "23:59", timezone: "America/Lima" };
+  }
   try {
     const promptRef = db.doc("camera_catcher/prompt");
     const doc = await promptRef.get();
@@ -57,6 +62,11 @@ export async function getDynamicConfig(db, defaultPrompt = "Describe what do you
  * @param {Object} options.workingHours
  */
 export function registerFirestoreListeners({ db, workingHours, customerService }) {
+  if (!db) {
+    console.log(`[Firestore] 🧪 Modo Test activo: Listeners de Firestore omitidos. Operando 100% con SQLite.`);
+    return;
+  }
+
   // 1. Listener de configuración (horario laboral y prompt)
   db.doc("camera_catcher/prompt").onSnapshot(async (snapshot) => {
     const data = snapshot.data();
@@ -115,10 +125,27 @@ export function registerFirestoreListeners({ db, workingHours, customerService }
 }
 
 /**
- * Precarga los cuadrantes de Firestore al iniciar la aplicación
+ * Precarga los cuadrantes de Firestore al iniciar la aplicación (o desde data/quadrants.json en modo test)
  * @param {Object} db
  */
 export async function prefetchQuadrants(db) {
+  if (!db) {
+    try {
+      const localFile = path.resolve(process.cwd(), "data", "quadrants.json");
+      if (fs.existsSync(localFile)) {
+        const raw = fs.readFileSync(localFile, "utf8");
+        const quads = JSON.parse(raw);
+        setCustomQuadrants(quads);
+        console.log(`[Quadrants] 🧪 Cuadrantes locales precargados desde data/quadrants.json (${quads.length} zonas).`);
+        return;
+      }
+    } catch (err) {
+      console.warn(`[Quadrants] Aviso leyendo data/quadrants.json:`, err.message);
+    }
+    setCustomQuadrants([]);
+    return;
+  }
+
   try {
     const snap = await db.doc("camera_catcher/quadrants").get();
     if (snap.exists) {
