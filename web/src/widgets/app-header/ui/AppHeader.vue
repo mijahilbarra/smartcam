@@ -5,7 +5,7 @@ import AppBadge from '@/shared/ui/atoms/AppBadge.vue';
 import { getEnvironmentInfo } from '@/shared/api/firebase';
 import { useSystemMemory } from '@/entities/daemon/model/useSystemMemory';
 
-const emit = defineEmits(['open-settings', 'open-calibrator']);
+const emit = defineEmits(['open-settings']);
 const env = getEnvironmentInfo();
 const { systemMemory, memoryBadgeVariant, memoryLabel } = useSystemMemory();
 </script>
@@ -54,15 +54,6 @@ const { systemMemory, memoryBadgeVariant, memoryLabel } = useSystemMemory();
         title="Configuración del capturador y horario de atención"
       >
         <span>Configuración</span>
-      </AppButton>
-
-      <AppButton
-        variant="secondary"
-        icon="aspect_ratio"
-        @click="emit('open-calibrator')"
-        title="Calibrar zonas ROI"
-      >
-        <span>Calibrar Cuadrantes</span>
       </AppButton>
     </div>
   </header>

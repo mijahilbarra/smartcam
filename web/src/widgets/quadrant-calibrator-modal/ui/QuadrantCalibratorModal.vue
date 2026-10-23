@@ -8,6 +8,7 @@ import AppBadge from '@/shared/ui/atoms/AppBadge.vue';
 import AppInput from '@/shared/ui/atoms/AppInput.vue';
 import AppSelect from '@/shared/ui/atoms/AppSelect.vue';
 import { useQuadrants } from '@/entities/quadrant/model/useQuadrants';
+import { useDaemonState } from '@/entities/daemon/model/useDaemonState';
 import { useCalibratorTools } from '@/features/calibrate-quadrants/model/useCalibratorTools';
 import { hexToRgba, boxNormToPolygonNorm, toPointObject } from '@/shared/lib/geometry';
 
@@ -15,14 +16,6 @@ const props = defineProps({
   show: {
     type: Boolean,
     default: false
-  },
-  photos: {
-    type: Array,
-    default: () => []
-  },
-  preselectedPhotoId: {
-    type: String,
-    default: null
   }
 });
 
@@ -52,27 +45,22 @@ const {
   finishDrawing
 } = useCalibratorTools(quadrants);
 
-const selectedPhotoId = ref('latest');
 const statusMessage = ref('');
 const statusType = ref('info');
 const stageRef = ref(null);
 
-const currentActivePhoto = computed(() => {
-  if (selectedPhotoId.value === 'latest' || !selectedPhotoId.value) {
-    return props.photos.length > 0 ? props.photos[0] : null;
-  }
-  return props.photos.find(p => p.id === selectedPhotoId.value) || props.photos[0] || null;
+const { snapshotUrl } = useDaemonState();
+const snapshotTimestamp = ref(Date.now());
+const refreshSnapshot = () => {
+  snapshotTimestamp.value = Date.now();
+};
+const liveImageUrl = computed(() => {
+  if (!snapshotUrl.value) return null;
+  return `${snapshotUrl.value}?t=${snapshotTimestamp.value}`;
 });
 
-const photoOptions = computed(() => {
-  const opts = [{ value: 'latest', label: 'Última captura disponible' }];
-  props.photos.slice(0, 20).forEach((p, idx) => {
-    opts.push({
-      value: p.id,
-      label: `#${idx + 1} - ${p.id.substring(0, 16)}...`
-    });
-  });
-  return opts;
+watch(() => props.show, (isOpen) => {
+  if (isOpen) refreshSnapshot();
 });
 
 const zoneTypeOptions = [
@@ -88,10 +76,6 @@ const roleOptions = [
   { value: 'staff', label: 'Personal / Barbero' },
   { value: 'visitor', label: 'Visitante' }
 ];
-
-watch(() => props.preselectedPhotoId, (newId) => {
-  if (newId) selectedPhotoId.value = newId;
-});
 
 const onSave = async () => {
   statusMessage.value = 'Guardando cuadrantes en Firestore...';
@@ -257,10 +241,17 @@ const onPointerUp = () => {
       <div class="lg:col-span-8 flex flex-col gap-3">
         <!-- Toolbar -->
         <div class="flex flex-wrap items-center justify-between gap-3 bg-slate-950/80 border border-slate-800 rounded-xl p-2.5 text-xs">
-          <!-- Photo Selector -->
+          <!-- Live Snapshot Refresh -->
           <div class="flex items-center gap-2">
-            <span class="text-slate-400 font-medium">Foto:</span>
-            <AppSelect v-model="selectedPhotoId" :options="photoOptions" />
+            <AppButton
+              size="sm"
+              variant="secondary"
+              icon="refresh"
+              title="Obtener fotograma actual de la cámara"
+              @click="refreshSnapshot"
+            >
+              Capturar de Cámara
+            </AppButton>
           </div>
 
           <!-- Tool Modes -->
@@ -296,8 +287,8 @@ const onPointerUp = () => {
         >
           <!-- Base Image -->
           <img
-            v-if="currentActivePhoto?.downloadUrl"
-            :src="currentActivePhoto.downloadUrl"
+            v-if="liveImageUrl"
+            :src="liveImageUrl"
             alt="Imagen de calibración"
             class="w-full h-full object-contain pointer-events-none"
           />
@@ -305,7 +296,7 @@ const onPointerUp = () => {
             v-else
             class="w-full h-full flex flex-col items-center justify-center text-slate-500 text-xs"
           >
-            Esperando imagen para calibración...
+            Esperando transmisión o fotograma de la cámara...
           </div>
 
           <!-- Overlay si no hay zonas configuradas -->

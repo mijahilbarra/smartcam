@@ -10,7 +10,7 @@ import { useQuadrants } from '@/entities/quadrant/model/useQuadrants';
 import { hexToRgba, toPointObject, ensureNorm01, boxNormToPolygonNorm } from '@/shared/lib/geometry';
 import { IS_LOCAL_ENV } from '@/shared/api/firebase';
 
-const emit = defineEmits(['open-calibrator-photo', 'open-settings']);
+const emit = defineEmits(['open-settings', 'open-calibrator']);
 
 const {
   daemonState,
@@ -604,7 +604,16 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <div class="flex items-center gap-3 self-end sm:self-center">
+      <div class="flex items-center gap-2.5 self-end sm:self-center flex-wrap">
+        <AppButton
+          size="sm"
+          variant="secondary"
+          icon="aspect_ratio"
+          @click="emit('open-calibrator')"
+          title="Calibrar cuadrantes y zonas de sillas"
+        >
+          <span>Calibrar Cuadrantes</span>
+        </AppButton>
         <StatusPill
           :active="isConnected"
           :text="statusLabel"

@@ -2,49 +2,18 @@
 import { ref } from 'vue';
 import MainLayout from '@/shared/ui/templates/MainLayout.vue';
 import AppIcon from '@/shared/ui/atoms/AppIcon.vue';
-import AppBadge from '@/shared/ui/atoms/AppBadge.vue';
 import AppHeader from '@/widgets/app-header/ui/AppHeader.vue';
 import LiveMonitorPage from '@/pages/live-monitor/ui/LiveMonitorPage.vue';
-import HistoryPage from '@/pages/history/ui/HistoryPage.vue';
 import AppointmentsCalendar from '@/widgets/appointments-calendar/ui/AppointmentsCalendar.vue';
-import PhotoDetailModal from '@/widgets/photo-detail-modal/ui/PhotoDetailModal.vue';
 import QuadrantCalibratorModal from '@/widgets/quadrant-calibrator-modal/ui/QuadrantCalibratorModal.vue';
 import SettingsModal from '@/widgets/settings-modal/ui/SettingsModal.vue';
-import { usePhotos } from '@/entities/photo/model/usePhotos';
 
-// Active Tab state: 'live' | 'history' | 'calendar'
+// Active Tab state: 'live' | 'calendar'
 const activeTab = ref('live');
 
 // Modals state
 const showSettings = ref(false);
 const showCalibrator = ref(false);
-const showPhotoDetail = ref(false);
-const selectedPhotoForDetail = ref(null);
-const calibratorPreselectedPhotoId = ref(null);
-
-// Shared photos state
-const {
-  allPhotos,
-  loading: photosLoading,
-  currentPage,
-  pageSize,
-  totalPhotos,
-  totalPages,
-  paginatedPhotos,
-  setPage,
-  setPageSize
-} = usePhotos();
-
-const openPhotoDetail = (photo) => {
-  selectedPhotoForDetail.value = photo;
-  showPhotoDetail.value = true;
-};
-
-const openCalibratorWithPhoto = (photo) => {
-  calibratorPreselectedPhotoId.value = photo?.id || null;
-  showPhotoDetail.value = false;
-  showCalibrator.value = true;
-};
 </script>
 
 <template>
@@ -53,7 +22,6 @@ const openCalibratorWithPhoto = (photo) => {
     <template #header>
       <AppHeader
         @open-settings="showSettings = true"
-        @open-calibrator="showCalibrator = true"
       />
     </template>
 
@@ -95,53 +63,23 @@ const openCalibratorWithPhoto = (photo) => {
           <AppIcon name="calendar_month" :size="18" :class="activeTab === 'calendar' ? 'text-blue-400' : ''" />
           <span>Calendario de Atenciones</span>
         </button>
-
-        <button
-          type="button"
-          role="tab"
-          :aria-selected="activeTab === 'history'"
-          @click="activeTab = 'history'"
-          :class="[
-            'flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs sm:text-sm font-semibold transition cursor-pointer',
-            activeTab === 'history'
-              ? 'bg-slate-800 text-white shadow-sm border border-slate-700'
-              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
-          ]"
-        >
-          <AppIcon name="photo_library" :size="18" :class="activeTab === 'history' ? 'text-blue-400' : ''" />
-          <span>Historial y Métricas</span>
-        </button>
       </nav>
     </template>
 
     <!-- Main Content: Active View -->
     <LiveMonitorPage
       v-if="activeTab === 'live'"
-      @open-calibrator-photo="openCalibratorWithPhoto"
       @open-settings="showSettings = true"
+      @open-calibrator="showCalibrator = true"
     />
 
     <AppointmentsCalendar
       v-else-if="activeTab === 'calendar'"
     />
 
-    <HistoryPage
-      v-else-if="activeTab === 'history'"
-      :photos="paginatedPhotos"
-      :loading="photosLoading"
-      :current-page="currentPage"
-      :page-size="pageSize"
-      :total-pages="totalPages"
-      :total-photos="totalPhotos"
-      @update:current-page="setPage"
-      @update:page-size="setPageSize"
-      @view-detail="openPhotoDetail"
-      @calibrate-photo="openCalibratorWithPhoto"
-    />
-
     <!-- Modals slot -->
     <template #modals>
-      <!-- Settings Modal -->
+      <!-- Settings Modal (Incluye pestaña Recursos y Cuotas) -->
       <SettingsModal
         :show="showSettings"
         @close="showSettings = false"
@@ -150,17 +88,7 @@ const openCalibratorWithPhoto = (photo) => {
       <!-- Quadrant Calibrator Modal -->
       <QuadrantCalibratorModal
         :show="showCalibrator"
-        :photos="allPhotos"
-        :preselected-photo-id="calibratorPreselectedPhotoId"
         @close="showCalibrator = false"
-      />
-
-      <!-- Photo Detail Modal -->
-      <PhotoDetailModal
-        :show="showPhotoDetail"
-        :photo="selectedPhotoForDetail"
-        @close="showPhotoDetail = false"
-        @calibrate-with-photo="openCalibratorWithPhoto"
       />
     </template>
   </MainLayout>

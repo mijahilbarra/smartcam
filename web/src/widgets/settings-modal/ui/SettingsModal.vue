@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from 'vue';
+import { ref, computed } from 'vue';
 import ModalTemplate from '@/shared/ui/templates/ModalTemplate.vue';
 import ModalHeader from '@/shared/ui/molecules/ModalHeader.vue';
 import AppIcon from '@/shared/ui/atoms/AppIcon.vue';
@@ -8,6 +8,7 @@ import AppBadge from '@/shared/ui/atoms/AppBadge.vue';
 import AppInput from '@/shared/ui/atoms/AppInput.vue';
 import AppTextarea from '@/shared/ui/atoms/AppTextarea.vue';
 import TimeRangeField from '@/shared/ui/molecules/TimeRangeField.vue';
+import CostMonitorWidget from '@/widgets/cost-monitor/ui/CostMonitorWidget.vue';
 import { useSettings } from '@/features/configure-settings/model/useSettings';
 import { checkIsWithinWorkingHours } from '@/shared/lib/date-utils';
 import { getEnvironmentInfo, switchFirestoreDatabase } from '@/shared/api/firebase';
@@ -22,6 +23,9 @@ defineProps({
 });
 
 const emit = defineEmits(['close']);
+
+// Tab interno en configuración: 'general' | 'resources'
+const activeSettingsTab = ref('general');
 
 const {
   prompt,
@@ -49,17 +53,55 @@ const onSave = async () => {
 </script>
 
 <template>
-  <ModalTemplate :show="show" max-width="max-w-2xl" @close="emit('close')">
+  <ModalTemplate
+    :show="show"
+    :max-width="activeSettingsTab === 'resources' ? 'max-w-5xl' : 'max-w-2xl'"
+    @close="emit('close')"
+  >
     <!-- Header -->
     <ModalHeader
-      title="Configuración del Capturador"
+      title="Configuración del Sistema"
       icon="settings"
-      tag="camera_catcher/prompt"
+      tag="camera_catcher/settings"
       @close="emit('close')"
     />
 
-    <!-- Body -->
-    <div class="p-5 sm:p-6 flex flex-col gap-5 overflow-y-auto max-h-[80vh]">
+    <!-- Settings Sub-Tabs Navigation -->
+    <div class="flex items-center gap-2 px-5 sm:px-6 pt-3 border-b border-slate-800 bg-slate-950/40 select-none">
+      <button
+        type="button"
+        @click="activeSettingsTab = 'general'"
+        :class="[
+          'flex items-center gap-2 pb-3 px-3 text-xs sm:text-sm font-semibold border-b-2 cursor-pointer transition',
+          activeSettingsTab === 'general'
+            ? 'border-blue-500 text-blue-400'
+            : 'border-transparent text-slate-400 hover:text-slate-200'
+        ]"
+      >
+        <AppIcon name="tune" :size="16" />
+        <span>General y Capturador</span>
+      </button>
+
+      <button
+        type="button"
+        @click="activeSettingsTab = 'resources'"
+        :class="[
+          'flex items-center gap-2 pb-3 px-3 text-xs sm:text-sm font-semibold border-b-2 cursor-pointer transition',
+          activeSettingsTab === 'resources'
+            ? 'border-blue-500 text-blue-400'
+            : 'border-transparent text-slate-400 hover:text-slate-200'
+        ]"
+      >
+        <AppIcon name="payments" :size="16" />
+        <span>Recursos</span>
+      </button>
+    </div>
+
+    <!-- Body: Tab General -->
+    <div
+      v-if="activeSettingsTab === 'general'"
+      class="p-5 sm:p-6 flex flex-col gap-5 overflow-y-auto max-h-[75vh]"
+    >
       <!-- Prompt -->
       <div class="flex flex-col gap-1.5">
         <label class="text-xs text-slate-300 font-semibold flex items-center gap-1.5">
@@ -177,12 +219,26 @@ const onSave = async () => {
       </div>
     </div>
 
-    <!-- Footer -->
+    <!-- Body: Tab Recursos -->
+    <div
+      v-else-if="activeSettingsTab === 'resources'"
+      class="p-5 sm:p-6 overflow-y-auto max-h-[75vh]"
+    >
+      <CostMonitorWidget />
+    </div>
+
+    <!-- Footer (Only in general tab or close action) -->
     <div class="p-4 sm:p-5 border-t border-slate-800 bg-slate-900/60 flex items-center justify-end gap-3">
       <AppButton variant="secondary" @click="emit('close')">
-        Cancelar
+        {{ activeSettingsTab === 'general' ? 'Cancelar' : 'Cerrar' }}
       </AppButton>
-      <AppButton variant="primary" icon="save" :loading="saving" @click="onSave">
+      <AppButton
+        v-if="activeSettingsTab === 'general'"
+        variant="primary"
+        icon="save"
+        :loading="saving"
+        @click="onSave"
+      >
         Guardar Configuración
       </AppButton>
     </div>
