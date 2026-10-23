@@ -22,15 +22,15 @@ services:
     environment:
       - NODE_ENV=development
       - IS_LOCAL_SIMULATOR=true
-      - USE_FIREBASE=false
+      - USE_FIREBASE=${USE_FIREBASE:-true}
       - MOCK_VIDEO_PATH=${MOCK_VIDEO_PATH:-data/recordings/mock_stream.mp4}
       - MOCK_VIDEO_LAST_MINUTES=${MOCK_VIDEO_LAST_MINUTES:-}
       - MOCK_VIDEO_START_SS=${MOCK_VIDEO_START_SS:-}
       - MOCK_VIDEO_DURATION_SS=${MOCK_VIDEO_DURATION_SS:-}
       - MOCK_VIDEO_LOOP=${MOCK_VIDEO_LOOP:-false}
-      - STREAM_FPS=${STREAM_FPS:-3.5}
+      - STREAM_FPS=${STREAM_FPS:-1}
       - STREAM_FAST_FORWARD=${STREAM_FAST_FORWARD:-true}
-      - REALTIME_INTERVAL_MS=${REALTIME_INTERVAL_MS:-285}
+      - REALTIME_INTERVAL_MS=${REALTIME_INTERVAL_MS:-10}
       - FIRESTORE_DATABASE_ID=test
       - FIREBASE_PROJECT_ID=skip-bigotes
       - STORAGE_BUCKET=skip-bigotes-test

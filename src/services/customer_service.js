@@ -582,8 +582,8 @@ export class CustomerService {
       appointmentCount: typeof customer.appointmentCount === "number" ? customer.appointmentCount : (customer.visitCount || 1),
       bestFaceScore: Number(customer.bestFaceScore || 0),
       thumbnailBase64: customer.thumbnailBase64 || null,
-      thumbnailPath: uploadedThumbnailPath || customer.thumbnailPath || "",
-      photos: Array.isArray(customer.photos) ? customer.photos : []
+      // Las fotos se almacenan en el appointment. El cliente solo conserva fotos si es staff
+      photos: isActuallyStaff ? (Array.isArray(customer.photos) ? customer.photos : []) : []
     };
 
     if (Array.isArray(customer.embeddings) && customer.embeddings.length > 0) {

@@ -112,11 +112,11 @@ export async function evaluateChairRotation({
   let consistentPeers = [];
 
   const isSameTrack = track?.trackId != null && session?.trackId != null && track.trackId === session.trackId;
-  if (isSameTrack) {
+  if (isSameTrack && session.status !== "esperando_liberacion" && !session.pendingTransition) {
     session.pendingRotationSplitEpoch = null;
   }
 
-  if (!isSameTrack && (session.status === "esperando_liberacion" || Boolean(session.pendingRotationSplitEpoch))) {
+  if (session.status === "esperando_liberacion" || Boolean(session.pendingRotationSplitEpoch)) {
     consistentPeers = session.rotationCandidates.filter(
       c => computeCosineSimilarity(newEmbedding, c.embedding) >= 0.45
     );
@@ -131,11 +131,11 @@ export async function evaluateChairRotation({
     const faceGapMs = now - (session.lastMatchedClientFaceEpoch || session.startedAtEpoch || now);
     const spanMs = (consistentPeers[consistentPeers.length - 1]?.timestamp || now) - (consistentPeers[0]?.timestamp || now);
     const rotateAfterFaceGap =
-      !isSameTrack && faceGapMs >= 35000 && consistentPeers.length >= 2 &&
+      faceGapMs >= 35000 && consistentPeers.length >= 2 &&
       (spanMs >= 5000 || consistentPeers.length >= 3) &&
       top3AvgSim < 0.48 && maxCompatibleSim < 0.48 && maxSim < 0.52;
     const rotateByPeerCluster =
-      !isSameTrack && consistentPeers.length >= 3 &&
+      consistentPeers.length >= 3 &&
       (spanMs >= 12000 || session.rotationCandidates.length >= 4) &&
       top3AvgSim < 0.47 && maxCompatibleSim < 0.48 && maxSim < 0.52;
     const isSyntheticOrthogonalTest = maxSim < 0.12 && consistentPeers.length >= 2;
@@ -418,7 +418,7 @@ export async function evaluateChairTimeouts({
             const endedAt = session.emptySinceEpoch || now;
             const durationMin = Math.max(1, Math.round((endedAt - session.startedAtEpoch) / 60000));
             logVerbal(`🔄 Rotación en ${session.chairName}: nuevo cliente detectado (similitud: ${maxSim.toFixed(3)} < 0.54). Finalizando atención previa de ${durationMin} min...`, "process");
-            const appt = await closeSession(session.trackId, {
+            const appt = await closeSession(session.chairId || session.trackId, {
               endedAtEpoch: endedAt,
               durationMinutes: durationMin
             });
@@ -746,8 +746,7 @@ export async function orchestrateChairTrack({
     }
 
     // REGLA FUNDAMENTAL DE NEGOCIO: CERO TIEMPOS ESTÁTICOS NI HARD CAPS DE DURACIÓN
-    // La atención dura lo que físicamente dura el servicio en la silla.
-    if (session && newEmbedding && session.embeddings?.length > 0 && !session.pendingTransition) {
+    if (session && newEmbedding && session.embeddings?.length > 0) {
       const rotResult = await evaluateChairRotation({
         session,
         track,

@@ -26,14 +26,7 @@ const props = defineProps({
 
 const emit = defineEmits(['close', 'confirm']);
 
-// 'appointment_only' | 'appointment_and_user'
-const deleteTarget = ref('appointment_only');
 
-watch(() => props.show, (newVal) => {
-  if (newVal) {
-    deleteTarget.value = 'appointment_only';
-  }
-});
 
 const formatTimeOnly = (isoString) => {
   if (!isoString) return '';
@@ -85,9 +78,7 @@ const onClose = () => {
 const onConfirm = () => {
   if (!props.loading && props.appointment) {
     emit('confirm', {
-      appointmentId: props.appointment.id,
-      deleteUser: deleteTarget.value === 'appointment_and_user' && hasAssociatedPerson.value,
-      personId: personId.value
+      appointmentId: props.appointment.id
     });
   }
 };
@@ -151,105 +142,12 @@ const onConfirm = () => {
         </div>
       </div>
 
-      <!-- Pregunta de Acción -->
-      <div class="space-y-3">
-        <div>
-          <h3 class="text-sm font-bold text-slate-100 flex items-center gap-2">
-            <AppIcon name="help_outline" :size="18" class="text-amber-400" />
-            ¿Deseas borrar también el usuario o solo la atención?
-          </h3>
-          <p class="text-xs text-slate-400 mt-0.5">
-            Elige el alcance de la eliminación antes de continuar.
-          </p>
-        </div>
-
-        <!-- Opciones Interactivas -->
-        <div class="grid grid-cols-1 gap-2.5">
-          <!-- Opción 1: Solo la atención -->
-          <button
-            type="button"
-            @click="deleteTarget = 'appointment_only'"
-            :class="[
-              'w-full text-left p-3.5 rounded-xl border transition-all cursor-pointer flex items-start gap-3',
-              deleteTarget === 'appointment_only'
-                ? 'bg-amber-500/10 border-amber-500/70 shadow-sm ring-1 ring-amber-500/40'
-                : 'bg-slate-800/50 border-slate-700/60 hover:bg-slate-800 hover:border-slate-600'
-            ]"
-          >
-            <!-- Radio Indicator -->
-            <div
-              :class="[
-                'w-4 h-4 rounded-full border mt-0.5 flex items-center justify-center flex-shrink-0 transition',
-                deleteTarget === 'appointment_only'
-                  ? 'border-amber-400 bg-amber-500'
-                  : 'border-slate-500 bg-slate-800'
-              ]"
-            >
-              <div
-                v-if="deleteTarget === 'appointment_only'"
-                class="w-1.5 h-1.5 rounded-full bg-slate-950"
-              ></div>
-            </div>
-
-            <!-- Contenido Opción 1 -->
-            <div class="min-w-0 flex-1">
-              <div class="flex items-center gap-2">
-                <AppIcon name="event_busy" :size="16" class="text-amber-400" />
-                <span class="text-xs font-bold text-white">Solo borrar la atención</span>
-              </div>
-              <p class="text-[11px] text-slate-300 mt-1 leading-relaxed">
-                Elimina únicamente el registro de esta cita del calendario. El perfil de <span class="font-semibold text-white">{{ clientDisplayName }}</span> y su historial biométrico se mantendrán intactos.
-              </p>
-            </div>
-          </button>
-
-          <!-- Opción 2: Atención y usuario -->
-          <button
-            type="button"
-            :disabled="!hasAssociatedPerson"
-            @click="hasAssociatedPerson && (deleteTarget = 'appointment_and_user')"
-            :class="[
-              'w-full text-left p-3.5 rounded-xl border transition-all flex items-start gap-3',
-              !hasAssociatedPerson
-                ? 'opacity-40 cursor-not-allowed bg-slate-800/30 border-slate-800'
-                : deleteTarget === 'appointment_and_user'
-                  ? 'bg-rose-500/15 border-rose-500/80 shadow-sm ring-1 ring-rose-500/40 cursor-pointer'
-                  : 'bg-slate-800/50 border-slate-700/60 hover:bg-slate-800 hover:border-slate-600 cursor-pointer'
-            ]"
-          >
-            <!-- Radio Indicator -->
-            <div
-              :class="[
-                'w-4 h-4 rounded-full border mt-0.5 flex items-center justify-center flex-shrink-0 transition',
-                deleteTarget === 'appointment_and_user'
-                  ? 'border-rose-400 bg-rose-500'
-                  : 'border-slate-500 bg-slate-800'
-              ]"
-            >
-              <div
-                v-if="deleteTarget === 'appointment_and_user'"
-                class="w-1.5 h-1.5 rounded-full bg-white"
-              ></div>
-            </div>
-
-            <!-- Contenido Opción 2 -->
-            <div class="min-w-0 flex-1">
-              <div class="flex items-center gap-2">
-                <AppIcon name="person_remove" :size="16" class="text-rose-400" />
-                <span class="text-xs font-bold text-white">Borrar atención y usuario</span>
-                <span
-                  v-if="!hasAssociatedPerson"
-                  class="text-[10px] text-slate-400 bg-slate-800 px-1.5 py-0.2 rounded border border-slate-700"
-                >
-                  Sin usuario vinculado
-                </span>
-              </div>
-              <p class="text-[11px] text-slate-300 mt-1 leading-relaxed">
-                Elimina esta cita del calendario <strong class="text-rose-300">Y borra permanentemente</strong> el perfil de <span class="font-semibold text-white">{{ clientDisplayName }}</span> del directorio biométrico (incluyendo sus fotos y vectores faciales).
-              </p>
-            </div>
-          </button>
-        </div>
+      <!-- Confirmación de Eliminación -->
+      <div class="p-3.5 rounded-xl bg-slate-800/60 border border-slate-700/60 flex items-start gap-3">
+        <AppIcon name="info" :size="20" class="text-blue-400 shrink-0 mt-0.5" />
+        <p class="text-xs text-slate-300 leading-relaxed">
+          Esta acción eliminará únicamente el registro de esta atención del calendario. El perfil del cliente <strong class="text-white">{{ clientDisplayName }}</strong> continuará existiendo en el sistema con su código e historial restante.
+        </p>
       </div>
     </div>
 
@@ -265,13 +163,13 @@ const onConfirm = () => {
       </AppButton>
 
       <AppButton
-        :variant="deleteTarget === 'appointment_and_user' ? 'danger' : 'danger'"
+        variant="danger"
         size="sm"
-        :icon="deleteTarget === 'appointment_and_user' ? 'person_remove' : 'delete'"
+        icon="delete"
         :loading="loading"
         @click="onConfirm"
       >
-        {{ deleteTarget === 'appointment_and_user' ? 'Borrar Atención y Usuario' : 'Borrar Solo Atención' }}
+        Eliminar Atención
       </AppButton>
     </div>
   </ModalTemplate>
