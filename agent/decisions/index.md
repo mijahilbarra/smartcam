@@ -43,9 +43,11 @@ flowchart TB
             STORAGE["📦 Firebase Storage<br/>(skip-bigotes.firebasestorage.app)"]
             GEMINI["🧠 Gemini Vision API<br/>(gemini-flash-latest)"]
             HOSTING["🌐 Firebase Hosting CDN<br/>(camera-catcher-bigotes.web.app)"]
+            GDRIVE["📁 Google Drive (5 TB)<br/>(IOT_Camera_Recordings/YYYY-MM-DD)"]
         end
 
         DAEMON -->|Sube imagen JPEG| STORAGE
+        DAEMON -->|Sube chunks 15m + auto-purga| GDRIVE
         DAEMON -->|Lee prompt dinámico| FS_CFG
         FS_CFG -->|Sincroniza horario laboral| REALTIME
         DAEMON -->|Envía Base64| GEMINI
@@ -134,6 +136,7 @@ sequenceDiagram
 | **Grabación & Simulación Offline** | FFmpeg Wallclock + Replay 1x + MOCK_VIDEO_PATH | Grabación sin colisiones P2P, inyección en tiempo real 1x en bucle infinito y pruebas offline sin internet | [19-offline-stream-recording-and-simulation.md](19-offline-stream-recording-and-simulation.md) |
 | **Gobernanza Biométrica sin Tiempos Estáticos** | MobileFaceNet (Umbral <0.60) + Presencia Real | Cero límites estáticos de 60m o timers ciegos; ciclo de vida gobernado exclusivamente por identidad facial y escena física | [20-zero-static-time-rules-and-biometric-lifecycle.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/20-zero-static-time-rules-and-biometric-lifecycle.md) |
 | **Configuración Canónica & Unificación Determinista** | `pipeline_config.json` + Reloj Virtual + Pipeline 2 Pasos | Centralización de umbrales, paridad 100% entre Vivo/Simulador/Dos Pasos y depuración en 5 segundos | [21-canonical-pipeline-config-and-deterministic-unification.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/21-canonical-pipeline-config-and-deterministic-unification.md) |
+| **Grabación Continua & Respaldo Masivo** | Google Drive API v3 + Rolling Chunks + Auto-Purga | Grabación ininterrumpida en chunks de 15m, subida en segundo plano a Drive (5 TB) y purga local inmediata | [22-gdrive-stream-recording-and-storage.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/22-gdrive-stream-recording-and-storage.md) |
 
 
 ---

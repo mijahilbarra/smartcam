@@ -10,6 +10,7 @@
 import { computeCosineSimilarity, extractFaceEmbedding } from "../../face_recognizer.js";
 import { matchStaffFace } from "../people_service.js";
 import { hasTwoEyesVisible } from "../face_quality_service.js";
+import { isStandingPosture } from "../../core/geometry.js";
 
 /**
  * Determina si una pista (track) de YOLO se encuentra formalmente en la silla asignada
@@ -195,6 +196,11 @@ export async function initChairSession({
   logVerbal = console.log,
   addFaceSample
 }) {
+  if (track.box && isStandingPosture(track.box) && !track.isFormallySeated) {
+    logVerbal(`⚠️ Persona de pie detectada en ${chairName}. No se abre sesión de cliente (operador/staff).`, "process");
+    return null;
+  }
+
   const tempClientId = `person_${now}_${track.trackId}`;
   const visitId = `appt_${now}_${track.trackId}`;
   const rawEnteredAt = track.chairEnteredAt && Math.abs(now - track.chairEnteredAt) <= 120000
@@ -270,15 +276,23 @@ export async function initChairSession({
         }
       }
     } else if (activeFace?.thumbnailBase64) {
-      initialPhotos.push({
-        thumbnailBase64: activeFace.thumbnailBase64,
-        sharpnessScore: activeFace.sharpnessScore || 0,
-        capturedAt: new Date(now).toISOString(),
-        pose: activeFace.pose || 'frontal',
-        poseLabel: activeFace.poseLabel || 'Frontal'
-      });
-      if (activeFace.embedding) {
-        initialEmbeddings.push(activeFace.embedding);
+      const knownProfiles = customerService?.getComparisonProfiles?.() || [];
+      const staffCheck = activeFace.embedding
+        ? matchStaffFace(activeFace.embedding, knownProfiles, 0.40, { pose: activeFace.pose })
+        : { isStaffMatch: false, maxStaffSim: 0 };
+      if (!staffCheck.isStaffMatch && staffCheck.maxStaffSim < 0.40) {
+        initialPhotos.push({
+          thumbnailBase64: activeFace.thumbnailBase64,
+          sharpnessScore: activeFace.sharpnessScore || 0,
+          capturedAt: new Date(now).toISOString(),
+          pose: activeFace.pose || 'frontal',
+          poseLabel: activeFace.poseLabel || 'Frontal'
+        });
+        if (activeFace.embedding) {
+          initialEmbeddings.push(activeFace.embedding);
+        }
+      } else {
+        logVerbal(`🛡️ Rostro de activeFace sospechoso de staff (sim: ${staffCheck.maxStaffSim.toFixed(3)}) excluido de la galería inicial del cliente.`, "process");
       }
     }
     const provisionalCustomer = {
@@ -477,12 +491,14 @@ export async function evaluateChairTimeouts({
  * @param {Object} params
  * @returns {{ isStaff: boolean, isSessionProtected?: boolean }}
  */
-export function checkStaffInterferenceInChair({ track, activeFace, session, customerService, staffThreshold = 0.50 }) {
+export function checkStaffInterferenceInChair({ track, activeFace, session, customerService, staffThreshold = 0.46 }) {
+  const isStanding = track?.box ? isStandingPosture(track.box) : false;
+
   if (activeFace?.embedding) {
     const knownProfiles = customerService?.getComparisonProfiles?.() || [];
-    const staffThresh = staffThreshold ?? 0.50;
+    const staffThresh = staffThreshold ?? 0.46;
     const staffCheck = matchStaffFace(activeFace.embedding, knownProfiles, staffThresh, { pose: activeFace.pose });
-    if (staffCheck.isStaffMatch || staffCheck.maxStaffSim >= staffThresh) {
+    if (staffCheck.isStaffMatch || staffCheck.maxStaffSim >= staffThresh || (isStanding && !track.isFormallySeated)) {
       if (session) {
         if (track.bestFace === activeFace) {
           track.bestFace = null;
@@ -496,8 +512,14 @@ export function checkStaffInterferenceInChair({ track, activeFace, session, cust
     }
   }
 
+  if (isStanding && !track.isFormallySeated) {
+    track.role = "staff";
+    track.isStaffHint = true;
+    return { isStaff: true, isSessionProtected: Boolean(session) };
+  }
+
   if (track.identity?.isStaff || track.isStaffHint || track.role === "staff") {
-    return { isStaff: true, isSessionProtected: false };
+    return { isStaff: true, isSessionProtected: Boolean(session) };
   }
 
   return { isStaff: false };

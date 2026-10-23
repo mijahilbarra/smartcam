@@ -44,6 +44,7 @@ import { hasTwoEyesVisible } from "../src/services/face_quality_service.js";
 import { mergePhotosAndEmbeddings, deduplicateSessionPhotos, resampleSessionEmbeddingsFromDB } from "../src/services/pipeline/gallery_curator.js";
 import { computeSetToSetMetrics, computeCohortSNorm, computeContrastRatio } from "../src/services/pipeline/biometrics_math.js";
 import { isCapeBarrierSeparating } from "../src/services/pipeline/closure_rules.js";
+import { evaluateCrop7Stages } from "../src/services/pipeline/crop_filter_engine.js";
 
 
 const PROJECT_ROOT = path.resolve(process.cwd());
@@ -543,119 +544,49 @@ if (uncomputedFaceRows.length > 0) {
 }
 
 for (const row of rows) {
-  let isStanding = false;
-  if (row.box_json) {
-    try {
-      const box = typeof row.box_json === "string" ? JSON.parse(row.box_json) : row.box_json;
-      if (Array.isArray(box) && box.length >= 4) {
-        isStanding = isStandingPosture(box);
-      }
-    } catch (_) {}
+  const evalResult = evaluateCrop7Stages(row, {
+    staffProfiles,
+    staffThreshold,
+    minSharpness,
+    validPoses
+  });
+
+  if (evalResult.stage === 1) {
+    continue;
   }
 
-  let vector = row.embedding_blob ? blobToVector(row.embedding_blob) : null;
-  let sharpness = row.sharpness_score || 0;
-  let pose = row.pose || "unknown";
-  let skinRatio = row.skin_ratio || 0;
-  let warmRatio = row.warm_ratio || 0;
-  let faceDetected = row.face_detected === 1;
-  let faceCropBlob = row.face_crop_blob;
-
-  // Etapa 2: Detección facial
-  if (!faceDetected || !vector || vector.length !== 512) {
+  if (evalResult.stage === 2) {
     continue;
   }
   countStage2FaceDetected++;
   if (row.track_id) stage2Tracks.add(row.track_id);
 
-  // Etapa 3: Filtro Anti-Objetos y Textura Humana / Piel
-  const isHuman = (skinRatio >= (PIPELINE_CONFIG.faceDetection.skinRatioMin ?? 0.18) || warmRatio >= (PIPELINE_CONFIG.faceDetection.warmRatioMin ?? 0.22));
-  if (!isHuman) {
+  if (evalResult.stage === 3) {
     continue;
   }
   countStage3AntiObjects++;
   if (row.track_id) stage3Tracks.add(row.track_id);
 
-  // Etapa 4: Nitidez mínima (score >= minSharpness)
-  if (sharpness < minSharpness) {
+  if (evalResult.stage === 4) {
     continue;
   }
   countStage4Sharpness++;
   if (row.track_id) stage4Tracks.add(row.track_id);
 
-  // Evaluación anatómica de 2 ojos y landmarks
-  let landmarks = null;
-  if (row.landmarks_json) {
-    try {
-      landmarks = typeof row.landmarks_json === "string" ? JSON.parse(row.landmarks_json) : row.landmarks_json;
-    } catch (_) {}
-  }
-
-  let faceBoxNorm = null;
-  if (row.face_box_json) {
-    try {
-      const parsed = typeof row.face_box_json === "string" ? JSON.parse(row.face_box_json) : row.face_box_json;
-      if (Array.isArray(parsed) && parsed.length === 4 && parsed.every(n => typeof n === "number" && n >= 0 && n <= 1.5)) {
-        faceBoxNorm = parsed;
-      }
-    } catch (_) {}
-  }
-
-  const hasTwoEyes = hasTwoEyesVisible(landmarks, faceBoxNorm, pose);
-
-  // Si hasTwoEyes es true y la pose guardada era profile_right o profile_left, recalificarla a semi_right o semi_left para que no sea descartada en la Etapa 5
-  if (hasTwoEyes) {
-    if (pose === "profile_right") {
-      pose = "semi_right";
-      row.pose = "semi_right";
-      row.pose_label = "Semi-perfil Derecho";
-    } else if (pose === "profile_left") {
-      pose = "semi_left";
-      row.pose = "semi_left";
-      row.pose_label = "Semi-perfil Izquierdo";
-    }
-  }
-
-  // Filtro de Anclaje Espacial Facial en la Silla (Exclusión de transeúntes en la puerta/calle)
-  // En un video 720p, el cabezal de la silla empieza en y >= 346px (yminNorm = 0.48).
-  // Se excluyen transeúntes de pie en la puerta/calle de fondo (boxTop < 260 con aspecto erguido H/W > 1.6).
-  // Los clientes sentados en la silla tienen aspecto compacto (H/W <= 1.0) o faceCenterY >= 340.
-  if (row.box_json) {
-    try {
-      const b = typeof row.box_json === "string" ? JSON.parse(row.box_json) : row.box_json;
-      if (Array.isArray(b) && b.length >= 4) {
-        const boxTop = b[1];
-        const boxH = b[3] - b[1];
-        const boxW = b[2] - b[0];
-        if (boxTop < 260 && (boxH / Math.max(1, boxW)) > 1.6) {
-          continue; // Transeúnte de pie en la puerta / fondo exterior
-        }
-      }
-    } catch (_) {}
-  }
-
-  // Etapa 5: Poses anatómicas válidas (exclusión de orejas y nucas laterales; perfiles detectados preservados)
-  const isProfile = (pose === "profile_left" || pose === "profile_right");
-  const isValidPose = validPoses.includes(pose) || isProfile;
-  const poseMinSharpness = (pose === "tilted_down_left" || pose === "tilted_down_right") ? 35 : minSharpness;
-  if (!isValidPose || sharpness < poseMinSharpness) {
+  if (evalResult.stage === 5) {
     continue;
   }
   countStage5ValidPose++;
   if (row.track_id) stage5Tracks.add(row.track_id);
 
-  // Etapa 6: Clasificación Anatómica de Rostro (Erguidas 1x2 vs Chatas/Reclinadas)
-  const UPRIGHT_POSES = ['frontal', 'semi_left', 'semi_right'];
-  if (UPRIGHT_POSES.includes(pose)) {
+  if (evalResult.faceData?.isUpright) {
     countStage6Upright++;
   } else {
     countStage6Reclined++;
   }
   if (row.track_id) stage6Tracks.add(row.track_id);
 
-  // Etapa 7: Filtro de exclusión de barbero (Geometría de pie + matchStaffFace)
-  const staffCheck = matchStaffFace(vector, staffProfiles, staffThreshold, { pose });
-  if (isStanding || staffCheck.isStaffMatch) {
+  if (evalResult.isStanding || evalResult.isStaff) {
     countStage7BarberHits++;
     continue;
   }
@@ -668,16 +599,16 @@ for (const row of rows) {
     timestampEpoch: row.timestamp_epoch,
     chairId: row.chair_id,
     trackId: row.track_id,
-    sharpnessScore: sharpness,
-    pose,
-    poseLabel: row.pose_label || pose,
-    vector,
-    yawScore: row.yaw_score ?? 0,
-    pitchScore: row.pitch_score ?? 0,
-    frontalityScore: row.frontality_score ?? 0,
-    landmarks,
-    hasTwoEyes,
-    thumbnailBase64: faceCropBlob ? `data:image/jpeg;base64,${faceCropBlob.toString("base64")}` : null
+    sharpnessScore: evalResult.faceData.sharpnessScore,
+    pose: evalResult.faceData.pose,
+    poseLabel: evalResult.faceData.poseLabel,
+    vector: evalResult.faceData.vector,
+    yawScore: evalResult.faceData.yawScore,
+    pitchScore: evalResult.faceData.pitchScore,
+    frontalityScore: evalResult.faceData.frontalityScore,
+    landmarks: evalResult.faceData.landmarks,
+    hasTwoEyes: evalResult.faceData.hasTwoEyes,
+    thumbnailBase64: evalResult.faceData.thumbnailBase64
   });
 }
 
