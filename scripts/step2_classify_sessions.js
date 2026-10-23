@@ -996,14 +996,15 @@ for (let i = 0; i < numSolid; i++) {
 
     if (!isHomologousDifferentPerson) {
       // 1. Continuidad real del mismo cliente en la misma silla:
-      // Respaldada exclusivamente por unicidad biométrica frente a cohorte (S-Norm >= 2.5 Y contrastRatio >= 1.35)
-      // NUNCA por tiempo ciego (NO a heurísticas basadas en segundos).
+      // Respaldada exclusivamente por certeza biométrica frente a cohorte (S-Norm >= 2.5 con compatibilidad)
+      // CERO heurísticas temporales: la decisión es puramente matemática y biológica.
       if (apptA.chairId === apptB.chairId && !isOverlap) {
         const isRepIncompatible = (repSim !== null && repSim < 0.35 && maxBiometric < 0.65);
         if (!isRepIncompatible) {
-          if (sNorm >= 2.5 && contrastRatio >= 1.35 && (metrics.maxSim >= 0.46 || enrichedMetrics.maxSim >= 0.46 || sqliteMaxSim >= 0.46)) {
+          const isBiometricallyCertain = sNorm >= 2.5 && (contrastRatio >= 1.35 || maxBiometric >= 0.60);
+          if (isBiometricallyCertain && (metrics.maxSim >= 0.46 || enrichedMetrics.maxSim >= 0.46 || sqliteMaxSim >= 0.46)) {
             isSamePerson = true;
-            mergeReason = `sNormContinuity (sNorm=${sNorm.toFixed(2)}, contrast=${contrastRatio.toFixed(2)})`;
+            mergeReason = `sNormContinuity (sNorm=${sNorm.toFixed(2)}, max=${maxBiometric.toFixed(3)})`;
           }
         }
       }

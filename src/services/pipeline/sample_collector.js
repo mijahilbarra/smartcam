@@ -14,6 +14,7 @@ import { computeCosineSimilarity } from "../../face_recognizer.js";
 import { matchStaffFace } from "../people_service.js";
 import { uploadFaceCrop } from "../../infrastructure/firebase/storage_client.js";
 import { hasTwoEyesVisible } from "../face_quality_service.js";
+import { evaluateCrop7Stages } from "./crop_filter_engine.js";
 
 /**
  * Procesa e ingesta una muestra facial dentro del buffer de la sesión activa
@@ -43,21 +44,28 @@ export async function ingestFaceSample({
   const trackId = session.trackId;
   const { faceBuffer, sharpnessScore = 0, embedding, thumbnailBase64, isStaff, pose, poseLabel, skipCooldown } = sample;
 
-  // 1. Exclusión estricta del barbero/staff:
-  if (isStaff) {
-    console.log(`[Appointment] Rostro en ${session.chairName} pertenece a Staff. Excluido de atención.`);
-    return false;
-  }
+  // 1. Filtrado canónico y exclusión de Staff a través del motor unificado de 7 etapas:
+  const incomingPose = pose || 'frontal';
+  const incomingPoseLabel = poseLabel || (incomingPose === 'frontal' ? 'Frontal' : incomingPose);
+  const knownProfiles = customerService?.getComparisonProfiles?.() || [];
+  const staffThresh = staffThreshold ?? 0.46;
+  const evalResult = evaluateCrop7Stages({
+    ...sample,
+    pose: incomingPose,
+    poseLabel: incomingPoseLabel,
+    box: sample.box || session.lastBox,
+    vector: sample.embedding || sample.vector,
+    faceDetected: true
+  }, {
+    staffProfiles: knownProfiles,
+    staffThreshold: staffThresh
+  });
 
-  // Exclusión en caliente si es confirmación indudable de Staff
-  if (embedding) {
-    const knownProfiles = customerService?.getComparisonProfiles?.() || [];
-    const staffThresh = staffThreshold ?? 0.48;
-    const staffCheck = matchStaffFace(embedding, knownProfiles, staffThresh, { pose: sample.pose });
-    if (staffCheck.isStaffMatch || staffCheck.maxStaffSim >= staffThresh) {
-      console.log(`[Appointment] Rostro en ${session.chairName} coincide con Barbero/Staff (Sim: ${staffCheck.maxStaffSim.toFixed(3)}, SamePoseSim: ${staffCheck.maxSamePoseSim?.toFixed(3) || 0}). Excluido de atención.`);
-      return false;
+  if (!evalResult.passed) {
+    if (evalResult.isStaff) {
+      console.log(`[Appointment] Rostro en ${session.chairName} pertenece a Staff (${evalResult.reason}). Excluido de atención.`);
     }
+    return false;
   }
 
   // 2. Resolver miniatura en base64 (si solo viene el buffer, convertir con Sharp)
@@ -79,8 +87,6 @@ export async function ingestFaceSample({
     return false;
   }
 
-  const incomingPose = pose || 'frontal';
-  const incomingPoseLabel = poseLabel || (incomingPose === 'frontal' ? 'Frontal' : incomingPose);
   const isCleanFrontalOrSemi = ['frontal', 'semi_left', 'semi_right'].includes(incomingPose);
 
   const hasTwoEyes = sample.hasTwoEyes !== undefined

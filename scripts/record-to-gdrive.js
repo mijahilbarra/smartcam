@@ -32,7 +32,8 @@ function getArg(flag, defaultValue) {
 const durationArg = getArg("--duration", getArg("-d", null));
 const durationSec = durationArg !== null ? Number(durationArg) : null;
 const segmentTimeSec = Number(getArg("--segment-time", getArg("-s", "900")));
-const customRtsp = getArg("--rtsp-url", getArg("-r", process.env.RTSP_STREAM_URL || "rtsp://127.0.0.1:8554/barberia/sub"));
+const defaultStream = process.env.RECORDER_STREAM_URL || "http://127.0.0.1:8085/api/stream";
+const customStream = getArg("--stream-url", getArg("--rtsp-url", getArg("-r", defaultStream)));
 const outDir = path.resolve(getArg("--output", getArg("-o", path.join(PROJECT_ROOT, "data", "recordings"))));
 
 console.log("\x1b[36m%s\x1b[0m", "================================================================");
@@ -40,7 +41,7 @@ console.log("\x1b[36m%s\x1b[0m", " 🎥 IOT Camera Catcher - Grabador Continuo a
 console.log("\x1b[36m%s\x1b[0m", "================================================================");
 console.log(`⏱️  Duración de cada segmento: ${segmentTimeSec}s (${(segmentTimeSec / 60).toFixed(1)} min)`);
 console.log(`⏳ Duración total sesión: ${durationSec ? `${durationSec}s` : "Indefinida (hasta Ctrl+C)"}`);
-console.log(`📡 Origen RTSP: ${customRtsp}`);
+console.log(`📡 Origen de Stream: ${customStream}`);
 console.log(`📁 Directorio local temporal: ${outDir}`);
 
 const gdriveClient = new GoogleDriveClient();
@@ -63,7 +64,7 @@ const recorder = new StreamRecorder({
   segmentDurationSec: segmentTimeSec,
   outputBaseDir: outDir,
   gdriveClient,
-  rtspUrl: customRtsp,
+  streamUrl: customStream,
   uploadIntervalMs: 3000,
   settleTimeMs: 10000
 });

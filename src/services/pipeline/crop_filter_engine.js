@@ -45,7 +45,7 @@ function normalizeCropInput(cropInput) {
   let poseLabel = cropInput.poseLabel || cropInput.pose_label || cropInput.quality?.poseLabel || pose;
   let skinRatio = Number(cropInput.skinRatio ?? cropInput.skin_ratio ?? cropInput.quality?.skinRatio ?? 0);
   let warmRatio = Number(cropInput.warmRatio ?? cropInput.warm_ratio ?? cropInput.quality?.warmRatio ?? 0);
-  let faceDetected = Boolean(cropInput.faceDetected ?? (cropInput.face_detected === 1) ?? cropInput.quality?.isValid);
+  let faceDetected = Boolean(cropInput.faceDetected ?? (cropInput.face_detected === 1) ?? cropInput.quality?.isValid ?? (cropInput.faceBuffer || cropInput.thumbnailBase64 || cropInput.embedding || cropInput.vector));
 
   let landmarks = null;
   if (cropInput.landmarks) {
@@ -134,8 +134,8 @@ export function evaluateCrop7Stages(cropInput, options = {}) {
     }
   }
 
-  // Etapa 2: Detección facial y Vector 512D
-  if (!norm.faceDetected || !norm.vector || norm.vector.length !== 512) {
+  // Etapa 2: Detección facial y Vector 512D (si se proporciona)
+  if (!norm.faceDetected || (norm.vector && norm.vector.length !== 512)) {
     return {
       passed: false,
       stage: 2,
@@ -149,7 +149,8 @@ export function evaluateCrop7Stages(cropInput, options = {}) {
   // Etapa 3: Textura Humana y Filtro Anti-Objetos (YCbCr piel)
   const skinRatioMin = PIPELINE_CONFIG.faceDetection?.skinRatioMin ?? 0.18;
   const warmRatioMin = PIPELINE_CONFIG.faceDetection?.warmRatioMin ?? 0.22;
-  const isHuman = (norm.skinRatio >= skinRatioMin || norm.warmRatio >= warmRatioMin);
+  const hasSkinData = (norm.raw.skinRatio !== undefined || norm.raw.skin_ratio !== undefined || norm.raw.warmRatio !== undefined || norm.raw.warm_ratio !== undefined || norm.raw.quality?.skinRatio !== undefined);
+  const isHuman = !hasSkinData || (norm.skinRatio >= skinRatioMin || norm.warmRatio >= warmRatioMin);
   if (!isHuman) {
     return {
       passed: false,
@@ -176,7 +177,9 @@ export function evaluateCrop7Stages(cropInput, options = {}) {
   // Etapa 5: Evaluación Anatómica de 2 Ojos y Poses Válidas
   let pose = norm.pose;
   let poseLabel = norm.poseLabel;
-  const hasTwoEyes = hasTwoEyesVisible(norm.landmarks, norm.faceBoxNorm, pose);
+  const hasTwoEyes = (norm.landmarks || norm.faceBoxNorm)
+    ? hasTwoEyesVisible(norm.landmarks, norm.faceBoxNorm, pose)
+    : (cropInput.hasTwoEyes !== undefined ? Boolean(cropInput.hasTwoEyes) : true);
 
   // Recalificación anatómica: si tiene 2 ojos visibles en profile, es semi-perfil
   if (hasTwoEyes) {
@@ -189,8 +192,7 @@ export function evaluateCrop7Stages(cropInput, options = {}) {
     }
   }
 
-  const isProfile = (pose === "profile_left" || pose === "profile_right");
-  const isValidPose = validPoses.includes(pose) || isProfile;
+  const isValidPose = validPoses.includes(pose) || pose.startsWith('angle_');
   const poseMinSharpness = (pose === "tilted_down_left" || pose === "tilted_down_right") ? 35 : minSharpness;
 
   if (!isValidPose || norm.sharpness < poseMinSharpness) {
@@ -209,8 +211,12 @@ export function evaluateCrop7Stages(cropInput, options = {}) {
   const isUpright = UPRIGHT_POSES.includes(pose);
 
   // Etapa 7: Exclusión de Barbero / Staff (Postura de pie + matchStaffFace)
-  const staffCheck = matchStaffFace(norm.vector, staffProfiles, staffThreshold, { pose });
-  const isStaffMatch = staffCheck.isStaffMatch || staffCheck.maxStaffSim >= staffThreshold;
+  const isExplicitStaff = norm.raw.isStaff === true;
+  let staffCheck = { isStaffMatch: isExplicitStaff, maxStaffSim: isExplicitStaff ? 1.0 : 0 };
+  if (!isExplicitStaff && norm.vector && norm.vector.length === 512 && staffProfiles.length > 0) {
+    staffCheck = matchStaffFace(norm.vector, staffProfiles, staffThreshold, { pose });
+  }
+  const isStaffMatch = isExplicitStaff || staffCheck.isStaffMatch || staffCheck.maxStaffSim >= staffThreshold;
 
   // REGLA FÍSICA INQUEBRANTABLE:
   // Si la persona está de pie junto a la silla (isStanding) O coincide facialmente con el staff,

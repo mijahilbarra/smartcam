@@ -306,7 +306,78 @@ assert.strictEqual(typeof stats.failedCount, "number");
 assert.strictEqual(typeof stats.pendingCount, "number");
 assert.strictEqual(stats.isRecording, false);
 
-// Limpiar directorio temporal de pruebas
+console.log("-> Métricas en tiempo real y estadísticas del grabador validadas.");
+
+// =========================================================================
+// 7. StreamRecorder: Flujo HTTP Unificado, Argumentos FFmpeg y Watchdog de Inactividad
+// =========================================================================
+console.log("\n[7] Probando StreamRecorder: Flujo HTTP Unificado, FFmpeg args y Watchdog...");
+
+// 7.1 Argumentos FFmpeg para HTTP MJPEG unificado
+const httpRecorder = new StreamRecorder({
+  streamUrl: "http://127.0.0.1:8085/api/stream",
+  segmentDurationSec: 900
+});
+const httpArgs = httpRecorder.getFfmpegArgs("out_%Y%m%d.mp4");
+assert.ok(httpArgs.includes("-f") && httpArgs.includes("mjpeg"), "Debe especificar formato MJPEG para HTTP");
+assert.ok(httpArgs.includes("libx264"), "Debe codificar en libx264 para encapsular en MP4");
+assert.ok(httpArgs.includes("ultrafast"), "Debe usar preset ultrafast para mínimo consumo CPU");
+assert.ok(httpArgs.includes("-crf") && httpArgs.includes("28"), "CRF debe ser 28");
+assert.ok(httpArgs.includes("yuv420p"), "Formato de pixel debe ser yuv420p");
+assert.ok(httpArgs.includes("movflags=+faststart"), "Debe incluir movflags=+faststart para moov al inicio");
+
+// 7.2 Argumentos FFmpeg para RTSP directo (fallback)
+const rtspRecorder = new StreamRecorder({
+  rtspUrl: "rtsp://127.0.0.1:8554/barberia/sub",
+  segmentDurationSec: 900
+});
+const rtspArgs = rtspRecorder.getFfmpegArgs("out_%Y%m%d.mp4");
+assert.ok(rtspArgs.includes("-rtsp_transport") && rtspArgs.includes("tcp"), "Debe especificar RTSP sobre TCP");
+assert.ok(rtspArgs.includes("copy"), "RTSP directo debe usar copy sin transcodificar");
+assert.ok(rtspArgs.includes("-an"), "Debe descartar audio");
+assert.ok(rtspArgs.includes("movflags=+faststart"), "Debe incluir movflags=+faststart");
+
+// 7.3 Watchdog: Detección de estancamiento en segmento activo
+const watchdogDir = fs.mkdtempSync(path.join(os.tmpdir(), "watchdog_test_"));
+const watchdogDayDir = path.join(watchdogDir, "2026-10-23");
+fs.mkdirSync(watchdogDayDir, { recursive: true });
+const activeFile = path.join(watchdogDayDir, "chunk_active.mp4");
+fs.writeFileSync(activeFile, Buffer.alloc(1024, 0x55));
+
+let killedSignals = [];
+const mockProc = {
+  kill: (sig) => {
+    killedSignals.push(sig);
+  }
+};
+
+const watchdogRecorder = new StreamRecorder({
+  outputBaseDir: watchdogDir,
+  watchdogTimeoutMs: 50, // 50ms para test rápido
+  watchdogIntervalMs: 10
+});
+
+watchdogRecorder.isRecording = true;
+watchdogRecorder.ffmpegProc = mockProc;
+watchdogRecorder.activeChunk = activeFile;
+watchdogRecorder.lastBytesProgressAt = Date.now() - 100; // Simular 100ms sin actividad (>50ms)
+watchdogRecorder.lastMonitoredPath = activeFile;
+watchdogRecorder.lastMonitoredSize = 1024; // Mismo tamaño
+
+watchdogRecorder.checkWatchdog();
+assert.ok(killedSignals.includes("SIGINT"), "El watchdog DEBE enviar SIGINT al subproceso colgado");
+
+// 7.4 Watchdog: Si el archivo crece, no dispara reinicio
+killedSignals = [];
+fs.appendFileSync(activeFile, Buffer.alloc(512, 0x66)); // Aumenta tamaño a 1536 bytes
+watchdogRecorder.checkWatchdog();
+assert.strictEqual(killedSignals.length, 0, "No debe matar el proceso si el archivo creció");
+assert.strictEqual(watchdogRecorder.lastMonitoredSize, 1536);
+
+// Limpiar directorio watchdog
+fs.rmSync(watchdogDir, { recursive: true, force: true });
 fs.rmSync(tmpDir, { recursive: true, force: true });
+
+console.log("-> Argumentos FFmpeg HTTP/RTSP y watchdog de inactividad validados exitosamente.");
 
 console.log("\n🎉 ¡Todas las pruebas de Google Drive Client y Stream Recorder pasaron al 100%!");
