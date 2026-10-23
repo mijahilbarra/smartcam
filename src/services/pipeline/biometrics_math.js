@@ -230,3 +230,125 @@ export function computeSubsetCohesion(vecs = []) {
   }
   return validCount > 0 ? sumBest / validCount : 0;
 }
+
+/**
+ * Calcula el ratio de contraste entre la similitud del par y la similitud del competidor más cercano en la cohorte
+ * @param {number} pairwiseSim - Similitud del par analizado
+ * @param {number} maxCohortSim - Máxima similitud con cualquier otro cliente/sesión de la cohorte
+ * @param {number} [epsilon=1e-4]
+ * @returns {number}
+ */
+export function computeContrastRatio(pairwiseSim, maxCohortSim, epsilon = 1e-4) {
+  return pairwiseSim / (Math.max(0, maxCohortSim) + epsilon);
+}
+
+/**
+ * Normalización de Cohorte Adaptativa (Adaptive S-Norm) y Ratio de Contraste Biocéntrico.
+ *
+ * Evalúa si la similitud entre dos sesiones A y B se desvía de forma estadísticamente
+ * significativa (Z-score) por encima del fondo de similitudes de la jornada (cohort background),
+ * excluyendo sesiones temporalmente contiguas en la misma silla (gap <= 45 min).
+ *
+ * @param {number} pairwiseSim - Similitud calculada entre sesión A y B
+ * @param {number} idxA - Índice de la sesión A
+ * @param {number} idxB - Índice de la sesión B
+ * @param {Array<Object>} sessions - Lista de sesiones de la jornada (ej. solidAppts)
+ * @param {Object} [options={}] - Opciones adicionales (reps, getSimilarity, maxGapMs)
+ * @returns {{ sNorm: number, contrastRatio: number, muA: number, sigmaA: number, muB: number, sigmaB: number, maxOtherSim: number }}
+ */
+export function computeCohortSNorm(pairwiseSim, idxA, idxB, sessions = [], options = {}) {
+  if (!Array.isArray(sessions) || sessions.length === 0) {
+    return {
+      sNorm: 0,
+      contrastRatio: 0,
+      muA: 0,
+      sigmaA: 0,
+      muB: 0,
+      sigmaB: 0,
+      maxOtherSim: 0
+    };
+  }
+
+  const reps = options.reps || sessions.map(s => s?.representativeFace || null);
+  const getRepSim = options.getSimilarity || ((i, k) => {
+    const repI = reps[i]?.vector || (isVector(reps[i]) ? reps[i] : null);
+    const repK = reps[k]?.vector || (isVector(reps[k]) ? reps[k] : null);
+    if (repI && repK) {
+      return computeCosineSimilarity(repI, repK);
+    }
+    const embI = sessions[i]?.embeddings?.[0]?.vector || sessions[i]?.embeddings?.[0];
+    const embK = sessions[k]?.embeddings?.[0]?.vector || sessions[k]?.embeddings?.[0];
+    if (embI && embK) {
+      return computeCosineSimilarity(embI, embK);
+    }
+    return 0;
+  });
+
+  const isExcludedFromCohort = (targetIdx, otherIdx) => {
+    if (otherIdx === idxA || otherIdx === idxB) return true;
+    const sTarget = sessions[targetIdx];
+    const sOther = sessions[otherIdx];
+    if (!sTarget || !sOther) return false;
+
+    // Excluir sesiones en la misma silla con gap <= 45m
+    if (sTarget.chairId && sOther.chairId && sTarget.chairId === sOther.chairId) {
+      const startT = sTarget.startedAtEpoch || (sTarget.startedAt ? new Date(sTarget.startedAt).getTime() : 0);
+      const endT = sTarget.endedAtEpoch || (sTarget.endedAt ? new Date(sTarget.endedAt).getTime() : 0);
+      const startO = sOther.startedAtEpoch || (sOther.startedAt ? new Date(sOther.startedAt).getTime() : 0);
+      const endO = sOther.endedAtEpoch || (sOther.endedAt ? new Date(sOther.endedAt).getTime() : 0);
+
+      const firstEnd = startT <= startO ? endT : endO;
+      const secondStart = startT <= startO ? startO : startT;
+      const gapMs = Math.max(0, secondStart - firstEnd);
+      if (gapMs <= 45 * 60 * 1000) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const getCohortStats = (targetIdx) => {
+    const cohortSims = [];
+    for (let k = 0; k < sessions.length; k++) {
+      if (isExcludedFromCohort(targetIdx, k)) continue;
+      const sim = getRepSim(targetIdx, k);
+      if (typeof sim === 'number' && !isNaN(sim)) {
+        cohortSims.push(sim);
+      }
+    }
+
+    if (cohortSims.length === 0) {
+      return { mu: 0, sigma: 0.1, maxSim: 0, sims: cohortSims };
+    }
+
+    const mu = cohortSims.reduce((acc, v) => acc + v, 0) / cohortSims.length;
+    const variance = cohortSims.reduce((acc, v) => acc + Math.pow(v - mu, 2), 0) / cohortSims.length;
+    const sigma = Math.sqrt(variance);
+    const maxSim = Math.max(...cohortSims);
+
+    return { mu, sigma, maxSim, sims: cohortSims };
+  };
+
+  const statsA = getCohortStats(idxA);
+  const statsB = getCohortStats(idxB);
+
+  const sNorm = 0.5 * (
+    ((pairwiseSim - statsA.mu) / (statsA.sigma + 1e-4)) +
+    ((pairwiseSim - statsB.mu) / (statsB.sigma + 1e-4))
+  );
+
+  const maxOtherSim = Math.max(statsA.maxSim, statsB.maxSim, 0);
+  const maxDenominator = Math.max(statsA.mu + 1.5 * statsA.sigma, statsB.mu + 1.5 * statsB.sigma, maxOtherSim);
+  const contrastRatio = pairwiseSim / (maxDenominator + 1e-4);
+
+  return {
+    sNorm: Number(sNorm.toFixed(4)),
+    contrastRatio: Number(contrastRatio.toFixed(4)),
+    muA: Number(statsA.mu.toFixed(4)),
+    sigmaA: Number(statsA.sigma.toFixed(4)),
+    muB: Number(statsB.mu.toFixed(4)),
+    sigmaB: Number(statsB.sigma.toFixed(4)),
+    maxOtherSim: Number(maxOtherSim.toFixed(4))
+  };
+}
+

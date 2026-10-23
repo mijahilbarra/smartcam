@@ -622,4 +622,10 @@ export async function validatePostConsolidationNoise({
   return { isNoise: false };
 }
 
-
+// Re-exportación declarativa de detección y barreras de capa de corte
+export {
+  analyzeCapeState,
+  trackCapeLifecycle,
+  isCapeBarrierSeparating,
+  CAPE_STATES
+} from "./cape_detector.js";

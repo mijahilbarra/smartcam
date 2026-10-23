@@ -41,8 +41,9 @@ import { extractFaceEmbedding, computeCosineSimilarity } from "../src/face_recog
 import { PIPELINE_CONFIG, BIOMETRICS_CONFIG } from "../src/core/pipeline_config.js";
 import { getRepresentativeFace, isVector } from "../src/services/pipeline/appointment_finalizer.js";
 import { hasTwoEyesVisible } from "../src/services/face_quality_service.js";
-import { mergePhotosAndEmbeddings, deduplicateSessionPhotos } from "../src/services/pipeline/gallery_curator.js";
-import { computeSetToSetMetrics } from "../src/services/pipeline/biometrics_math.js";
+import { mergePhotosAndEmbeddings, deduplicateSessionPhotos, resampleSessionEmbeddingsFromDB } from "../src/services/pipeline/gallery_curator.js";
+import { computeSetToSetMetrics, computeCohortSNorm, computeContrastRatio } from "../src/services/pipeline/biometrics_math.js";
+import { isCapeBarrierSeparating } from "../src/services/pipeline/closure_rules.js";
 
 
 const PROJECT_ROOT = path.resolve(process.cwd());
@@ -866,6 +867,58 @@ for (let i = 0; i < numSolid; i++) {
   console.log(`[SolidAppt ${i}] S12_${String(i+1).padStart(2, '0')}: started=${appt.startedAt}, ended=${appt.endedAt}, photosCount=${appt.photos?.length}, poses=[${appt.photos?.map(p => p.pose).join(', ')}]`);
 }
 
+// Cache para re-muestreo biocéntrico de recortes validados (sin barbero)
+const sessionResampledCache = new Map();
+function getEnrichedSession(idx) {
+  if (sessionResampledCache.has(idx)) return sessionResampledCache.get(idx);
+  const appt = solidAppts[idx];
+  const startEpoch = appt.startedAtEpoch || new Date(appt.startedAt).getTime();
+  const endEpoch = appt.endedAtEpoch || new Date(appt.endedAt).getTime();
+  const vecs = (appt.embeddings || []).map(e => isVector(e) ? e : e?.vector).filter(Boolean);
+  const photos = [...(appt.photos || [])];
+
+  const minEp = Math.min(startEpoch, endEpoch);
+  const maxEp = Math.max(startEpoch, endEpoch);
+
+  const matchingCrops = [];
+  for (const c of validCropsById.values()) {
+    if (c.timestampEpoch >= minEp && (minEp === maxEp ? c.timestampEpoch <= maxEp : c.timestampEpoch < maxEp)) {
+      if (c.chairId && appt.chairId && c.chairId !== appt.chairId) continue;
+      matchingCrops.push(c);
+    }
+  }
+
+  // Agrupar por pose y tomar hasta 3 muestras más nítidas por pose
+  const byPose = new Map();
+  for (const c of matchingCrops) {
+    if (!c.vector) continue;
+    const p = c.pose || 'frontal';
+    if (!byPose.has(p)) byPose.set(p, []);
+    byPose.get(p).push(c);
+  }
+
+  const repVec = solidReps[idx]?.vector;
+  const dbSamples = [];
+  for (const list of byPose.values()) {
+    list.sort((a, b) => (b.sharpnessScore || 0) - (a.sharpnessScore || 0));
+    for (const c of list.slice(0, 3)) {
+      if (repVec && computeCosineSimilarity(c.vector, repVec) < 0.45) {
+        continue;
+      }
+      dbSamples.push({ vector: c.vector, pose: c.pose, score: c.sharpnessScore });
+    }
+  }
+
+  for (const s of dbSamples) {
+    vecs.push(s.vector);
+    photos.push({ pose: s.pose, sharpnessScore: s.score });
+  }
+
+  const enriched = { vecs, photos, dbSamples };
+  sessionResampledCache.set(idx, enriched);
+  return enriched;
+}
+
 for (let i = 0; i < numSolid; i++) {
   const repA = solidReps[i];
   const apptA = solidAppts[i];
@@ -891,6 +944,12 @@ for (let i = 0; i < numSolid; i++) {
       continue; // Imposible que pertenezcan a la misma cita continua si pasaron más de 45 min
     }
 
+    // 1. Barrera dura de capa (Cape Barrier): Retiro de capa prohíbe la fusión
+    if (isCapeBarrierSeparating(apptA, apptB)) {
+      console.log(`[Capa 13 Pair (${i}, ${j})] S12_${String(i+1).padStart(2, '0')} vs S12_${String(j+1).padStart(2, '0')}: 🛑 FUSIÓN BLOQUEADA POR BARRERA DE CAPA (isCapeBarrierSeparating)`);
+      continue;
+    }
+
     const repSim = (repA?.vector && repB?.vector)
       ? computeCosineSimilarity(repA.vector, repB.vector)
       : null;
@@ -901,6 +960,38 @@ for (let i = 0; i < numSolid; i++) {
       apptB.embeddings || [],
       apptB.photos || []
     );
+
+    // 2. Re-muestreo Biocéntrico al Cierre (SQLite Resampling)
+    const enrichedA = getEnrichedSession(i);
+    const enrichedB = getEnrichedSession(j);
+
+    // 3. Métricas Set-to-Set enriquecidas
+    const enrichedMetrics = computeSetToSetMetrics(
+      enrichedA.vecs,
+      enrichedA.photos,
+      enrichedB.vecs,
+      enrichedB.photos
+    );
+
+    let sqliteMaxSim = -1;
+    let sqliteTop3Sim = -1;
+    if (enrichedA.dbSamples.length > 0 && enrichedB.dbSamples.length > 0) {
+      const sqlMetrics = computeSetToSetMetrics(
+        enrichedA.dbSamples.map(x => x.vector),
+        enrichedA.dbSamples,
+        enrichedB.dbSamples.map(x => x.vector),
+        enrichedB.dbSamples
+      );
+      sqliteMaxSim = sqlMetrics.maxSim;
+      sqliteTop3Sim = sqlMetrics.top3AvgSim;
+    }
+
+    // 4. Normalización Adaptativa de Cohorte (Adaptive S-Norm) y Ratio de Contraste
+    const cohortSim = ((apptA.photos?.length || 0) < 5 || (apptB.photos?.length || 0) < 5)
+      ? Math.max(metrics.maxSim, repSim || 0)
+      : (repSim !== null ? repSim : metrics.top3AvgSim);
+    const cohort = computeCohortSNorm(cohortSim, i, j, solidAppts, { reps: solidReps });
+    const { sNorm, contrastRatio } = cohort;
 
     let compatiblePeersCount = 0;
     const vecsA = (apptA.embeddings || []).map(e => isVector(e) ? e : e?.vector).filter(Boolean);
@@ -928,85 +1019,130 @@ for (let i = 0; i < numSolid; i++) {
     const hasHomologousReclined = reclinedA.length > 0 && reclinedB.length > 0;
     const hasHomologousMatch = hasHomologousUpright || hasHomologousReclined;
 
-    // Nivel 1 (Homólogo Estricto): Si ambas sesiones comparten el mismo estrato de pose,
-    // se exige umbral estricto (>= 0.58).
-    // Nivel 2 (Fallback Heterólogo): Solo si NO existen pares homólogos (ej. una sesión solo
-    // tiene fotos reclinadas/celular y la otra solo erguidas), se relaja a >= 0.48 con top3Avg.
     const dynamicThreshold = hasHomologousMatch
       ? (process.env.SAME_POSE_THRESHOLD ? parseFloat(process.env.SAME_POSE_THRESHOLD) : 0.58)
       : (process.env.CROSS_POSE_THRESHOLD ? parseFloat(process.env.CROSS_POSE_THRESHOLD) : 0.48);
 
-    console.log(`[Capa 13 Pair (${i}, ${j})] S12_${String(i+1).padStart(2, '0')} (${apptA.photos?.length}f, repPose=${repA?.photo?.pose}, repScore=${repA?.score?.toFixed(1)}) vs S12_${String(j+1).padStart(2, '0')} (${apptB.photos?.length}f, repPose=${repB?.photo?.pose}, repScore=${repB?.score?.toFixed(1)}): gapMs=${gapMs} (${(gapMs/60000).toFixed(1)}m), rawGapMs=${rawGapMs}, repSim=${repSim !== null ? repSim.toFixed(4) : 'null'}, maxSim=${metrics.maxSim.toFixed(4)}, maxCompatiblePoseSim=${metrics.maxCompatiblePoseSim.toFixed(4)}, top3AvgSim=${metrics.top3AvgSim.toFixed(4)}, medianSim=${metrics.medianSim?.toFixed(4)}, compatiblePeersCount=${compatiblePeersCount}, isSamePose=${hasHomologousMatch}, dynThresh=${dynamicThreshold.toFixed(2)}`);
+    console.log(`[Capa 13 Pair (${i}, ${j})] S12_${String(i+1).padStart(2, '0')} (${apptA.photos?.length}f, repPose=${repA?.photo?.pose}, repScore=${repA?.score?.toFixed(1)}) vs S12_${String(j+1).padStart(2, '0')} (${apptB.photos?.length}f, repPose=${repB?.photo?.pose}, repScore=${repB?.score?.toFixed(1)}): gapMs=${gapMs} (${(gapMs/60000).toFixed(1)}m), repSim=${repSim !== null ? repSim.toFixed(4) : 'null'}, maxSim=${metrics.maxSim.toFixed(4)}, enrichedMax=${enrichedMetrics.maxSim.toFixed(4)}, sqliteMax=${sqliteMaxSim.toFixed(4)}, top3AvgSim=${metrics.top3AvgSim.toFixed(4)}, sNorm=${sNorm.toFixed(2)}, contrast=${contrastRatio.toFixed(2)}, dynThresh=${dynamicThreshold.toFixed(2)}`);
 
-    // Criterio de Fusión Biocéntrica (Capa 13):
-    // 1. Alta similitud directa de representantes:
-    const isDirectRepMatch = repSim !== null && repSim >= dynamicThreshold;
+    // Blindaje Homólogo Específico: Si los representantes tienen exactamente la misma pose con buena nitidez
+    // y similitud baja, y en SQLite no hay coincidencia alta, son personas distintas (salvo micro-pausa en la misma silla).
+    const isMicroPauseCandidate = apptA.chairId === apptB.chairId && gapMs <= 95000 && !isOverlap;
+    const samePoseRep = Boolean(repA?.photo?.pose && repB?.photo?.pose && repA.photo.pose === repB.photo.pose);
+    const isHomologousDifferentPerson = !isMicroPauseCandidate && samePoseRep &&
+      (repA?.score || 0) >= 60 && (repB?.score || 0) >= 60 &&
+      repSim !== null && repSim < 0.50 &&
+      sqliteMaxSim < 0.52 &&
+      metrics.maxSim < 0.60 &&
+      metrics.top3AvgSim < 0.55;
 
-    // 2. Similitud moderada de representantes con respaldo Set-to-Set:
-    const isRepWithSetMatch = repSim !== null && repSim >= (dynamicThreshold - 0.04) && metrics.top3AvgSim >= dynamicThreshold;
+    // 5. Criterios de Fusión Biocéntrica Dinámica (Capa 13):
+    let isSamePerson = false;
+    let mergeReason = '';
 
-    // 3. Fusión multi-pose Set-to-Set (compatible poses, soporte tilted_down y galería cohesiva):
-    //    Admite multi-pose compatible con top-3 robusto o alta concordancia de conjunto sin límite artificial de 5m.
-    const isSetToSetMatch = (
-      (metrics.maxCompatiblePoseSim >= dynamicThreshold && metrics.top3AvgSim >= (dynamicThreshold - 0.01) && compatiblePeersCount >= 2) ||
-      (metrics.top3AvgSim >= dynamicThreshold && metrics.maxSim >= dynamicThreshold && compatiblePeersCount >= 5)
-    );
+    if (!isHomologousDifferentPerson) {
+      // 1. Contigüidad temporal en la misma silla (gap = 0s) con compatibilidad biométrica
+      if (gapMs === 0 && apptA.chairId === apptB.chairId) {
+        const hasMinSim = (metrics.maxSim >= 0.48 || metrics.top3AvgSim >= 0.45 || (repSim !== null && repSim >= 0.45));
+        if (hasMinSim) {
+          isSamePerson = true;
+          mergeReason = 'gap=0s (contiguo en silla compatible)';
+        }
+      }
 
-    // 4. Continuidad transicional en la misma silla (rotación rápida o micro-pausa de corte):
-    //    NO permite fusiones con similitud de ruido (0.38). Debe respetar la biometría estratificada (isDirectRepMatch o isSetToSetMatch),
-    //    o para micro-pausas breves en la misma silla (gapMs <= 60s), requerir top3AvgSim >= 0.45 && maxSim >= 0.46
-    //    (Cliente #8 y #9 tienen top3Avg = 0.4474 por lo que quedan disjuntos de forma segura).
-    const isTransitionalChair = (apptA.chairId === apptB.chairId && !isOverlap && (
-      (gapMs <= 30000 && (isDirectRepMatch || isSetToSetMatch)) ||
-      (gapMs <= 60000 && metrics.top3AvgSim >= 0.45 && metrics.maxSim >= 0.46)
-    ));
+      // 2. Micro-pausa en la misma silla (gapMs <= 95000):
+      // Unifica pausas de 47s y 93s del mismo cliente si en SQLite o en memoria la similitud o S-Norm es sólida
+      if (!isSamePerson && apptA.chairId === apptB.chairId && gapMs <= 95000 && !isOverlap) {
+        // Blindaje contra rotación de clientes: si repSim < 0.25 con bajo contraste o baja similitud, no es el mismo cliente
+        const isRepIncompatible = (repSim !== null && repSim < 0.25 && (contrastRatio < 0.50 || metrics.maxSim < 0.45));
+        if (!isRepIncompatible) {
+          const sqlMax = Math.max(sqliteMaxSim, enrichedMetrics.maxSim);
+          const top3Max = Math.max(sqliteTop3Sim, metrics.top3AvgSim, enrichedMetrics.top3AvgSim);
+          if ((sqlMax >= 0.50 || metrics.maxSim >= 0.46) && top3Max >= 0.40) {
+            isSamePerson = true;
+            mergeReason = 'microPauseSqlite';
+          } else if (sNorm >= 2.5 && contrastRatio >= 1.35 && (metrics.maxSim >= 0.46 || enrichedMetrics.maxSim >= 0.46)) {
+            isSamePerson = true;
+            mergeReason = `microPauseSNorm (sNorm=${sNorm.toFixed(2)}, contrast=${contrastRatio.toFixed(2)})`;
+          }
+        }
+      }
 
-    // 5. Regla 1.2 & 1.5: Retorno de lavacabezas / re-ingreso a la misma silla
-    const weightedSim = Math.max(
-      metrics.top3AvgSim || 0,
-      metrics.maxCompatiblePoseSim || 0,
-      metrics.maxSim || 0,
-      repSim || 0
-    );
+      // 3. Alta concordancia biométrica (Set-to-Set sostenido: max >= 0.65 Y top3Avg >= 0.48):
+      if (!isSamePerson && gapMs <= 30 * 60 * 1000) {
+        const isMemoryIncompatible = metrics.maxSim < 0.42 || (repSim !== null && repSim < 0.25 && metrics.maxSim < 0.50);
+        if (!isMemoryIncompatible) {
+          const maxS = Math.max(sqliteMaxSim, metrics.maxSim, enrichedMetrics.maxSim);
+          const top3S = Math.max(sqliteTop3Sim, metrics.top3AvgSim, enrichedMetrics.top3AvgSim);
+          if (maxS >= 0.65 && top3S >= 0.48) {
+            isSamePerson = true;
+            mergeReason = `highBiometric (max=${maxS.toFixed(3)}, top3=${top3S.toFixed(3)})`;
+          }
+        }
+      }
 
-    const isWashbasinReturn = Boolean(
-      apptA.chairId && apptB.chairId &&
-      apptA.chairId === apptB.chairId &&
-      gapMs <= 30 * 60 * 1000 &&
-      (
-        (repSim !== null && repSim >= dynamicThreshold) ||
-        (repSim !== null && repSim >= (dynamicThreshold - 0.04) && weightedSim >= dynamicThreshold) ||
-        (metrics.maxCompatiblePoseSim >= dynamicThreshold && metrics.top3AvgSim >= dynamicThreshold && compatiblePeersCount >= 3)
-      )
-    );
+      // 4. Identidad estadísticamente indudable frente a cohorte (S-Norm >= 2.5 Y contrastRatio >= 1.7 Y top3Avg >= 0.48):
+      if (!isSamePerson && gapMs <= 30 * 60 * 1000) {
+        if (sNorm >= 2.5 && contrastRatio >= 1.7 && Math.max(sqliteTop3Sim, metrics.top3AvgSim) >= 0.48) {
+          isSamePerson = true;
+          mergeReason = `sNormAndContrast (sNorm=${sNorm.toFixed(2)}, contrast=${contrastRatio.toFixed(2)})`;
+        }
+      }
 
-    // 6. Contención total en la misma silla: NO autoriza fusión por sí sola. Solo relaja el
-    //    umbral al cross-pose (0.48) y SIEMPRE exige evidencia biométrica.
-    const isFullyContained = Boolean(
-      apptA.chairId && apptB.chairId &&
-      apptA.chairId === apptB.chairId &&
-      (
-        (startMsB >= startMsA && endMsB <= endMsA) ||
-        (startMsA >= startMsB && endMsA <= endMsB)
-      )
-    );
-    const isContainedBiometricMatch = isFullyContained &&
-      metrics.maxCompatiblePoseSim >= 0.48 &&
-      metrics.top3AvgSim >= 0.45;
+      // 5. Criterio representativo directo o de lavacabezas (repSim >= dynamicThreshold o multi-pose):
+      if (!isSamePerson && gapMs <= 30 * 60 * 1000) {
+        const isDirectRepMatch = repSim !== null && repSim >= dynamicThreshold;
+        const isRepWithSetMatch = repSim !== null && repSim >= (dynamicThreshold - 0.04) && metrics.top3AvgSim >= dynamicThreshold;
+        const isSetToSetMatch = (
+          (metrics.maxCompatiblePoseSim >= dynamicThreshold && metrics.top3AvgSim >= (dynamicThreshold - 0.01) && compatiblePeersCount >= 2) ||
+          (metrics.top3AvgSim >= dynamicThreshold && metrics.maxSim >= dynamicThreshold && compatiblePeersCount >= 5)
+        );
+        const isTransitionalChair = (apptA.chairId === apptB.chairId && !isOverlap && (
+          (gapMs <= 30000 && (isDirectRepMatch || isSetToSetMatch)) ||
+          (gapMs <= 60000 && metrics.top3AvgSim >= 0.48 && metrics.maxSim >= 0.50)
+        ));
+        const weightedSim = Math.max(
+          metrics.top3AvgSim || 0,
+          metrics.maxCompatiblePoseSim || 0,
+          metrics.maxSim || 0,
+          repSim || 0
+        );
+        const isWashbasinReturn = Boolean(
+          apptA.chairId && apptB.chairId &&
+          apptA.chairId === apptB.chairId &&
+          (
+            (repSim !== null && repSim >= dynamicThreshold) ||
+            (repSim !== null && repSim >= (dynamicThreshold - 0.04) && weightedSim >= dynamicThreshold) ||
+            (metrics.maxCompatiblePoseSim >= dynamicThreshold && metrics.top3AvgSim >= dynamicThreshold && compatiblePeersCount >= 3)
+          )
+        );
+        const isFullyContained = Boolean(
+          apptA.chairId && apptB.chairId &&
+          apptA.chairId === apptB.chairId &&
+          (
+            (startMsB >= startMsA && endMsB <= endMsA) ||
+            (startMsA >= startMsB && endMsA <= endMsB)
+          )
+        );
+        const isContainedBiometricMatch = isFullyContained &&
+          metrics.maxCompatiblePoseSim >= 0.48 &&
+          metrics.top3AvgSim >= 0.45;
 
-    const isSamePerson = isDirectRepMatch || isRepWithSetMatch || isSetToSetMatch || isTransitionalChair || isWashbasinReturn || isContainedBiometricMatch;
+        if (isDirectRepMatch || isRepWithSetMatch || isSetToSetMatch || isTransitionalChair || isWashbasinReturn || isContainedBiometricMatch) {
+          isSamePerson = true;
+          mergeReason = 'standardBiometrics';
+        }
+      }
+    }
 
     if (isSamePerson) {
-      console.log(`   -> [FUSIONADA] (${i}, ${j})`);
+      console.log(`   -> [FUSIONADA] (${i}, ${j}) (motivo: ${mergeReason})`);
       unionNodes(i, j);
     }
   }
 }
 
-// 7. Contención temporal en la misma silla:
-// Si un segmento o micro-corte ocurre físicamente durante el intervalo ya confirmado de una atención
-// de un cliente en la misma silla (por ejemplo, el cliente se inclina para pulir la nuca o mirar el celular),
-// pertenece a la atención en curso de ese cliente.
+// 7. Contención temporal en la misma silla acotada a atenciones de longitud razonable (<= 60 min)
 function getClusterIntervals() {
   const cMap = new Map();
   for (let idx = 0; idx < numSolid; idx++) {
@@ -1028,12 +1164,51 @@ for (let idx = 0; idx < numSolid; idx++) {
   const appt = solidAppts[idx];
   const apptStart = new Date(appt.startedAt).getTime();
   const apptEnd = new Date(appt.endedAt).getTime();
+  const apptDurationMs = apptEnd - apptStart;
 
   for (const [r, c] of intervals.entries()) {
-    if (r !== rootIdx && c.indices.length >= 2) {
+    if (r !== rootIdx && c.indices.length >= 1) {
       if (apptStart >= c.minStart && apptEnd <= c.maxEnd) {
-        console.log(`   -> [CONTENCIÓN EN SILLA] S12_${String(idx+1).padStart(2, '0')} dentro del cliente cluster ${r}`);
-        unionNodes(idx, r);
+        let capeBlocked = false;
+        let maxBiometricSimWithCluster = -1;
+        let minGapToClusterSegment = Infinity;
+
+        for (const k of c.indices) {
+          if (isCapeBarrierSeparating(appt, solidAppts[k])) {
+            capeBlocked = true;
+            break;
+          }
+          const pairMetrics = computeSetToSetMetrics(
+            appt.embeddings || [],
+            appt.photos || [],
+            solidAppts[k].embeddings || [],
+            solidAppts[k].photos || []
+          );
+          if (pairMetrics.maxSim > maxBiometricSimWithCluster) {
+            maxBiometricSimWithCluster = pairMetrics.maxSim;
+          }
+          const startK = new Date(solidAppts[k].startedAt).getTime();
+          const endK = new Date(solidAppts[k].endedAt).getTime();
+          const gap = Math.max(0, Math.max(apptStart - endK, startK - apptEnd));
+          if (gap < minGapToClusterSegment) {
+            minGapToClusterSegment = gap;
+          }
+        }
+
+        if (capeBlocked) continue;
+
+        // Blindaje anti-quimera: si es una atención sustancial (>= 8 min) y su biometría con el cluster
+        // no alcanza compatibilidad (< 0.45), es un cliente intermedio disjunto (ej. S12_12 en 7h) -> NO fusionar.
+        if (apptDurationMs >= 8 * 60 * 1000 && maxBiometricSimWithCluster < 0.45) {
+          console.log(`   -> [CONTENCIÓN RECHAZADA] S12_${String(idx+1).padStart(2, '0')} (${(apptDurationMs/60000).toFixed(1)}m, maxSim=${maxBiometricSimWithCluster.toFixed(4)}) es cliente independiente dentro del lapso del cluster ${r}`);
+          continue;
+        }
+
+        // Contención válida: micro-segmento contiguo (gap <= 15s) o respaldo biométrico (maxSim >= 0.45)
+        if (minGapToClusterSegment <= 15000 || maxBiometricSimWithCluster >= 0.45) {
+          console.log(`   -> [CONTENCIÓN EN SILLA] S12_${String(idx+1).padStart(2, '0')} dentro del cliente cluster ${r} (gap=${(minGapToClusterSegment/1000).toFixed(1)}s, maxSim=${maxBiometricSimWithCluster.toFixed(4)})`);
+          unionNodes(idx, r);
+        }
       }
     }
   }

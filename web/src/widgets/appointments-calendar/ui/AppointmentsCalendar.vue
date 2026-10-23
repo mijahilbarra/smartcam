@@ -75,7 +75,7 @@ const goToToday = () => {
 // Filtros de silla
 const selectedChairFilter = ref('all'); // 'all' | 'Silla 1' | 'Silla 2'
 
-// Filtrar atenciones para la semana visible
+// Filtrar atenciones para la semana visible y asegurar paridad con el directorio de personas
 const filteredAppointments = computed(() => {
   if (!Array.isArray(appointments.value)) return [];
   
@@ -88,6 +88,13 @@ const filteredAppointments = computed(() => {
     
     // Filtro por rango semanal
     if (aptDateStr < startIso || aptDateStr > endIso) return false;
+
+    // Descartar citas huérfanas de perfiles que ya no existen en el Directorio
+    if (!loading.value && people.value.length > 0) {
+      const pId = apt.clientId || apt.personId;
+      const foundInPeople = people.value.some(p => p.id === pId || (apt.clientName && p.name === apt.clientName));
+      if (!foundInPeople) return false;
+    }
 
     // Filtro por silla flexible (silla_corte_1, Silla 1, etc.)
     if (selectedChairFilter.value !== 'all') {
@@ -145,21 +152,13 @@ const isClientPhotosModalOpen = ref(false);
 
 const openClientHistoryModal = () => {
   if (!selectedAppointment.value) return;
-  const pId = selectedAppointment.value.personId || selectedAppointment.value.clientId;
-  const clientName = selectedAppointment.value.clientName;
-  let foundPerson = null;
-  if (pId) {
-    foundPerson = people.value.find(p => p.id === pId);
-  }
-  if (!foundPerson && clientName) {
-    foundPerson = people.value.find(p => p.name === clientName);
-  }
-  if (foundPerson) {
-    selectedPersonForClientModal.value = foundPerson;
+  const client = getAppointmentClient(selectedAppointment.value);
+  if (client) {
+    selectedPersonForClientModal.value = client;
   } else {
     selectedPersonForClientModal.value = {
-      id: pId || 'temp',
-      name: clientName || 'Cliente',
+      id: selectedAppointment.value.personId || selectedAppointment.value.clientId || 'temp',
+      name: selectedAppointment.value.clientName || 'Cliente',
       photos: selectedAppointment.value.photos || [],
       visitCount: 1,
       bestFaceScore: selectedAppointment.value.photos?.[0]?.sharpnessScore || 0
@@ -309,6 +308,39 @@ const getPhotoSrc = (photo) => {
   const candidate = photo.thumbnailBase64 || photo.base64 || photo.url;
   if (isValidImageUrl(candidate)) return candidate;
   return '';
+};
+
+// Resuelve reactivamente el cliente desde el directorio 'people'
+const getAppointmentClient = (apt) => {
+  if (!apt) return null;
+  const pId = apt.clientId || apt.personId;
+  if (pId) {
+    const found = people.value.find(p => p.id === pId);
+    if (found) return found;
+  }
+  if (apt.clientName && apt.clientName !== 'Cliente') {
+    return people.value.find(p => p.name === apt.clientName) || null;
+  }
+  return null;
+};
+
+const getClientDisplayName = (apt) => {
+  const client = getAppointmentClient(apt);
+  return client?.name || apt?.clientName || 'Cliente';
+};
+
+const getClientDisplayAvatar = (apt) => {
+  const client = getAppointmentClient(apt);
+  return client?.thumbnailBase64 || getAppointmentAvatar(apt);
+};
+
+const getClientDisplayBadge = (apt) => {
+  const client = getAppointmentClient(apt);
+  if (client) {
+    if (client.isStaff) return 'Barbero';
+    return (client.visitCount || 1) > 1 ? 'Cliente Frecuente' : 'Nuevo Cliente';
+  }
+  return apt?.clientBadge || 'Cliente';
 };
 </script>
 
@@ -467,9 +499,9 @@ const getPhotoSrc = (photo) => {
               <!-- Avatar / Miniatura Real -->
               <div class="relative w-10 h-10 rounded-xl bg-slate-700 overflow-hidden flex-shrink-0 border border-slate-600 shadow-inner">
                 <img
-                  v-if="getAppointmentAvatar(apt)"
-                  :src="getAppointmentAvatar(apt)"
-                  :alt="apt.clientName"
+                  v-if="getClientDisplayAvatar(apt)"
+                  :src="getClientDisplayAvatar(apt)"
+                  :alt="getClientDisplayName(apt)"
                   class="w-full h-full object-cover group-hover:scale-105 transition duration-300"
                   @error="apt.avatarUrl = ''"
                 />
@@ -481,14 +513,14 @@ const getPhotoSrc = (photo) => {
               <!-- Nombre y Silla -->
               <div class="min-w-0 flex-1">
                 <h4 class="text-xs font-bold text-white truncate group-hover:text-blue-300 transition">
-                  {{ apt.clientName }}
+                  {{ getClientDisplayName(apt) }}
                 </h4>
                 <div class="flex items-center gap-1.5 mt-0.5">
                   <span class="text-[10px] text-slate-400 font-medium truncate">
                     {{ apt.chairName || apt.chairId }}
                   </span>
                   <span class="text-[9px] px-1.5 py-0.2 rounded font-semibold bg-slate-900/90 text-blue-300 border border-blue-500/20">
-                    {{ apt.clientBadge || 'Cliente' }}
+                    {{ getClientDisplayBadge(apt) }}
                   </span>
                 </div>
               </div>
@@ -528,9 +560,9 @@ const getPhotoSrc = (photo) => {
           <div class="flex items-center gap-3">
             <div class="w-14 h-14 rounded-2xl bg-slate-700 overflow-hidden border border-slate-600 flex-shrink-0 shadow-md">
               <img
-                v-if="getAppointmentAvatar(selectedAppointment)"
-                :src="getAppointmentAvatar(selectedAppointment)"
-                :alt="selectedAppointment.clientName"
+                v-if="getClientDisplayAvatar(selectedAppointment)"
+                :src="getClientDisplayAvatar(selectedAppointment)"
+                :alt="getClientDisplayName(selectedAppointment)"
                 class="w-full h-full object-cover"
                 @error="selectedAppointment.avatarUrl = ''"
               />
@@ -540,15 +572,15 @@ const getPhotoSrc = (photo) => {
             </div>
             <div>
               <div class="flex items-center gap-2">
-                <h3 class="text-base font-bold text-white">{{ selectedAppointment.clientName }}</h3>
+                <h3 class="text-base font-bold text-white">{{ getClientDisplayName(selectedAppointment) }}</h3>
                 <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-950 text-blue-300 border border-blue-500/30">
-                  {{ selectedAppointment.clientBadge || 'Cliente Frecuente' }}
+                  {{ getClientDisplayBadge(selectedAppointment) }}
                 </span>
               </div>
               <p class="text-xs text-slate-400 mt-0.5 flex items-center gap-2">
                 <span class="text-emerald-400 font-semibold">{{ selectedAppointment.chairId }}</span>
                 <span>•</span>
-                <span>ID: {{ selectedAppointment.personId || 'N/D' }}</span>
+                <span>ID: {{ selectedAppointment.clientId || selectedAppointment.personId || 'N/D' }}</span>
               </p>
             </div>
           </div>
