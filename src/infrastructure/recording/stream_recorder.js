@@ -21,19 +21,25 @@ export class StreamRecorder {
    * @param {number} [options.segmentDurationSec] Duración de cada chunk (por defecto 900s = 15m)
    * @param {string} [options.outputBaseDir] Directorio base local de grabaciones
    * @param {GoogleDriveClient} [options.gdriveClient] Instancia de GoogleDriveClient
-   * @param {string} [options.rtspUrl] URL RTSP origen
+   * @param {string} [options.streamUrl] URL de stream origen (HTTP MJPEG unificado o RTSP)
+   * @param {string} [options.rtspUrl] Alias retrocompatible para streamUrl
    * @param {Object} [options.workingHours] Gestor de horario laboral opcional
    * @param {number} [options.uploadIntervalMs] Frecuencia de revisión del worker de subida
    * @param {number} [options.settleTimeMs] Tiempo para considerar completado un chunk inactivo
+   * @param {number} [options.watchdogTimeoutMs] Tiempo sin nuevos bytes para reiniciar FFmpeg (por defecto 45000ms = 45s)
+   * @param {number} [options.watchdogIntervalMs] Intervalo de chequeo del watchdog (por defecto 5000ms)
    */
   constructor(options = {}) {
     this.segmentDurationSec = Number(options.segmentDurationSec) || 900;
     this.outputBaseDir = options.outputBaseDir || path.join(PROJECT_ROOT, "data", "recordings");
     this.gdriveClient = options.gdriveClient || new GoogleDriveClient();
-    this.rtspUrl = options.rtspUrl || process.env.RTSP_STREAM_URL || "rtsp://127.0.0.1:8554/barberia/sub";
+    this.streamUrl = options.streamUrl || options.rtspUrl || process.env.RECORDER_STREAM_URL || process.env.RTSP_STREAM_URL || "http://127.0.0.1:8085/api/stream";
+    this.rtspUrl = this.streamUrl; // Retrocompatibilidad
     this.workingHours = options.workingHours || null;
     this.uploadIntervalMs = options.uploadIntervalMs || 5000;
     this.settleTimeMs = options.settleTimeMs || 15000; // 15 segundos de estabilidad
+    this.watchdogTimeoutMs = options.watchdogTimeoutMs || 45000; // 45 segundos sin bytes nuevos
+    this.watchdogIntervalMs = options.watchdogIntervalMs || 5000;
 
     this.isRecording = false;
     this._stopping = false;
@@ -41,6 +47,7 @@ export class StreamRecorder {
     this.activeChunk = null;
     this.uploadTimer = null;
     this.restartTimeout = null;
+    this.watchdogTimer = null;
 
     // Métricas
     this.uploadedCount = 0;
@@ -51,6 +58,52 @@ export class StreamRecorder {
     // Control de concurrencia y seguimiento de archivos locales
     this.inProgressUploads = new Set();
     this.fileStateTracker = new Map(); // path -> { size, lastModified, stableSince }
+
+    // Estado del watchdog
+    this.lastBytesProgressAt = 0;
+    this.lastMonitoredPath = null;
+    this.lastMonitoredSize = -1;
+  }
+
+  /**
+   * Genera los argumentos de FFmpeg según el protocolo de origen (HTTP MJPEG o RTSP H.264).
+   * @param {string} outputPattern Patrón de salida para el segmentador
+   * @returns {string[]}
+   */
+  getFfmpegArgs(outputPattern) {
+    const isHttp = this.streamUrl.startsWith("http://") || this.streamUrl.startsWith("https://");
+    return isHttp
+      ? [
+          "-y",
+          "-use_wallclock_as_timestamps", "1",
+          "-f", "mjpeg",
+          "-i", this.streamUrl,
+          "-c:v", "libx264",
+          "-preset", "ultrafast",
+          "-crf", "28",
+          "-pix_fmt", "yuv420p",
+          "-f", "segment",
+          "-segment_time", String(this.segmentDurationSec),
+          "-segment_format", "mp4",
+          "-reset_timestamps", "1",
+          "-strftime", "1",
+          "-segment_format_options", "movflags=+faststart",
+          outputPattern
+        ]
+      : [
+          "-y",
+          "-rtsp_transport", "tcp",
+          "-i", this.streamUrl,
+          "-c:v", "copy",
+          "-an",
+          "-f", "segment",
+          "-segment_time", String(this.segmentDurationSec),
+          "-segment_format", "mp4",
+          "-reset_timestamps", "1",
+          "-strftime", "1",
+          "-segment_format_options", "movflags=+faststart",
+          outputPattern
+        ];
   }
 
   /**
@@ -78,7 +131,7 @@ export class StreamRecorder {
   }
 
   /**
-   * Inicia el proceso de grabación continua y el worker de subida.
+   * Inicia el proceso de grabación continua, el worker de subida y el watchdog.
    */
   start() {
     if (this.isRecording) return;
@@ -88,14 +141,15 @@ export class StreamRecorder {
     this.ensureDayDirs();
     this._startFfmpeg();
     this._startUploadWorker();
+    this._startWatchdog();
 
     console.log(
-      `[StreamRecorder] Grabación continua iniciada (segmentos de ${this.segmentDurationSec}s). Destino local: ${this.outputBaseDir}`
+      `[StreamRecorder] Grabación continua iniciada (segmentos de ${this.segmentDurationSec}s). Origen: ${this.streamUrl}. Destino local: ${this.outputBaseDir}`
     );
   }
 
   /**
-   * Lanza el subproceso FFmpeg para segmentación sin recodificación (-c copy).
+   * Lanza el subproceso FFmpeg para segmentación de video.
    */
   _startFfmpeg() {
     if (this.ffmpegProc || !this.isRecording || this._stopping) return;
@@ -103,22 +157,13 @@ export class StreamRecorder {
     this.ensureDayDirs();
 
     const outputPattern = path.join(this.outputBaseDir, "%Y-%m-%d", "chunk_%Y%m%d_%H%M%S.mp4");
+    const ffmpegArgs = this.getFfmpegArgs(outputPattern);
 
-    const ffmpegArgs = [
-      "-y",
-      "-rtsp_transport", "tcp",
-      "-i", this.rtspUrl,
-      "-c:v", "copy",
-      "-an",
-      "-f", "segment",
-      "-segment_time", String(this.segmentDurationSec),
-      "-segment_format", "mp4",
-      "-reset_timestamps", "1",
-      "-strftime", "1",
-      outputPattern
-    ];
+    console.log(`[StreamRecorder] Lanzando FFmpeg: ${this.streamUrl} -> ${outputPattern}`);
+    this.lastBytesProgressAt = Date.now();
+    this.lastMonitoredPath = null;
+    this.lastMonitoredSize = -1;
 
-    console.log(`[StreamRecorder] Lanzando FFmpeg: ${this.rtspUrl} -> ${outputPattern}`);
     const proc = spawn("ffmpeg", ffmpegArgs, { stdio: ["pipe", "pipe", "pipe"] });
     this.ffmpegProc = proc;
 
@@ -144,7 +189,7 @@ export class StreamRecorder {
 
       // Si no fue parada intencional, reintentar con backoff de 5s
       if (this.isRecording && !this._stopping) {
-        console.warn("[StreamRecorder] Conexión RTSP perdida o finalizada. Reintentando en 5s...");
+        console.warn("[StreamRecorder] Conexión de stream perdida o finalizada. Reintentando en 5s...");
         this.restartTimeout = setTimeout(() => {
           if (this.isRecording && !this._stopping) {
             this._startFfmpeg();
@@ -153,6 +198,116 @@ export class StreamRecorder {
         if (typeof this.restartTimeout.unref === "function") this.restartTimeout.unref();
       }
     });
+  }
+
+  /**
+   * Inicia el watchdog periódico para supervisar el crecimiento de bytes en la grabación activa.
+   */
+  _startWatchdog() {
+    if (this.watchdogTimer) clearInterval(this.watchdogTimer);
+    this.lastBytesProgressAt = Date.now();
+    this.lastMonitoredPath = null;
+    this.lastMonitoredSize = -1;
+
+    this.watchdogTimer = setInterval(() => {
+      this.checkWatchdog();
+    }, this.watchdogIntervalMs);
+
+    if (typeof this.watchdogTimer.unref === "function") this.watchdogTimer.unref();
+  }
+
+  /**
+   * Comprueba si el archivo en grabación activa ha dejado de recibir bytes durante más de watchdogTimeoutMs (45s).
+   */
+  checkWatchdog() {
+    if (!this.isRecording || this._stopping || !this.ffmpegProc) {
+      return;
+    }
+
+    const now = Date.now();
+    let currentTarget = this.activeChunk;
+
+    if (!currentTarget) {
+      const segments = this.scanLocalSegments();
+      if (segments.length > 0) {
+        currentTarget = segments[segments.length - 1].path;
+      }
+    }
+
+    if (!currentTarget) {
+      // Si tras watchdogTimeoutMs no se ha creado ningún archivo, reiniciar FFmpeg
+      if (now - this.lastBytesProgressAt > this.watchdogTimeoutMs) {
+        console.warn(
+          `[StreamRecorder] ⚠️ Watchdog: No se ha detectado creación de archivo en ${Math.round(
+            (now - this.lastBytesProgressAt) / 1000
+          )}s (> ${Math.round(this.watchdogTimeoutMs / 1000)}s). Reiniciando subproceso FFmpeg...`
+        );
+        this._restartFfmpegDueToStall();
+      }
+      return;
+    }
+
+    try {
+      if (!fs.existsSync(currentTarget)) {
+        return;
+      }
+      const stat = fs.statSync(currentTarget);
+      const currentSize = stat.size;
+
+      if (currentTarget !== this.lastMonitoredPath) {
+        // Se abrió un nuevo segmento
+        this.lastMonitoredPath = currentTarget;
+        this.lastMonitoredSize = currentSize;
+        this.lastBytesProgressAt = now;
+      } else if (currentSize > this.lastMonitoredSize) {
+        // Ha crecido el archivo: hay progreso
+        this.lastMonitoredSize = currentSize;
+        this.lastBytesProgressAt = now;
+      } else {
+        // No ha recibido bytes nuevos
+        if (now - this.lastBytesProgressAt > this.watchdogTimeoutMs) {
+          console.warn(
+            `[StreamRecorder] ⚠️ Watchdog: Segmento activo '${path.basename(
+              currentTarget
+            )}' no ha recibido bytes nuevos en ${Math.round(
+              (now - this.lastBytesProgressAt) / 1000
+            )}s (> ${Math.round(this.watchdogTimeoutMs / 1000)}s). Reiniciando subproceso FFmpeg...`
+          );
+          this._restartFfmpegDueToStall();
+        }
+      }
+    } catch (_) {
+      // Ignorar errores transitorios de lectura de fs
+    }
+  }
+
+  /**
+   * Finaliza el subproceso FFmpeg colgado para forzar su reinicio ordenado mediante el handler 'close'.
+   */
+  _restartFfmpegDueToStall() {
+    this.lastBytesProgressAt = Date.now();
+    if (!this.ffmpegProc) return;
+
+    const proc = this.ffmpegProc;
+    console.warn("[StreamRecorder] Reiniciando subproceso FFmpeg por inactividad prolongada (>45s)...");
+
+    try {
+      if (typeof proc.kill === "function") {
+        proc.kill("SIGINT");
+        const killTimer = setTimeout(() => {
+          try {
+            if (this.ffmpegProc === proc) {
+              proc.kill("SIGKILL");
+            }
+          } catch (_) {}
+        }, 3000);
+        if (typeof killTimer.unref === "function") killTimer.unref();
+      }
+    } catch (_) {
+      try {
+        proc.kill("SIGKILL");
+      } catch (_) {}
+    }
   }
 
   /**
@@ -346,6 +501,11 @@ export class StreamRecorder {
     this._stopping = true;
     this.isRecording = false;
 
+    if (this.watchdogTimer) {
+      clearInterval(this.watchdogTimer);
+      this.watchdogTimer = null;
+    }
+
     if (this.restartTimeout) {
       clearTimeout(this.restartTimeout);
       this.restartTimeout = null;
@@ -375,13 +535,21 @@ export class StreamRecorder {
           done();
         }, 5000);
 
-        this.ffmpegProc.once("close", () => {
-          clearTimeout(timer);
+        if (typeof this.ffmpegProc.once === "function") {
+          this.ffmpegProc.once("close", () => {
+            clearTimeout(timer);
+            done();
+          });
+        } else {
           done();
-        });
+        }
 
         try {
-          this.ffmpegProc.kill("SIGINT");
+          if (typeof this.ffmpegProc.kill === "function") {
+            this.ffmpegProc.kill("SIGINT");
+          } else {
+            done();
+          }
         } catch (_) {
           done();
         }

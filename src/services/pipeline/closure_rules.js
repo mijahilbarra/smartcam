@@ -478,8 +478,8 @@ export async function prepareAndFilterSessionForClosure({
   // y Purga de Colitas Residuales (< 2 min):
   const isUnitTest = /[\\\/]test[\\\/]/.test(process.argv[1] || '') && process.env.IS_LOCAL_SIMULATOR !== "true";
   if (!isUnitTest) {
-    const isTransitEmptyChair = (durationMinutes >= 5 && candidatePhotos.length === 0);
-    const isMicroTail = (durationMinutes < 2 && candidatePhotos.length < 2);
+    const isTransitEmptyChair = (durationMinutes >= 5 && candidatePhotos.length <= 2);
+    const isMicroTail = (durationMinutes < 2 && candidatePhotos.length < 4);
     if (isTransitEmptyChair || isMicroTail) {
       if (session.tempClientId) {
         await customerService?.deleteCustomer?.(session.tempClientId, { db });

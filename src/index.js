@@ -37,6 +37,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PROJECT_ROOT = path.resolve(__dirname, "..");
 loadEnvFile(path.join(PROJECT_ROOT, ".env"));
+const PORT = process.env.PORT || 8085;
 const TOML_PATH = process.env.NEOLINK_TOML_PATH || path.join(PROJECT_ROOT, "neolink.toml");
 const DAEMON_LOG_FILE = path.join(PROJECT_ROOT, "daemon.log");
 const TMP_LOG_FILE = "/tmp/camera-catcher.log";
@@ -92,7 +93,7 @@ if (process.env.GDRIVE_REFRESH_TOKEN) {
     streamRecorder = new StreamRecorder({
       gdriveClient,
       workingHours,
-      rtspUrl: process.env.RTSP_STREAM_URL || "rtsp://127.0.0.1:8554/barberia/sub",
+      streamUrl: process.env.RECORDER_STREAM_URL || `http://127.0.0.1:${PORT}/api/stream`,
       segmentDurationSec: Number(process.env.GDRIVE_SEGMENT_DURATION_SEC) || 900
     });
     console.log("[Storage] GoogleDriveClient y StreamRecorder inicializados exitosamente.");
@@ -213,7 +214,6 @@ app.post(["/api/session/close", "/api/appointments/close"], async (req, res) => 
   }
 });
 
-const PORT = process.env.PORT || 8085;
 const server = app.listen(PORT, () => {
   console.log(`[Server] Daemon escuchando en http://localhost:${PORT}`);
 }).on("error", (err) => {
