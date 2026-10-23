@@ -1,5 +1,6 @@
 import { computeCosineSimilarity } from "../../face_recognizer.js";
 import { hasTwoEyesVisible } from "../face_quality_service.js";
+import { blobToVector } from "../../infrastructure/storage/sqlite_client.js";
 export { getRepresentativeFace, isVector } from "./appointment_finalizer.js";
 import { isVector } from "./appointment_finalizer.js";
 
@@ -299,3 +300,56 @@ export function mergeCustomerPhotos(existingPhotos = [], newSessionPhotos = [], 
 export function mergeCustomerEmbeddings(existingEmbeddings = [], newSessionEmbeddings = [], existingPhotos = [], newSessionPhotos = []) {
   return mergePhotosAndEmbeddings(existingPhotos, newSessionPhotos, existingEmbeddings, newSessionEmbeddings).embeddings;
 }
+
+/**
+ * Re-muestreo Biocéntrico al Cierre (SQLite Resampling).
+ * Extrae los mejores embeddings faciales registrados en la tabla harvested_crops de SQLite
+ * para una ventana temporal dada, ordenados por nitidez.
+ *
+ * @param {Object} db - Instancia de better-sqlite3 de la base de datos
+ * @param {string} videoFile - Nombre del archivo de video
+ * @param {number} startEpoch - Timestamp epoch inicial (ms)
+ * @param {number} endEpoch - Timestamp epoch final (ms)
+ * @param {number} [maxSamples=15] - Cantidad máxima de muestras a extraer
+ * @returns {Array<{ vector: Array<number>, pose: string, score: number }>}
+ */
+export function resampleSessionEmbeddingsFromDB(db, videoFile, startEpoch, endEpoch, maxSamples = 20) {
+  if (!db || !videoFile || startEpoch === undefined || endEpoch === undefined) {
+    return [];
+  }
+  const minEp = Math.min(startEpoch, endEpoch);
+  const maxEp = Math.max(startEpoch, endEpoch);
+  try {
+    const stmt = db.prepare(`
+      WITH ranked AS (
+        SELECT embedding_blob, pose, sharpness_score,
+               ROW_NUMBER() OVER (PARTITION BY pose ORDER BY sharpness_score DESC) as rn
+        FROM harvested_crops
+        WHERE video_file = ? AND timestamp_epoch BETWEEN ? AND ?
+          AND face_detected = 1 AND embedding_blob IS NOT NULL
+      )
+      SELECT embedding_blob, pose, sharpness_score
+      FROM ranked
+      WHERE rn <= 3
+      ORDER BY sharpness_score DESC
+      LIMIT ?
+    `);
+    const rows = stmt.all(videoFile, minEp, maxEp, maxSamples);
+    const results = [];
+    for (const row of rows) {
+      const vector = blobToVector(row.embedding_blob);
+      if (vector && vector.length > 0) {
+        results.push({
+          vector,
+          pose: row.pose || 'frontal',
+          score: row.sharpness_score || 0
+        });
+      }
+    }
+    return results;
+  } catch (err) {
+    console.warn(`[GalleryCurator] Error en resampleSessionEmbeddingsFromDB: ${err.message}`);
+    return [];
+  }
+}
+

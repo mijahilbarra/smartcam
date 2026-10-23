@@ -30,10 +30,13 @@ import { CaptureOrchestrator } from "./services/capture_orchestrator.js";
 import { StreamServer } from "./infrastructure/streaming/stream_server.js";
 import { telemetryStream } from "./infrastructure/streaming/telemetry_stream.js";
 import { getSystemMemoryMetrics } from "./core/system_metrics.js";
+import { GoogleDriveClient, loadEnvFile } from "./infrastructure/storage/gdrive_client.js";
+import { StreamRecorder } from "./infrastructure/recording/stream_recorder.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PROJECT_ROOT = path.resolve(__dirname, "..");
+loadEnvFile(path.join(PROJECT_ROOT, ".env"));
 const TOML_PATH = process.env.NEOLINK_TOML_PATH || path.join(PROJECT_ROOT, "neolink.toml");
 const DAEMON_LOG_FILE = path.join(PROJECT_ROOT, "daemon.log");
 const TMP_LOG_FILE = "/tmp/camera-catcher.log";
@@ -78,6 +81,23 @@ const orchestrator = new CaptureOrchestrator({
   tomlPath: TOML_PATH,
   streamServer
 });
+
+// Inicializar cliente Google Drive y grabador de streaming continuo si las credenciales existen
+let gdriveClient = null;
+let streamRecorder = null;
+
+if (process.env.GDRIVE_REFRESH_TOKEN) {
+  gdriveClient = new GoogleDriveClient();
+  if (process.env.ENABLE_GDRIVE_RECORDING !== "false") {
+    streamRecorder = new StreamRecorder({
+      gdriveClient,
+      workingHours,
+      rtspUrl: process.env.RTSP_STREAM_URL || "rtsp://127.0.0.1:8554/barberia/sub",
+      segmentDurationSec: Number(process.env.GDRIVE_SEGMENT_DURATION_SEC) || 900
+    });
+    console.log("[Storage] GoogleDriveClient y StreamRecorder inicializados exitosamente.");
+  }
+}
 
 /**
  * Función expuesta para disparar la captura manualmente o desde tests
@@ -150,6 +170,31 @@ app.get("/api/simulation/progress", (req, res) => {
   });
 });
 
+app.get("/api/recording/status", (req, res) => {
+  if (!streamRecorder) {
+    return res.json({
+      status: "disabled",
+      configured: Boolean(gdriveClient),
+      isRecording: false
+    });
+  }
+  return res.json({
+    status: streamRecorder.isRecording ? "recording" : "idle",
+    ...streamRecorder.getStats()
+  });
+});
+
+app.get("/api/recording/quota", async (req, res) => {
+  if (!gdriveClient) {
+    return res.status(503).json({ error: "Google Drive client not configured" });
+  }
+  try {
+    const quota = await gdriveClient.getStorageQuota();
+    return res.json(quota);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
 
 app.post(["/api/session/close", "/api/appointments/close"], async (req, res) => {
   try {
@@ -235,8 +280,13 @@ export function startRealtimeLoop(intervalMs = DEFAULT_REALTIME_INTERVAL_MS) {
   const loopStep = async () => {
     if (!isRealtimeLoopRunning) return;
     if (!mockVideoPath && !workingHours.isWorkingNow()) {
+      if (streamRecorder && streamRecorder.isRecording) {
+        streamRecorder.stop().catch((e) => console.warn("[StreamRecorder] Error pausando grabación fuera de horario:", e.message));
+      }
       realtimeLoopTimeout = setTimeout(loopStep, 5000);
       return;
+    } else if (streamRecorder && !mockVideoPath && !streamRecorder.isRecording) {
+      streamRecorder.start();
     }
 
     const start = Date.now();
@@ -317,14 +367,23 @@ function tryStartRealtimeLoop() {
     }
     console.log(`[Startup] Arrancando bucle de visión y seguimiento continuo en tiempo real (${DEFAULT_REALTIME_INTERVAL_MS}ms)...`);
     startRealtimeLoop();
+    if (streamRecorder && !isSimulation && !streamRecorder.isRecording) {
+      streamRecorder.start();
+    }
   } else {
     console.log(`[Startup] Fuera de horario laboral. Bucle de visión en espera.`);
+    if (streamRecorder && streamRecorder.isRecording) {
+      streamRecorder.stop().catch((e) => console.warn("[StreamRecorder] Error deteniendo grabador fuera de horario:", e.message));
+    }
     // Programar verificación periódica cada 60 segundos para arrancar en cuanto comience el horario laboral
     const checkInterval = setInterval(() => {
       if (workingHours.isWorkingNow()) {
         console.log(`[Startup] Inicio de horario laboral detectado. Arrancando bucle de visión en tiempo real...`);
         clearInterval(checkInterval);
         startRealtimeLoop();
+        if (streamRecorder && !isSimulation && !streamRecorder.isRecording) {
+          streamRecorder.start();
+        }
       }
     }, 60000);
     if (typeof checkInterval.unref === "function") checkInterval.unref();
@@ -333,4 +392,15 @@ function tryStartRealtimeLoop() {
 
 setTimeout(tryStartRealtimeLoop, 3000);
 
-export { app, workingHours, orchestrator, db, bucket, server, customerService };
+// Limpieza ordenada ante señales de parada
+const handleShutdown = async () => {
+  if (streamRecorder && streamRecorder.isRecording) {
+    try {
+      await streamRecorder.stop();
+    } catch (_) {}
+  }
+};
+process.once("SIGINT", handleShutdown);
+process.once("SIGTERM", handleShutdown);
+
+export { app, workingHours, orchestrator, db, bucket, server, customerService, gdriveClient, streamRecorder };

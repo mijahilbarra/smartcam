@@ -76,13 +76,13 @@ export function getResolvedStorageBucket(options = {}) {
 
 export function initFirebaseAdmin(options = {}) {
   const isTestMode =
-    process.env.IS_LOCAL_SIMULATOR === "true" ||
     process.env.USE_FIREBASE === "false" ||
     process.env.NO_FIREBASE === "true" ||
-    options.disableFirebase === true;
+    options.disableFirebase === true ||
+    (process.env.IS_LOCAL_SIMULATOR === "true" && process.env.USE_FIREBASE !== "true");
 
   if (isTestMode) {
-    console.log(`[Firebase] 🧪 Modo Test activo (IS_LOCAL_SIMULATOR=true / USE_FIREBASE=false). Conexión a Firebase omitida. Operando 100% con SQLite.`);
+    console.log(`[Firebase] 🧪 Modo Test activo (USE_FIREBASE=${process.env.USE_FIREBASE}). Conexión a Firebase omitida. Operando 100% con SQLite.`);
     currentDatabaseId = "test";
     currentBucketName = null;
     currentDb = null;

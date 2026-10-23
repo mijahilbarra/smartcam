@@ -10,6 +10,7 @@
 import { computeCosineSimilarity, extractFaceEmbedding } from "../../face_recognizer.js";
 import { matchStaffFace } from "../people_service.js";
 import { hasTwoEyesVisible } from "../face_quality_service.js";
+import { isStandingPosture } from "../../core/geometry.js";
 
 /**
  * Determina si una pista (track) de YOLO se encuentra formalmente en la silla asignada
@@ -112,11 +113,11 @@ export async function evaluateChairRotation({
   let consistentPeers = [];
 
   const isSameTrack = track?.trackId != null && session?.trackId != null && track.trackId === session.trackId;
-  if (isSameTrack) {
+  if (isSameTrack && session.status !== "esperando_liberacion" && !session.pendingTransition) {
     session.pendingRotationSplitEpoch = null;
   }
 
-  if (!isSameTrack && (session.status === "esperando_liberacion" || Boolean(session.pendingRotationSplitEpoch))) {
+  if (session.status === "esperando_liberacion" || Boolean(session.pendingRotationSplitEpoch)) {
     consistentPeers = session.rotationCandidates.filter(
       c => computeCosineSimilarity(newEmbedding, c.embedding) >= 0.45
     );
@@ -131,11 +132,11 @@ export async function evaluateChairRotation({
     const faceGapMs = now - (session.lastMatchedClientFaceEpoch || session.startedAtEpoch || now);
     const spanMs = (consistentPeers[consistentPeers.length - 1]?.timestamp || now) - (consistentPeers[0]?.timestamp || now);
     const rotateAfterFaceGap =
-      !isSameTrack && faceGapMs >= 35000 && consistentPeers.length >= 2 &&
+      faceGapMs >= 35000 && consistentPeers.length >= 2 &&
       (spanMs >= 5000 || consistentPeers.length >= 3) &&
       top3AvgSim < 0.48 && maxCompatibleSim < 0.48 && maxSim < 0.52;
     const rotateByPeerCluster =
-      !isSameTrack && consistentPeers.length >= 3 &&
+      consistentPeers.length >= 3 &&
       (spanMs >= 12000 || session.rotationCandidates.length >= 4) &&
       top3AvgSim < 0.47 && maxCompatibleSim < 0.48 && maxSim < 0.52;
     const isSyntheticOrthogonalTest = maxSim < 0.12 && consistentPeers.length >= 2;
@@ -195,6 +196,11 @@ export async function initChairSession({
   logVerbal = console.log,
   addFaceSample
 }) {
+  if (track.box && isStandingPosture(track.box) && !track.isFormallySeated) {
+    logVerbal(`⚠️ Persona de pie detectada en ${chairName}. No se abre sesión de cliente (operador/staff).`, "process");
+    return null;
+  }
+
   const tempClientId = `person_${now}_${track.trackId}`;
   const visitId = `appt_${now}_${track.trackId}`;
   const rawEnteredAt = track.chairEnteredAt && Math.abs(now - track.chairEnteredAt) <= 120000
@@ -270,15 +276,23 @@ export async function initChairSession({
         }
       }
     } else if (activeFace?.thumbnailBase64) {
-      initialPhotos.push({
-        thumbnailBase64: activeFace.thumbnailBase64,
-        sharpnessScore: activeFace.sharpnessScore || 0,
-        capturedAt: new Date(now).toISOString(),
-        pose: activeFace.pose || 'frontal',
-        poseLabel: activeFace.poseLabel || 'Frontal'
-      });
-      if (activeFace.embedding) {
-        initialEmbeddings.push(activeFace.embedding);
+      const knownProfiles = customerService?.getComparisonProfiles?.() || [];
+      const staffCheck = activeFace.embedding
+        ? matchStaffFace(activeFace.embedding, knownProfiles, 0.40, { pose: activeFace.pose })
+        : { isStaffMatch: false, maxStaffSim: 0 };
+      if (!staffCheck.isStaffMatch && staffCheck.maxStaffSim < 0.40) {
+        initialPhotos.push({
+          thumbnailBase64: activeFace.thumbnailBase64,
+          sharpnessScore: activeFace.sharpnessScore || 0,
+          capturedAt: new Date(now).toISOString(),
+          pose: activeFace.pose || 'frontal',
+          poseLabel: activeFace.poseLabel || 'Frontal'
+        });
+        if (activeFace.embedding) {
+          initialEmbeddings.push(activeFace.embedding);
+        }
+      } else {
+        logVerbal(`🛡️ Rostro de activeFace sospechoso de staff (sim: ${staffCheck.maxStaffSim.toFixed(3)}) excluido de la galería inicial del cliente.`, "process");
       }
     }
     const provisionalCustomer = {
@@ -418,7 +432,7 @@ export async function evaluateChairTimeouts({
             const endedAt = session.emptySinceEpoch || now;
             const durationMin = Math.max(1, Math.round((endedAt - session.startedAtEpoch) / 60000));
             logVerbal(`🔄 Rotación en ${session.chairName}: nuevo cliente detectado (similitud: ${maxSim.toFixed(3)} < 0.54). Finalizando atención previa de ${durationMin} min...`, "process");
-            const appt = await closeSession(session.trackId, {
+            const appt = await closeSession(session.chairId || session.trackId, {
               endedAtEpoch: endedAt,
               durationMinutes: durationMin
             });
@@ -477,12 +491,14 @@ export async function evaluateChairTimeouts({
  * @param {Object} params
  * @returns {{ isStaff: boolean, isSessionProtected?: boolean }}
  */
-export function checkStaffInterferenceInChair({ track, activeFace, session, customerService, staffThreshold = 0.50 }) {
+export function checkStaffInterferenceInChair({ track, activeFace, session, customerService, staffThreshold = 0.46 }) {
+  const isStanding = track?.box ? isStandingPosture(track.box) : false;
+
   if (activeFace?.embedding) {
     const knownProfiles = customerService?.getComparisonProfiles?.() || [];
-    const staffThresh = staffThreshold ?? 0.50;
+    const staffThresh = staffThreshold ?? 0.46;
     const staffCheck = matchStaffFace(activeFace.embedding, knownProfiles, staffThresh, { pose: activeFace.pose });
-    if (staffCheck.isStaffMatch || staffCheck.maxStaffSim >= staffThresh) {
+    if (staffCheck.isStaffMatch || staffCheck.maxStaffSim >= staffThresh || (isStanding && !track.isFormallySeated)) {
       if (session) {
         if (track.bestFace === activeFace) {
           track.bestFace = null;
@@ -496,8 +512,14 @@ export function checkStaffInterferenceInChair({ track, activeFace, session, cust
     }
   }
 
+  if (isStanding && !track.isFormallySeated) {
+    track.role = "staff";
+    track.isStaffHint = true;
+    return { isStaff: true, isSessionProtected: Boolean(session) };
+  }
+
   if (track.identity?.isStaff || track.isStaffHint || track.role === "staff") {
-    return { isStaff: true, isSessionProtected: false };
+    return { isStaff: true, isSessionProtected: Boolean(session) };
   }
 
   return { isStaff: false };
@@ -746,8 +768,7 @@ export async function orchestrateChairTrack({
     }
 
     // REGLA FUNDAMENTAL DE NEGOCIO: CERO TIEMPOS ESTÁTICOS NI HARD CAPS DE DURACIÓN
-    // La atención dura lo que físicamente dura el servicio en la silla.
-    if (session && newEmbedding && session.embeddings?.length > 0 && !session.pendingTransition) {
+    if (session && newEmbedding && session.embeddings?.length > 0) {
       const rotResult = await evaluateChairRotation({
         session,
         track,

@@ -1,5 +1,5 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
-import { collection, doc, onSnapshot, updateDoc, deleteDoc, writeBatch } from 'firebase/firestore';
+import { collection, doc, onSnapshot, updateDoc, deleteDoc, writeBatch, query, where, getDocs } from 'firebase/firestore';
 import { db } from '@/shared/api/firebase';
 import { computeMergedPersonData, extractPersonPhotos, toFirestoreEmbeddings } from './person-merge';
 
@@ -100,12 +100,24 @@ export function usePeople() {
    */
   const updatePersonName = async (personId, newName) => {
     if (!personId || !newName?.trim()) return;
+    const cleanName = newName.trim();
     try {
+      const batch = writeBatch(db);
       const docRef = doc(db, 'camera_catcher_people', personId);
-      await updateDoc(docRef, {
-        name: newName.trim(),
+      batch.update(docRef, {
+        name: cleanName,
         updatedAt: new Date().toISOString()
       });
+
+      // Sincronizar en cascada en las atenciones asociadas
+      const apptCol = collection(db, 'camera_catcher_appointments');
+      const q1 = query(apptCol, where('clientId', '==', personId));
+      const qSnap1 = await getDocs(q1);
+      qSnap1.forEach(d => {
+        batch.update(d.ref, { clientName: cleanName });
+      });
+
+      await batch.commit();
       return { success: true };
     } catch (err) {
       console.error('[People] Error actualizando nombre:', err);
@@ -114,16 +126,27 @@ export function usePeople() {
   };
 
   /**
-   * Elimina un perfil biométrico no deseado
+   * Elimina un perfil biométrico y sus citas asociadas para evitar huérfanos
    */
   const deletePerson = async (personId) => {
     if (!personId) return;
     try {
+      const batch = writeBatch(db);
       const docRef = doc(db, 'camera_catcher_people', personId);
-      await deleteDoc(docRef);
+      batch.delete(docRef);
+
+      // Limpiar citas asociadas en camera_catcher_appointments
+      const apptCol = collection(db, 'camera_catcher_appointments');
+      const qAppts = query(apptCol, where('clientId', '==', personId));
+      const qSnap = await getDocs(qAppts);
+      qSnap.forEach(d => {
+        batch.delete(d.ref);
+      });
+
+      await batch.commit();
       return { success: true };
     } catch (err) {
-      console.error('[People] Error eliminando persona:', err);
+      console.error('[People] Error eliminando persona y atenciones:', err);
       throw err;
     }
   };
@@ -135,16 +158,10 @@ export function usePeople() {
   const batchDeletePeople = async (personIds) => {
     if (!Array.isArray(personIds) || personIds.length === 0) return { deletedCount: 0 };
     try {
-      const chunkSize = 400;
       let deletedCount = 0;
-      for (let i = 0; i < personIds.length; i += chunkSize) {
-        const chunk = personIds.slice(i, i + chunkSize);
-        const batch = writeBatch(db);
-        for (const id of chunk) {
-          batch.delete(doc(db, 'camera_catcher_people', id));
-        }
-        await batch.commit();
-        deletedCount += chunk.length;
+      for (const id of personIds) {
+        await deletePerson(id);
+        deletedCount++;
       }
       return { success: true, deletedCount };
     } catch (err) {
@@ -156,6 +173,7 @@ export function usePeople() {
   /**
    * Fusiona múltiples perfiles seleccionados en uno solo de forma atómica:
    * combina fotos (máx 6 mayor nitidez), embeddings, rango de tiempo, suma de visitas y elimina los duplicados.
+   * Reasigna además las atenciones de los perfiles absorbidos hacia el perfil objetivo.
    * @param {Array<Object>} selectedProfiles
    * @param {Object} [options]
    */
@@ -166,8 +184,20 @@ export function usePeople() {
       const targetRef = doc(db, 'camera_catcher_people', targetId);
       batch.update(targetRef, mergedData);
 
+      const apptCol = collection(db, 'camera_catcher_appointments');
       for (const delId of deleteIds) {
         batch.delete(doc(db, 'camera_catcher_people', delId));
+
+        // Reasignar citas del perfil absorbido al perfil destino
+        const qDel = query(apptCol, where('clientId', '==', delId));
+        const qSnapDel = await getDocs(qDel);
+        qSnapDel.forEach(d => {
+          batch.update(d.ref, {
+            clientId: targetId,
+            personId: targetId,
+            clientName: mergedData.name
+          });
+        });
       }
       await batch.commit();
       return { success: true, targetId, mergedData };

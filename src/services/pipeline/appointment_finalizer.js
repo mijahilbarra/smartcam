@@ -18,7 +18,8 @@ import {
   splitChimeraSession,
   prepareAndFilterSessionForClosure,
   validateBiometricsForFinalization,
-  validatePostConsolidationNoise
+  validatePostConsolidationNoise,
+  isCapeBarrierSeparating
 } from "./closure_rules.js";
 
 export const isVector = (v) => Array.isArray(v) || ArrayBuffer.isView(v);
@@ -169,6 +170,12 @@ export async function consolidateChairAppointment({
     !session.embeddings ||
     session.embeddings.length === 0
   ) {
+    return null;
+  }
+
+  // Barrera dura de capa: retiro formal de capa impide fusión de tramos
+  if (isCapeBarrierSeparating(prevSameChairAppt, session)) {
+    logVerbal(`[Appointment] 🛑 Consolidación bloqueada por barrera de capa (isCapeBarrierSeparating).`);
     return null;
   }
 

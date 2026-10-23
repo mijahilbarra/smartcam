@@ -155,6 +155,8 @@ export {
   formatPersistenceSummary
 };
 
+export { analyzeCapeState, trackCapeLifecycle, isCapeBarrierSeparating, CAPE_STATES } from "./pipeline/cape_detector.js";
+
 /**
  * Pipeline principal de ejecución: orquesta el flujo paso a paso
  * de manera lineal, limpia y declarativa (< 90 líneas).

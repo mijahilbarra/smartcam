@@ -7,6 +7,7 @@ import AppSpinner from '@/shared/ui/atoms/AppSpinner.vue';
 import ConfirmModal from '@/shared/ui/molecules/ConfirmModal.vue';
 import ClientPhotosModal from './ClientPhotosModal.vue';
 import { usePeople } from '@/entities/person/model/usePeople';
+import { useAppointments } from '@/entities/appointment/model/useAppointments';
 import { computeMergedPersonData, parseDateMs } from '@/entities/person/model/person-merge';
 import { formatDateTime } from '@/shared/lib/date-utils';
 
@@ -56,6 +57,31 @@ const {
   mergePeople,
   deletePersonPhoto
 } = usePeople();
+
+const { appointments } = useAppointments();
+
+// Helper para obtener todas las atenciones asociadas a un cliente (relación 1 Cliente -> N Appointments)
+const getClientAppointments = (personId) => {
+  if (!personId || !Array.isArray(appointments.value)) return [];
+  return appointments.value.filter(a => a.clientId === personId || a.personId === personId);
+};
+
+// Helper para obtener todas las fotos del cliente a través de sus atenciones (donde se almacenan)
+const getClientPhotos = (person) => {
+  if (!person) return [];
+  const appts = getClientAppointments(person.id);
+  const apptPhotos = appts.flatMap(a => Array.isArray(a.photos) ? a.photos : []);
+  if (apptPhotos.length > 0) return apptPhotos;
+  return Array.isArray(person.photos) ? person.photos : [];
+};
+
+// Total de atenciones calculadas desde las citas reales o perfil
+const getClientAppointmentCount = (person) => {
+  if (!person) return 1;
+  const count = getClientAppointments(person.id).length;
+  if (count > 0) return count;
+  return person.appointmentCount || person.appointmentsCount || person.visitCount || 1;
+};
 
 // Perfil activo para el visor de fotos (reactivo con el estado de Firestore)
 const selectedPersonForPhotos = computed(() => {
@@ -604,8 +630,8 @@ const confirmMerge = async () => {
                 <AppIcon name="event" :size="14" class="text-blue-400" />
                 <span>Atenciones:</span>
               </span>
-              <strong :class="(person.appointmentCount || person.appointmentsCount || person.visitCount || 1) > 1 ? 'text-blue-300' : 'text-slate-200'">
-                {{ person.appointmentCount || person.appointmentsCount || person.visitCount || 1 }}
+              <strong :class="getClientAppointmentCount(person) > 1 ? 'text-blue-300' : 'text-slate-200'">
+                {{ getClientAppointmentCount(person) }}
               </strong>
             </div>
 
@@ -615,7 +641,7 @@ const confirmMerge = async () => {
                 <span>Ángulos guardados:</span>
               </span>
               <span class="font-mono text-sky-300 font-semibold">
-                {{ person.photos?.length || 0 }}
+                {{ getClientPhotos(person).length }}
               </span>
             </div>
 
@@ -659,7 +685,7 @@ const confirmMerge = async () => {
             class="w-full flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-lg text-xs font-medium bg-slate-900/90 hover:bg-slate-800 text-sky-300 hover:text-sky-200 border border-slate-800 hover:border-sky-500/40 transition select-none cursor-pointer"
           >
             <AppIcon name="photo_library" :size="14" />
-            <span>Ver fotos ({{ person.photos?.length || 0 }})</span>
+            <span>Ver fotos ({{ getClientPhotos(person).length }})</span>
           </button>
 
           <!-- Bottom Row: Manual Role Switch Button & Delete -->
@@ -762,6 +788,7 @@ const confirmMerge = async () => {
     <ClientPhotosModal
       :show="isPhotosModalOpen"
       :person="selectedPersonForPhotos"
+      :appointments="getClientAppointments(selectedPersonForPhotos?.id)"
       @close="closePhotosModal"
       @delete-person="handleDeletePersonFromModal"
       @delete-photo="handleDeletePhotoFromModal"

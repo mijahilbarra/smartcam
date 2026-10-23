@@ -14,12 +14,17 @@ const props = defineProps({
   person: {
     type: Object,
     default: null
+  },
+  appointments: {
+    type: Array,
+    default: () => []
   }
 });
 
 const emit = defineEmits(['close', 'delete-person', 'delete-photo']);
 
 const selectedPhotoIndex = ref(0);
+const selectedAppointmentId = ref('all');
 
 // Estado de modales de confirmación
 const isConfirmDeletePersonOpen = ref(false);
@@ -76,9 +81,43 @@ const getPoseLabel = (photo) => {
   return photo.poseLabel || photo.pose || 'Frontal';
 };
 
-// Galería de fotos del cliente (fuente canónica: person.photos)
+// Lista de atenciones del cliente ordenadas cronológicamente (más recientes primero)
+const clientAppointments = computed(() => {
+  if (!Array.isArray(props.appointments)) return [];
+  return [...props.appointments].sort((a, b) => {
+    const timeA = new Date(a.startedAt || a.startTime || 0).getTime();
+    const timeB = new Date(b.startedAt || b.startTime || 0).getTime();
+    return timeB - timeA;
+  });
+});
+
+// Galería de fotos del cliente (fuente canónica: fotos en los appointments del cliente)
 const photosList = computed(() => {
   if (!props.person) return [];
+
+  // Si se seleccionó una cita en particular
+  if (selectedAppointmentId.value !== 'all') {
+    const targetApt = clientAppointments.value.find(a => a.id === selectedAppointmentId.value);
+    if (targetApt && Array.isArray(targetApt.photos)) {
+      return targetApt.photos;
+    }
+  }
+
+  // Si tiene citas, consolidar fotos de todas sus atenciones
+  if (clientAppointments.value.length > 0) {
+    const allPhotos = clientAppointments.value.flatMap(a => {
+      if (!Array.isArray(a.photos)) return [];
+      return a.photos.map(p => ({
+        ...p,
+        appointmentId: a.id,
+        appointmentDate: a.startedAt || a.startTime,
+        chairName: a.chairName || a.chairId
+      }));
+    });
+    if (allPhotos.length > 0) return allPhotos;
+  }
+
+  // Fallback a person.photos (para staff o datos legacy)
   if (Array.isArray(props.person.photos)) {
     return props.person.photos;
   }
@@ -113,10 +152,12 @@ const bestSharpness = computed(() => {
 // Reiniciar índice seleccionado al abrir modal o cambiar de persona
 watch(() => props.person?.id, () => {
   selectedPhotoIndex.value = 0;
+  selectedAppointmentId.value = 'all';
 });
 watch(() => props.show, (newVal) => {
   if (newVal) {
     selectedPhotoIndex.value = 0;
+    selectedAppointmentId.value = 'all';
     isConfirmDeletePersonOpen.value = false;
     isConfirmDeletePhotoOpen.value = false;
     photoToDeleteIndex.value = null;
@@ -272,6 +313,41 @@ const handleConfirmDeletePhoto = async () => {
             <span class="text-sm font-bold text-purple-300 font-mono">{{ bestSharpness }}</span>
           </div>
         </div>
+      </div>
+
+      <!-- Selector de Atenciones / Visitas del Cliente -->
+      <div v-if="clientAppointments.length > 0" class="px-4 sm:px-6 py-2.5 flex items-center gap-2 overflow-x-auto bg-slate-950/60 border-b border-slate-800/80">
+        <span class="text-xs font-semibold text-slate-400 shrink-0 flex items-center gap-1.5">
+          <AppIcon name="event" :size="14" class="text-blue-400" />
+          <span>Visitas:</span>
+        </span>
+        <button
+          type="button"
+          @click="selectedAppointmentId = 'all'; selectedPhotoIndex = 0"
+          :class="[
+            'px-2.5 py-1 rounded-lg text-xs font-medium shrink-0 transition flex items-center gap-1.5 cursor-pointer',
+            selectedAppointmentId === 'all'
+              ? 'bg-blue-600 text-white font-bold shadow-sm'
+              : 'bg-slate-800/80 hover:bg-slate-700 text-slate-300'
+          ]"
+        >
+          <span>Todas ({{ clientAppointments.reduce((sum, a) => sum + (a.photos?.length || 0), 0) }})</span>
+        </button>
+        <button
+          v-for="(apt, idx) in clientAppointments"
+          :key="apt.id"
+          type="button"
+          @click="selectedAppointmentId = apt.id; selectedPhotoIndex = 0"
+          :class="[
+            'px-2.5 py-1 rounded-lg text-xs font-medium shrink-0 transition flex items-center gap-1.5 cursor-pointer',
+            selectedAppointmentId === apt.id
+              ? 'bg-blue-600 text-white font-bold shadow-sm'
+              : 'bg-slate-800/80 hover:bg-slate-700 text-slate-300'
+          ]"
+        >
+          <AppIcon name="content_cut" :size="12" />
+          <span>Visita #{{ clientAppointments.length - idx }} ({{ apt.photos?.length || 0 }})</span>
+        </button>
       </div>
 
       <!-- Main Body Content: Inspector + Grid -->

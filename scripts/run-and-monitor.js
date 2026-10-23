@@ -29,9 +29,11 @@ function getVideoDuration(filePath) {
 }
 
 const VIDEO_PATH = process.argv[2] || process.env.MOCK_VIDEO_PATH || 'data/recordings/barberia_stream_10h.mp4';
-const SIM_FPS = Number(process.env.STREAM_FPS) || 60;
+const SIM_FPS = Number(process.env.STREAM_FPS) || 1;
+const START_SS = process.env.MOCK_VIDEO_START_SS ? Number(process.env.MOCK_VIDEO_START_SS) : 0;
 const detectedDuration = getVideoDuration(VIDEO_PATH);
-const TOTAL_SECONDS = detectedDuration ? Math.round(detectedDuration) : (VIDEO_PATH.includes('7h') ? 20076 : 33939);
+const TOTAL_DURATION = detectedDuration ? Math.round(detectedDuration) : (VIDEO_PATH.includes('7h') ? 20076 : 33939);
+const TOTAL_SECONDS = Math.max(1, TOTAL_DURATION - START_SS);
 const TOTAL_FRAMES = Math.round(TOTAL_SECONDS * SIM_FPS);
 
 
@@ -127,6 +129,12 @@ async function cleanTestDatabases() {
     } catch (e) {
       console.warn('[Setup] Aviso inicializando SQLite test:', e.message);
     }
+    // 2. Limpiar también Firestore test y sincronizar staff_barbero
+    try {
+      execSync(`node scripts/prepare_test_environment.js`, { cwd: PROJECT_ROOT, stdio: 'inherit' });
+    } catch (e) {
+      console.warn('[Setup] Aviso limpiando Firestore test:', e.message);
+    }
   } catch (err) {
     console.warn('[Setup] Aviso limpiando base de datos:', err.message);
   }
@@ -138,13 +146,13 @@ async function cleanTestDatabases() {
       try { fs.unlinkSync(path.join(auditDir, f)); } catch (_) {}
     }
   }
-  console.log('[Setup] ✅ Entorno de prueba 100% limpio y listo.');
+  console.log('[Setup] ✅ Entorno de prueba 100% limpio y listo (SQLite + Firestore test).');
 }
 
 async function startDockerSimulator() {
-  console.log(`[Docker] 🚀 Iniciando contenedor ${SIM_CONTAINER_NAME} a 60 FPS (${VIDEO_PATH})...`);
+  console.log(`[Docker] 🚀 Iniciando contenedor ${SIM_CONTAINER_NAME} (${SIM_FPS} FPS, Fast-Forward) (${VIDEO_PATH})...`);
   const projectFlag = COMPOSE_PROJECT_NAME ? `-p ${COMPOSE_PROJECT_NAME} ` : '';
-  execSync(`SIM_CONTAINER_NAME="${SIM_CONTAINER_NAME}" SIM_PORT="${SIM_PORT}" SIM_DATA_DIR="./${SIM_DATA_DIR}" MOCK_VIDEO_PATH="${VIDEO_PATH}" docker compose ${projectFlag}-f docker-compose.fast-sim.yml up -d --force-recreate`, {
+  execSync(`USE_FIREBASE="true" STREAM_FPS="${SIM_FPS}" REALTIME_INTERVAL_MS="10" SIM_CONTAINER_NAME="${SIM_CONTAINER_NAME}" SIM_PORT="${SIM_PORT}" SIM_DATA_DIR="./${SIM_DATA_DIR}" MOCK_VIDEO_PATH="${VIDEO_PATH}" MOCK_VIDEO_START_SS="${START_SS}" docker compose ${projectFlag}-f docker-compose.fast-sim.yml up -d --force-recreate`, {
     cwd: PROJECT_ROOT,
     stdio: 'ignore'
   });
@@ -169,7 +177,7 @@ async function generateFinalReport(timestampStr) {
 
   const contactSheetFilename = `contact_sheet_${timestampStr}.jpg`;
   const contactSheetPath = path.join(PROJECT_ROOT, 'docs', 'assets', 'simulacion_7h', contactSheetFilename);
-  const brainDir = '/Users/javierli/.gemini/antigravity/brain/cc53144b-6a66-4bb4-a06c-b2ad7ae70455';
+  const brainDir = process.env.BRAIN_DIR || '/Users/javierli/.gemini/antigravity/brain/6b0a0246-e5a0-4031-9928-6107401af0c2';
   const brainContactSheetPath = path.join(brainDir, contactSheetFilename);
 
   const rowComposites = [];
@@ -275,7 +283,7 @@ async function monitorProgress() {
   const timestampStr = getTimestampStr();
   process.stdout.write('\x1Bc');
   console.log(`===============================================================`);
-  console.log(`  SIMULACIÓN EN VIVO (${VIDEO_PATH} @ 60 FPS)`);
+  console.log(`  SIMULACIÓN EN VIVO (${VIDEO_PATH} @ ${SIM_FPS} FPS)`);
   console.log(`  Timestamp de Sesión: ${timestampStr}`);
   console.log(`===============================================================\n`);
 
