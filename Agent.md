@@ -196,6 +196,17 @@ El repositorio utiliza GitHub Actions con filtros por ruta (`paths:`):
 >    - Lo que se pruebe en simulación DEBE funcionar de forma idéntica en el streaming en vivo segundo a segundo.
 > 3. **Prohibición de "Hacer Trampa" en Benchmarks**: Diseñar algoritmos que solo funcionan cuando tienen el dataset completo en memoria mirando hacia el futuro es considerado una violación grave de arquitectura, pues genera reportes cosméticamente atractivos pero inoperables en la cámara en vivo.
 
+---
+
+### 14. Colaboración y Alineación con el Usuario (No Resolver Todo por Cuenta Propia)
+> [!IMPORTANT]
+> **PROHIBIDO INTENTAR SOLUCIONAR TODO DE FORMA AUTÓNOMA Y AISLADA**.
+> El agente es un copiloto de desarrollo y debe mantener una alineación constante con el usuario:
+> 1. **Pausas Obligatorias de Alineación**: Cuando surjan discrepancias, fallos de calibración o bifurcaciones en los resultados, el agente NO debe encadenar múltiples cambios especulativos o ejecutar bucles de corrección continuos por su cuenta.
+> 2. **Consultar y Proponer en Lugar de Asumir**: El agente debe detenerse, exponer con claridad sus hallazgos, diagnósticos objetivos y las opciones posibles, solicitando el criterio y la validación del usuario antes de proceder con modificaciones de fondo.
+> 3. **Respeto a las Directivas Inmediatas del Usuario**: Si el usuario pide detenerse, revisar una parte específica o plantear una hipótesis particular, el agente debe priorizar esa instrucción de forma inmediata por encima de cualquier plan autónomo previo.
+
+---
 
 ## 🛠️ Resumen de Componentes Técnicos
 

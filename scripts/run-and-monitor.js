@@ -373,7 +373,9 @@ async function monitorProgress() {
 }
 
 async function main() {
-  await cleanTestDatabases();
+  if (process.env.SKIP_CLEAN_DB !== "true") {
+    await cleanTestDatabases();
+  }
   await startDockerSimulator();
   await monitorProgress();
 }

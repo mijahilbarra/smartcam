@@ -12,7 +12,7 @@ import { PIPELINE_CONFIG } from "../../core/pipeline_config.js";
 import { computeCosineSimilarity } from "../../face_recognizer.js";
 import { computeSetToSetMetrics } from "./biometrics_math.js";
 import { mergePhotosAndEmbeddings, deduplicateSessionPhotos } from "./gallery_curator.js";
-import { computeFrontalityScore, hasTwoEyesVisible } from "../face_quality_service.js";
+import { computeFrontalityScore, hasTwoEyesVisible, isValidFaceGeometry } from "../face_quality_service.js";
 import {
   findChimeraSplit,
   splitChimeraSession,
@@ -64,25 +64,28 @@ export function getRepresentativeFace(photos = [], embeddings = []) {
     const score = Number(photo.sharpnessScore ?? photo.score ?? 0);
     const pose = photo.pose || photo.poseLabel || 'frontal';
 
+    const hasValidLandmarks = Array.isArray(photo.landmarks) && photo.landmarks.length === 5 && isValidFaceGeometry(photo.landmarks, photo.boxNorm);
+    const hasTwoEyes = photo.hasTwoEyes !== undefined
+      ? Boolean(photo.hasTwoEyes)
+      : (hasValidLandmarks ? hasTwoEyesVisible(photo.landmarks, photo.boxNorm, pose) : false);
+
     let frontality = typeof photo.frontalityScore === 'number' ? photo.frontalityScore : null;
-    if (frontality === null && Array.isArray(photo.landmarks) && photo.landmarks.length === 5) {
+    if (frontality === null && hasValidLandmarks) {
       frontality = computeFrontalityScore(photo.landmarks, photo.boxNorm, photo.yawScore, photo.pitchScore);
     }
     // Calibración anatómica de frontalidad:
-    // Poses frontales y semi-perfiles con 2 ojos son anclas de identidad superiores a poses reclinadas/tilted
-    if (pose === 'frontal') {
-      frontality = Math.max(frontality ?? 0, 0.85);
-    } else if (pose === 'semi_left' || pose === 'semi_right') {
-      frontality = Math.max(frontality ?? 0, 0.50);
-    } else if (pose.startsWith('tilted')) {
-      frontality = Math.min(frontality ?? 0.25, 0.30);
-    } else if (frontality === null) {
+    // Poses frontales y semi-perfiles con 2 ojos y landmarks válidos son anclas de identidad superiores a poses reclinadas/tilted
+    if (hasValidLandmarks && hasTwoEyes) {
+      if (pose === 'frontal') {
+        frontality = Math.max(frontality ?? 0, 0.85);
+      } else if (pose === 'semi_left' || pose === 'semi_right') {
+        frontality = Math.max(frontality ?? 0, 0.50);
+      } else if (pose.startsWith('tilted')) {
+        frontality = Math.min(frontality ?? 0.25, 0.30);
+      }
+    } else {
       frontality = 0.0;
     }
-
-    const hasTwoEyes = photo.hasTwoEyes !== undefined
-      ? Boolean(photo.hasTwoEyes)
-      : hasTwoEyesVisible(photo.landmarks, photo.boxNorm, pose);
 
     candidates.push({
       photo,
@@ -94,6 +97,7 @@ export function getRepresentativeFace(photos = [], embeddings = []) {
       compositeScore: frontality * 0.60 + Math.min(1.0, score / 100) * 0.40
     });
   }
+
 
   if (candidates.length === 0) {
     if (embeddings && embeddings.length > 0) {
@@ -120,8 +124,27 @@ export function getRepresentativeFace(photos = [], embeddings = []) {
     return null;
   }
 
-  // 1. Priorizar fotos con dos ojos visibles (hasTwoEyes === true)
+  // 1. Jerarquía de selección de foto representativa:
+  // Nivel A: Foto erguida con dos ojos visibles (frontal, semi_left, semi_right)
+  //          SIEMPRE gana sobre cualquier cara reclinada/tilted aunque la reclinada tenga mayor nitidez.
+  // Nivel B: Foto con dos ojos visibles aunque sea reclinada/tilted.
+  // Nivel C: Cualquier foto válida restante (perfiles o 1 ojo).
+  const isUprightWithTwoEyes = (c) => c.hasTwoEyes && ['frontal', 'semi_left', 'semi_right'].includes(c.pose);
+  const uprightCandidates = candidates.filter(isUprightWithTwoEyes);
   const twoEyesCandidates = candidates.filter(c => c.hasTwoEyes);
+
+  if (uprightCandidates.length > 0) {
+    uprightCandidates.sort((a, b) => b.compositeScore - a.compositeScore);
+    const best = uprightCandidates[0];
+    return {
+      photo: best.photo,
+      vector: best.vector,
+      score: best.score,
+      frontalityScore: best.frontalityScore,
+      hasFrontalAnchor: true
+    };
+  }
+
   if (twoEyesCandidates.length > 0) {
     twoEyesCandidates.sort((a, b) => b.compositeScore - a.compositeScore);
     const best = twoEyesCandidates[0];
@@ -130,7 +153,7 @@ export function getRepresentativeFace(photos = [], embeddings = []) {
       vector: best.vector,
       score: best.score,
       frontalityScore: best.frontalityScore,
-      hasFrontalAnchor: true
+      hasFrontalAnchor: false
     };
   }
 

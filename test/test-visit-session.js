@@ -41,6 +41,7 @@ track1.identity = {
 };
 track1.bestFace = {
   sharpnessScore: 88,
+  hasTwoEyes: true,
   faceBuffer: Buffer.from("face_bytes"),
   thumbnailBase64: "data:image/jpeg;base64,juan_face"
 };

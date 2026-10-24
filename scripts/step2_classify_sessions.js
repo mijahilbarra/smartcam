@@ -334,7 +334,7 @@ const rows = (fromSecond !== null && fromSecond > 0)
     `).all(videoName);
 
 console.log(`\n===============================================================`);
-console.log(`   ⚡ PASO 2: CLASIFICACIÓN Y FORMACIÓN DE CITAS (PIPELINE PROCESSES)`);
+console.log(`   ⚡ PASO 2: FAST CAUSAL REPLAY & CLASIFICACIÓN (PROCESSES)`);
 console.log(`===============================================================`);
 console.log(`📹 Video evaluado:        ${videoName}`);
 if (lastMinutes !== null) {
@@ -548,7 +548,9 @@ for (const row of rows) {
     staffProfiles,
     staffThreshold,
     minSharpness,
-    validPoses
+    validPoses,
+    imgWidth: 1280,
+    imgHeight: 720
   });
 
   if (evalResult.stage === 1) {
@@ -796,7 +798,7 @@ function unionNodes(i, j) {
 for (let i = 0; i < numSolid; i++) {
   const appt = solidAppts[i];
   const rep = solidReps[i];
-  console.log(`[SolidAppt ${i}] S12_${String(i+1).padStart(2, '0')}: started=${appt.startedAt}, ended=${appt.endedAt}, photosCount=${appt.photos?.length}, poses=[${appt.photos?.map(p => p.pose).join(', ')}]`);
+  console.log(`[SolidAppt ${i}] S12_${String(i+1).padStart(2, '0')}: trackId=${appt.trackId}, repPose=${rep?.photo?.pose}, repScore=${rep?.score?.toFixed(1)}, started=${appt.startedAt}, ended=${appt.endedAt}, photosCount=${appt.photos?.length}`);
 }
 
 // Cache para re-muestreo biocéntrico de recortes validados (sin barbero)
@@ -941,6 +943,29 @@ for (let i = 0; i < numSolid; i++) {
       sqliteTop3Sim = sqlMetrics.top3AvgSim;
     }
 
+    // Veto Biométrico de Foto Única:
+    // Solo aplica cuando la galería NO demuestra correspondencia biométrica contundente (maxSim < 0.65).
+    // Si existe una correspondencia real de galería (>= 0.65), una discrepancia en un solo fotograma (ej. cara reclinada)
+    // NO debe vetar a la misma persona física.
+    const hasStrongGalleryMatch = sqliteMaxSim >= 0.65 || enrichedMetrics.maxSim >= 0.65 || metrics.maxSim >= 0.65;
+    if (!hasStrongGalleryMatch) {
+      const isSamePoseRep = Boolean(repA?.photo?.pose && repB?.photo?.pose && repA.photo.pose === repB.photo.pose);
+      if (isSamePoseRep && repSim !== null && repSim < 0.33) {
+        console.log(`[Capa 13 Pair (${i}, ${j})] S12_${String(i+1).padStart(2, '0')} vs S12_${String(j+1).padStart(2, '0')}: 🛑 VETO BIOMÉTRICO ORTOGONAL (repSim=${repSim.toFixed(4)} < 0.33 homólogo)`);
+        continue;
+      }
+
+      const UPRIGHT_POSES_VETO = ['frontal', 'semi_left', 'semi_right'];
+      const isBothUprightRep = Boolean(repA?.photo?.pose && repB?.photo?.pose && UPRIGHT_POSES_VETO.includes(repA.photo.pose) && UPRIGHT_POSES_VETO.includes(repB.photo.pose));
+      const isOppositeProfiles = (repA?.photo?.pose === 'semi_left' && repB?.photo?.pose === 'semi_right') ||
+                                 (repA?.photo?.pose === 'semi_right' && repB?.photo?.pose === 'semi_left');
+      const uprightVetoThreshold = isOppositeProfiles ? 0.22 : 0.28;
+      if (isBothUprightRep && repSim !== null && repSim < uprightVetoThreshold) {
+        console.log(`[Capa 13 Pair (${i}, ${j})] S12_${String(i+1).padStart(2, '0')} vs S12_${String(j+1).padStart(2, '0')}: 🛑 VETO BIOMÉTRICO ERGUIDO (repSim=${repSim.toFixed(4)} < ${uprightVetoThreshold} entre caras erguidas)`);
+        continue;
+      }
+    }
+
     // 4. Normalización Adaptativa de Cohorte (Adaptive S-Norm) y Ratio de Contraste
     const cohortSim = ((apptA.photos?.length || 0) < 5 || (apptB.photos?.length || 0) < 5)
       ? Math.max(metrics.maxSim, repSim || 0)
@@ -978,7 +1003,7 @@ for (let i = 0; i < numSolid; i++) {
       ? (process.env.SAME_POSE_THRESHOLD ? parseFloat(process.env.SAME_POSE_THRESHOLD) : 0.58)
       : (process.env.CROSS_POSE_THRESHOLD ? parseFloat(process.env.CROSS_POSE_THRESHOLD) : 0.48);
 
-    console.log(`[Capa 13 Pair (${i}, ${j})] S12_${String(i+1).padStart(2, '0')} (${apptA.photos?.length}f, repPose=${repA?.photo?.pose}, repScore=${repA?.score?.toFixed(1)}) vs S12_${String(j+1).padStart(2, '0')} (${apptB.photos?.length}f, repPose=${repB?.photo?.pose}, repScore=${repB?.score?.toFixed(1)}): gapMs=${gapMs} (${(gapMs/60000).toFixed(1)}m), repSim=${repSim !== null ? repSim.toFixed(4) : 'null'}, maxSim=${metrics.maxSim.toFixed(4)}, enrichedMax=${enrichedMetrics.maxSim.toFixed(4)}, sqliteMax=${sqliteMaxSim.toFixed(4)}, top3AvgSim=${metrics.top3AvgSim.toFixed(4)}, sNorm=${sNorm.toFixed(2)}, contrast=${contrastRatio.toFixed(2)}, dynThresh=${dynamicThreshold.toFixed(2)}`);
+    console.log(`[Capa 13 Pair (${i}, ${j})] S12_${String(i+1).padStart(2, '0')} (${apptA.photos?.length}f, repPose=${repA?.photo?.pose}, repScore=${repA?.score?.toFixed(1)}) vs S12_${String(j+1).padStart(2, '0')} (${apptB.photos?.length}f, repPose=${repB?.photo?.pose}, repScore=${repB?.score?.toFixed(1)}): gapMs=${gapMs} (${(gapMs/60000).toFixed(1)}m), chairs=(${apptA.chairId}, ${apptB.chairId}), repSim=${repSim !== null ? repSim.toFixed(4) : 'null'}, maxSim=${metrics.maxSim.toFixed(4)}, enrichedMax=${enrichedMetrics.maxSim.toFixed(4)}, sqliteMax=${sqliteMaxSim.toFixed(4)}, top3AvgSim=${metrics.top3AvgSim.toFixed(4)}, sNorm=${sNorm.toFixed(2)}, contrast=${contrastRatio.toFixed(2)}, dynThresh=${dynamicThreshold.toFixed(2)}`);
 
     // Blindaje Homólogo Específico: Si los representantes tienen exactamente la misma pose con buena nitidez
     // y similitud baja con contraste pobre frente a cohorte, son personas distintas (rotación en la silla).
@@ -995,27 +1020,34 @@ for (let i = 0; i < numSolid; i++) {
     let mergeReason = '';
 
     if (!isHomologousDifferentPerson) {
-      // 1. Continuidad real del mismo cliente en la misma silla:
-      // Respaldada exclusivamente por certeza biométrica frente a cohorte (S-Norm >= 2.5 con compatibilidad)
-      // CERO heurísticas temporales: la decisión es puramente matemática y biológica.
-      if (apptA.chairId === apptB.chairId && !isOverlap) {
-        const isRepIncompatible = (repSim !== null && repSim < 0.35 && maxBiometric < 0.65);
-        if (!isRepIncompatible) {
-          const isBiometricallyCertain = sNorm >= 2.5 && (contrastRatio >= 1.35 || maxBiometric >= 0.60);
-          if (isBiometricallyCertain && (metrics.maxSim >= 0.46 || enrichedMetrics.maxSim >= 0.46 || sqliteMaxSim >= 0.46)) {
-            isSamePerson = true;
-            mergeReason = `sNormContinuity (sNorm=${sNorm.toFixed(2)}, max=${maxBiometric.toFixed(3)})`;
+      // 1. Continuidad real del mismo cliente en la misma silla (micro-pausa / lavacabezas / tramos contiguos):
+      // Acotada a pausas cortas (gapMs <= 6 min) contiguas en la misma silla.
+      if (apptA.chairId === apptB.chairId && !isOverlap && gapMs <= 6 * 60 * 1000) {
+        if (maxBiometric >= 0.68) {
+          isSamePerson = true;
+          mergeReason = `chairContinuityHighBiometric (max=${maxBiometric.toFixed(3)}, gap=${(gapMs/1000).toFixed(0)}s)`;
+        } else {
+          const isRepIncompatible = (repSim !== null && repSim < 0.28 && maxBiometric < 0.48);
+          if (!isRepIncompatible) {
+            const isBiometricallyCertain = (sNorm >= 2.5 && contrastRatio >= 1.35) ||
+              (sNorm >= 2.0 && maxBiometric >= 0.60) ||
+              (maxBiometric >= 0.62 && repSim !== null && repSim >= 0.40);
+            if (isBiometricallyCertain && (metrics.maxSim >= 0.45 || enrichedMetrics.maxSim >= 0.45 || sqliteMaxSim >= 0.45)) {
+              isSamePerson = true;
+              mergeReason = `sNormContinuity (sNorm=${sNorm.toFixed(2)}, max=${maxBiometric.toFixed(3)})`;
+            }
           }
         }
       }
 
-      // 2. Alta concordancia biométrica (Set-to-Set sostenido: max >= 0.65 Y top3Avg >= 0.48):
-      if (!isSamePerson && gapMs <= 30 * 60 * 1000) {
+      // 2. Alta concordancia biométrica (Set-to-Set sostenido en gaps mayores):
+      if (!isSamePerson) {
         const maxS = Math.max(sqliteMaxSim, metrics.maxSim, enrichedMetrics.maxSim);
         const top3S = Math.max(sqliteTop3Sim, metrics.top3AvgSim, enrichedMetrics.top3AvgSim);
-        const isMemoryIncompatible = metrics.maxSim < 0.42 || (repSim !== null && repSim < 0.25 && metrics.maxSim < 0.50);
+        const isMemoryIncompatible = (repSim !== null && repSim < 0.25 && maxS < 0.65);
         if (!isMemoryIncompatible) {
-          if (maxS >= 0.65 && top3S >= 0.48) {
+          // Exigir alta similitud con respaldo de cohorte (S-Norm >= 2.0 o maxS >= 0.70 con gap corto o S-Norm)
+          if ((maxS >= 0.65 && top3S >= 0.48 && sNorm >= 2.0) || (maxS >= 0.70 && (gapMs <= 6 * 60 * 1000 || sNorm >= 2.0))) {
             isSamePerson = true;
             mergeReason = `highBiometric (max=${maxS.toFixed(3)}, top3=${top3S.toFixed(3)})`;
           }
@@ -1023,7 +1055,7 @@ for (let i = 0; i < numSolid; i++) {
       }
 
       // 3. Identidad estadísticamente indudable frente a cohorte (S-Norm >= 2.5 Y contrastRatio >= 1.7 Y top3Avg >= 0.48):
-      if (!isSamePerson && gapMs <= 30 * 60 * 1000) {
+      if (!isSamePerson) {
         if (sNorm >= 2.5 && contrastRatio >= 1.7 && Math.max(sqliteTop3Sim, metrics.top3AvgSim) >= 0.48) {
           isSamePerson = true;
           mergeReason = `sNormAndContrast (sNorm=${sNorm.toFixed(2)}, contrast=${contrastRatio.toFixed(2)})`;
@@ -1031,12 +1063,12 @@ for (let i = 0; i < numSolid; i++) {
       }
 
       // 4. Criterio representativo directo o de lavacabezas (repSim >= dynamicThreshold o multi-pose):
-      if (!isSamePerson && gapMs <= 30 * 60 * 1000) {
+      if (!isSamePerson) {
         const isDirectRepMatch = repSim !== null && repSim >= dynamicThreshold;
         const isRepWithSetMatch = repSim !== null && repSim >= (dynamicThreshold - 0.04) && metrics.top3AvgSim >= dynamicThreshold;
         const isSetToSetMatch = (
-          (metrics.maxCompatiblePoseSim >= dynamicThreshold && metrics.top3AvgSim >= (dynamicThreshold - 0.01) && compatiblePeersCount >= 2) ||
-          (metrics.top3AvgSim >= dynamicThreshold && metrics.maxSim >= dynamicThreshold && compatiblePeersCount >= 5)
+          (metrics.maxCompatiblePoseSim >= dynamicThreshold && metrics.top3AvgSim >= (dynamicThreshold - 0.01) && compatiblePeersCount >= 2 && (repSim === null || repSim >= 0.38) && (gapMs <= 6 * 60 * 1000 || sNorm >= 2.0)) ||
+          (metrics.top3AvgSim >= dynamicThreshold && metrics.maxSim >= dynamicThreshold && compatiblePeersCount >= 5 && (repSim === null || repSim >= 0.38) && (gapMs <= 6 * 60 * 1000 || sNorm >= 2.0))
         );
         const isTransitionalChair = (apptA.chairId === apptB.chairId && !isOverlap && (
           (gapMs <= 30000 && (isDirectRepMatch || isSetToSetMatch))
@@ -1050,6 +1082,7 @@ for (let i = 0; i < numSolid; i++) {
         const isWashbasinReturn = Boolean(
           apptA.chairId && apptB.chairId &&
           apptA.chairId === apptB.chairId &&
+          (contrastRatio >= 1.0) &&
           (
             (repSim !== null && repSim >= dynamicThreshold) ||
             (repSim !== null && repSim >= (dynamicThreshold - 0.04) && weightedSim >= dynamicThreshold) ||
