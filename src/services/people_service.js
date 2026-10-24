@@ -110,7 +110,10 @@ export function enrichPersonAngles(person, { embedding, faceThumbnailBase64, sha
       }
 
       const passesCanonical = canonicalSim >= minSim || (maxGallerySim >= 0.55 && canonicalSim >= 0.42);
-      if (!passesCanonical) {
+      const isProvisional = person?.status === "to_verify" || /^Cliente\s*\(Por verificar\)/i.test(person?.name || "") || options.allowReAnchor;
+      const canReAnchorHere = isProvisional && currentGallery.length <= 2 && (sharpnessScore >= 45) && ['frontal', 'semi_left', 'semi_right'].includes(poseClean) && options.hasTwoEyes;
+
+      if (!passesCanonical && !canReAnchorHere) {
         console.warn(`[PeopleService] Ángulo rechazado para "${person.name || person.id}": similitud con rostro canónico (${canonicalSim.toFixed(3)}) < ${minSim}. Previene contaminación de galería.`);
         return {
           embeddings: currentGallery,
@@ -118,6 +121,10 @@ export function enrichPersonAngles(person, { embedding, faceThumbnailBase64, sha
           rejected: true,
           reason: 'canonical_mismatch'
         };
+      } else if (!passesCanonical && canReAnchorHere) {
+        console.log(`[PeopleService] 🔄 Re-anclando galería de "${person.name || person.id}" con rostro de mayor calidad (Nitidez: ${sharpnessScore}, Pose: ${poseClean}).`);
+        currentGallery = [embedding];
+        existingPhotos = [];
       }
     }
   }
@@ -582,21 +589,68 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
           anchorMaxSim = Math.max(...anchorSims);
         }
 
+        const isProvisionalToVerify = p.status === "to_verify" ||
+          activeSession.tempClientId === p.id ||
+          /^Cliente\s*\(Por verificar\)/i.test(p.name || "");
+
+        const sessionDurationMs = (options.nowEpoch || Date.now()) - (activeSession.startedAtEpoch || (options.nowEpoch || Date.now()));
+        const isInitialGraceWindow = sessionDurationMs <= 45000;
+        const isChairVacant = activeSession.status === "esperando_liberacion" || Boolean(activeSession.emptySinceEpoch);
+        const isSameTrack = !crop.trackId || !activeSession.trackId || crop.trackId === activeSession.trackId;
+        const isConsolidated = (p.embeddings && p.embeddings.length >= 3) || sessionDurationMs > 45000;
+
+        // Anti-anclaje de captura errónea (Argon 4 Capa 3):
+        // Solo permitido en los primeros 45s del MISMO track si la captura inicial fue débil (busto/1 ojo).
+        // Una vez consolidado (>= 3 embeddings o > 45s), el re-anclaje queda permanentemente bloqueado.
+        const isWeakInitialSeed = !p.photos?.[0] || (p.photos[0].sharpnessScore || 0) < 45 || p.photos[0].hasTwoEyes === false;
+        const canReAnchorProvisional = isProvisionalToVerify &&
+          !isConsolidated &&
+          isInitialGraceWindow &&
+          !isChairVacant &&
+          isSameTrack &&
+          isWeakInitialSeed &&
+          (quality.sharpnessScore || 0) >= 45 &&
+          ['frontal', 'semi_left', 'semi_right'].includes(quality.pose || '') &&
+          quality.hasTwoEyes;
+
         // Validar que el rostro en la silla efectivamente corresponda al cliente de la sesión:
         // Si la sesión ya tiene >= 2 vectores, exigir coherencia tanto en maxSim (>= 0.40) como en avgSim (>= 0.23) y anclas iniciales (>= 0.27)
         // para impedir puentes ("chain contamination") cuando se sienta un nuevo cliente.
         const isMatchToSessionClient = pVectors.length === 0 ||
-          (pVectors.length === 1 ? (canonicalSim >= 0.35 || maxSim >= 0.38) : (maxSim >= 0.40 && avgSim >= 0.23 && anchorMaxSim >= 0.27));
+          canReAnchorProvisional ||
+          (pVectors.length === 1 ? (canonicalSim >= 0.38 || maxSim >= 0.45) : (maxSim >= 0.40 && avgSim >= 0.23 && anchorMaxSim >= 0.27));
 
         if (isMatchToSessionClient) {
           sessionMatched = true;
-          const isProvisionalToVerify = p.status === "to_verify" ||
-            activeSession.tempClientId === p.id ||
-            /^Cliente\s*\(Por verificar\)/i.test(p.name || "");
 
-          // IMPORTANTE: Si es un perfil provisional "to_verify", NO mutar p.photos ni activeSession.embeddings aquí;
-          // VisitSessionService.processTrack + addFaceSample es la única fuente de verdad para validar rotación y agregar muestras.
-          if (!isProvisionalToVerify) {
+          if (canReAnchorProvisional && (canonicalSim < 0.38 || anchorMaxSim < 0.38)) {
+            console.log(`[FaceRecognition] 🔄 Re-anclando perfil provisional "${p.name}" con rostro genuino de mayor nitidez (${quality.sharpnessScore} vs ${p.bestFaceScore || 0}, pose: ${quality.pose}).`);
+            p.embedding = embedding;
+            p.embeddings = [embedding];
+            p.thumbnailBase64 = faceThumbnailBase64;
+            p.bestFaceScore = quality.sharpnessScore;
+            p.photos = [{
+              thumbnailBase64: faceThumbnailBase64,
+              sharpnessScore: quality.sharpnessScore,
+              capturedAt: new Date(options.nowEpoch || Date.now()).toISOString(),
+              pose: quality.pose || 'frontal',
+              poseLabel: quality.poseLabel || 'Frontal'
+            }];
+            if (activeSession) {
+              activeSession.thumbnailBase64 = faceThumbnailBase64;
+              activeSession.bestFaceScore = quality.sharpnessScore;
+              activeSession.embeddings = [embedding];
+              activeSession.photos = [...p.photos];
+              activeSession.rotationCandidates = [];
+            }
+            if (custService?.profilesCache) {
+              custService.profilesCache.set(p.id, p);
+            }
+          }
+
+          // Enriquecimiento de ángulos biométricos: permite que perfiles provisionales acumulen hasta 5 ángulos
+          const isEligibleForAngleEnrichment = !isProvisionalToVerify || (p.embeddings && p.embeddings.length < 5);
+          if (isEligibleForAngleEnrichment) {
             let currentGallery = Array.isArray(p.embeddings) && p.embeddings.length > 0
               ? [...p.embeddings]
               : (Array.isArray(p.embedding) ? [p.embedding] : []);
@@ -684,6 +738,11 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
             confidence: crop.confidence,
             faceBuffer: quality.faceBuffer,
             faceBoxNorm: quality.faceBoxNorm,
+            landmarks: quality.landmarks || null,
+            hasTwoEyes: quality.hasTwoEyes,
+            frontalityScore: quality.frontalityScore,
+            yawScore: quality.yawScore,
+            pitchScore: quality.pitchScore,
             thumbnailBase64: faceThumbnailBase64 || p.photos?.[0]?.thumbnailBase64 || p.thumbnailBase64,
             sharpnessScore: quality.sharpnessScore,
             embedding: embedding,
@@ -927,6 +986,11 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
             confidence: crop.confidence,
             faceBuffer: quality.faceBuffer,
             faceBoxNorm: quality.faceBoxNorm,
+            landmarks: quality.landmarks || null,
+            hasTwoEyes: quality.hasTwoEyes,
+            frontalityScore: quality.frontalityScore,
+            yawScore: quality.yawScore,
+            pitchScore: quality.pitchScore,
             thumbnailBase64: faceThumbnailBase64,
             sharpnessScore: quality.sharpnessScore,
             embedding: embedding,
@@ -936,6 +1000,13 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
           });
         } else {
           // Ciclo 1: Registrar como candidato pendiente en memoria
+          // Validar que el recorte tenga rostro válido y nítido
+          const isEligibleCandidateSeed = quality.isValid && (quality.sharpnessScore || 0) >= 28;
+          if (!isEligibleCandidateSeed) {
+            console.log(`[FaceRecognition] Recorte en ${crop.zoneId || 'silla'} no elegible como candidato inicial (pose: ${quality.pose}, nitidez: ${quality.sharpnessScore}).`);
+            continue;
+          }
+
           const tempId = `person_${Date.now()}_${i + 1}`;
           const candidateKey = `cand_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
           const initialPhoto = {
@@ -978,6 +1049,11 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
             confidence: crop.confidence,
             faceBuffer: quality.faceBuffer,
             faceBoxNorm: quality.faceBoxNorm,
+            landmarks: quality.landmarks || null,
+            hasTwoEyes: quality.hasTwoEyes,
+            frontalityScore: quality.frontalityScore,
+            yawScore: quality.yawScore,
+            pitchScore: quality.pitchScore,
             thumbnailBase64: faceThumbnailBase64,
             sharpnessScore: quality.sharpnessScore,
             embedding: embedding,

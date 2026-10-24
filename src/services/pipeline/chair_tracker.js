@@ -67,23 +67,9 @@ export async function evaluateChairRotation({
     return { rotated: false, shouldHold: false };
   }
 
-  // Si no es coherente con la galería actual, evaluar como candidato de rotación.
-  // Regla Maestra: Exigir que el candidato entrante tenga hasTwoEyes = true.
-  // Los perfiles laterales unilaterales (1 solo ojo) jamás deben disparar rotaciones ni expulsiones.
-  const hasTwoEyes = activeFace?.hasTwoEyes !== undefined
-    ? Boolean(activeFace.hasTwoEyes)
-    : hasTwoEyesVisible(
-        activeFace?.landmarks,
-        activeFace?.faceBoxNorm || activeFace?.boxNorm,
-        incomingPose || activeFace?.pose
-      );
-
-  if (!hasTwoEyes) {
-    session.lastSeenEpoch = now;
-    session.lastClientSeenEpoch = now;
-    return { rotated: false, shouldHold: true };
-  }
-
+  // Buffer de novedad multilateral (Argon 4 Capa 1):
+  // No bloquear perfiles por hasTwoEyes. Rostros nítidos (sharpness >= 28)
+  // entran al buffer de candidatos independientemente de la pose.
   if (!Array.isArray(session.rotationCandidates)) {
     session.rotationCandidates = [];
   }
@@ -100,7 +86,7 @@ export async function evaluateChairRotation({
       thumbnailBase64: activeFace.thumbnailBase64 || null,
       pose: incomingPose,
       poseLabel: activeFace.poseLabel || track?.identity?.poseLabel || "Frontal",
-      hasTwoEyes: true,
+      hasTwoEyes: activeFace.hasTwoEyes !== undefined ? Boolean(activeFace.hasTwoEyes) : true,
       timestamp: now,
       landmarks: activeFace.landmarks || null,
       frontalityScore: activeFace.frontalityScore,
@@ -117,36 +103,59 @@ export async function evaluateChairRotation({
     session.pendingRotationSplitEpoch = null;
   }
 
-  if (!isSameTrack && (session.status === "esperando_liberacion" || Boolean(session.pendingRotationSplitEpoch))) {
+  // Continuidad de Tracklet (Argon 4 Nivel 2 - Caso I):
+  // Si YOLO re-indexa el trackId pero la biometría confirma continuidad (>= 0.48), absorber sin rotar
+  if (!isSameTrack && (maxSim >= 0.48 || maxCompatibleSim >= 0.48)) {
+    session.trackId = track.trackId;
+    session.rotationCandidates = [];
+    session.lastMatchedClientFaceEpoch = now;
+    return { rotated: false, shouldHold: false };
+  }
+
+  if (session.status === "esperando_liberacion" || Boolean(session.pendingRotationSplitEpoch)) {
     consistentPeers = session.rotationCandidates.filter(
       c => computeCosineSimilarity(newEmbedding, c.embedding) >= 0.45
     );
     shouldRotate = consistentPeers.length >= (session.status === "esperando_liberacion" ? 1 : 2);
   } else {
     consistentPeers = session.rotationCandidates.filter(
-      c => computeCosineSimilarity(newEmbedding, c.embedding) >= 0.46
+      c => computeCosineSimilarity(newEmbedding, c.embedding) >= 0.45
     );
-    // Regla 1.1: Un giro de cabeza, toalla o recorte sin cara válida NO rota (esos casos nunca
-    // llegan aquí: sin cara => solo presencia; sin dos ojos => hold). Solo varias caras con dos
-    // ojos, coherentes entre sí y distintas al cliente actual pueden rotar in-place.
+
+    // Criterio Biocéntrico y Multilateral de Rotación en Silla (Argon 4 Nivel 2):
+    const hasCandidatePeer = Boolean(track?.identity?.isCandidate && (track.identity.candidateCount || 0) >= 4 && consistentPeers.length >= 2);
+
+    // Vía A (Cross-Track Transition con disyunción ortogonal):
+    // YOLO asigna un trackId diferente, el rostro es ortogonal (< 0.38) y existen al menos 2 muestras consistentes en el novelty buffer
+    const isCrossTrackRotation = !isSameTrack && consistentPeers.length >= 2 && maxSim < 0.38 && top3AvgSim < 0.38;
+
+    // Vía B: Ortogonalidad indudable (< 0.35) entre tracklets distintos:
+    const isOrthogonalDistinct = !isSameTrack && maxSim < 0.35 && consistentPeers.length >= 2;
+
+    // Vía C: Respaldo por ventana de vacancia o face gap prolongado:
     const faceGapMs = now - (session.lastMatchedClientFaceEpoch || session.startedAtEpoch || now);
-    const spanMs = (consistentPeers[consistentPeers.length - 1]?.timestamp || now) - (consistentPeers[0]?.timestamp || now);
-    const rotateAfterFaceGap =
-      !isSameTrack && faceGapMs >= 35000 && consistentPeers.length >= 2 &&
-      (spanMs >= 5000 || consistentPeers.length >= 3) &&
-      top3AvgSim < 0.48 && maxCompatibleSim < 0.48 && maxSim < 0.52;
-    const rotateByPeerCluster =
-      !isSameTrack && consistentPeers.length >= 3 &&
-      (spanMs >= 12000 || session.rotationCandidates.length >= 4) &&
-      top3AvgSim < 0.47 && maxCompatibleSim < 0.48 && maxSim < 0.52;
+    const rotateAfterFaceGap = (!isSameTrack && faceGapMs >= 35000) && (consistentPeers.length >= 2 || hasCandidatePeer) &&
+      top3AvgSim < 0.45 && maxCompatibleSim < 0.45 && maxSim < 0.48;
+
+    // Vía D: Test sintético / ortogonalidad extrema (< 0.12) con consenso:
     const isSyntheticOrthogonalTest = maxSim < 0.12 && consistentPeers.length >= 2;
-    shouldRotate = rotateAfterFaceGap || rotateByPeerCluster || isSyntheticOrthogonalTest;
+
+    shouldRotate = isCrossTrackRotation || isOrthogonalDistinct || rotateAfterFaceGap || isSyntheticOrthogonalTest;
   }
 
   if (shouldRotate) {
     const endedAt = session.pendingRotationSplitEpoch || session.emptySinceEpoch || consistentPeers[0]?.timestamp || now;
     const durationMin = Math.max(1, Math.round((endedAt - session.startedAtEpoch) / 60000));
-    const initialRotationCandidates = [...consistentPeers];
+    const initialRotationCandidates = consistentPeers.length > 0 ? [...consistentPeers] : (activeFace ? [{
+      faceBuffer: activeFace.faceBuffer,
+      sharpnessScore: activeFace.sharpnessScore || 0,
+      embedding: newEmbedding,
+      thumbnailBase64: activeFace.thumbnailBase64 || null,
+      pose: incomingPose,
+      poseLabel: activeFace.poseLabel || track?.identity?.poseLabel || "Frontal",
+      hasTwoEyes: true,
+      timestamp: now
+    }] : []);
     const overrideStartedAt = endedAt;
 
     logVerbal(`🔄 Rotación de cliente detectada en ${session.chairName} (similitud con previo: max=${maxSim.toFixed(3)}, compatible=${maxCompatibleSim.toFixed(3)}, top3Avg=${top3AvgSim.toFixed(3)}; muestras nuevo: ${consistentPeers.length}). Finalizando atención previa de ${durationMin} min...`, "process");
@@ -169,9 +178,10 @@ export async function evaluateChairRotation({
     };
   }
 
-  // Retener muestra en buffer sin contaminar galería actual
+  // Retener muestra en buffer sin contaminar galería actual (Argon 4 Capa 1):
+  // Solo se actualiza lastSeenEpoch (presencia física en la silla).
+  // NO se actualiza lastClientSeenEpoch porque el rostro entrante difiere del cliente de la sesión.
   session.lastSeenEpoch = now;
-  session.lastClientSeenEpoch = now;
   return { rotated: false, shouldHold: true };
 }
 
@@ -208,12 +218,18 @@ export async function initChairSession({
     : now;
   const startedAt = overrideStartedAt || rawEnteredAt;
   const hasInitialCandidates = Array.isArray(initialRotationCandidates) && initialRotationCandidates.length > 0;
+  const isActiveFaceSolid = Boolean(
+    activeFace?.thumbnailBase64 &&
+    ['frontal', 'semi_left', 'semi_right'].includes(activeFace.pose) &&
+    (activeFace.sharpnessScore || 0) >= 45 &&
+    activeFace.hasTwoEyes === true
+  );
   const initialThumb = hasInitialCandidates
     ? (initialRotationCandidates.find(c => c.thumbnailBase64)?.thumbnailBase64 || null)
-    : (activeFace?.thumbnailBase64 || null);
+    : (isActiveFaceSolid ? (activeFace?.thumbnailBase64 || null) : null);
   const initialScore = hasInitialCandidates
     ? Math.max(...initialRotationCandidates.map(c => c.sharpnessScore || 0))
-    : (activeFace?.sharpnessScore || 0);
+    : (isActiveFaceSolid ? (activeFace?.sharpnessScore || 0) : 0);
 
   const session = {
     id: visitId,
@@ -275,7 +291,7 @@ export async function initChairSession({
           initialEmbeddings.push(c.embedding);
         }
       }
-    } else if (activeFace?.thumbnailBase64) {
+    } else if (isActiveFaceSolid) {
       const knownProfiles = customerService?.getComparisonProfiles?.() || [];
       const staffCheck = activeFace.embedding
         ? matchStaffFace(activeFace.embedding, knownProfiles, 0.40, { pose: activeFace.pose })
@@ -294,6 +310,8 @@ export async function initChairSession({
       } else {
         logVerbal(`🛡️ Rostro de activeFace sospechoso de staff (sim: ${staffCheck.maxStaffSim.toFixed(3)}) excluido de la galería inicial del cliente.`, "process");
       }
+    } else if (activeFace) {
+      logVerbal(`🛡️ Captura inicial en silla descartada (no es rostro frontal sólido score>=50 con 2 ojos). Galería arranca limpia.`, "process");
     }
     const provisionalCustomer = {
       id: tempClientId,
@@ -693,14 +711,9 @@ export async function orchestrateChairTrack({
   }
 
   const incomingPose = track.latestFace?.pose || track.identity?.pose || null;
-  const isTiltedFace = incomingPose && !['frontal', 'semi_left', 'semi_right'].includes(incomingPose);
 
-  // Si la cara está mirando hacia arriba (chata) o hacia abajo, es el mismo cliente en corte / lavado / barba.
-  // NO debe acumularse en rotationCandidates ni disparar rotación prematura.
-  if (session && isTiltedFace) {
-    session.rotationCandidates = [];
-    session.lastMatchedClientFaceEpoch = now;
-    session.lastClientSeenEpoch = now;
+  // Actualizar presencia física continua en la silla (sin mutar lastMatchedClientFaceEpoch ni lastClientSeenEpoch prematuramente)
+  if (session) {
     session.lastSeenEpoch = now;
   }
 

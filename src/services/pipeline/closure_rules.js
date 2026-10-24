@@ -12,6 +12,7 @@
 import { computeCosineSimilarity, arePosesCompatible } from "../../face_recognizer.js";
 import { computeSubsetCohesion, computeSetToSetMetrics } from "./biometrics_math.js";
 import { deduplicateSessionPhotos } from "./gallery_curator.js";
+import { hasTwoEyesVisible } from "../face_quality_service.js";
 
 /**
  * Purga fotos individuales que pertenezcan al Barbero/Staff dentro del cluster de fotos de una atención
@@ -452,34 +453,39 @@ export async function prepareAndFilterSessionForClosure({
   }
 
   // A. Filtro Anti-Ruido Anatómico (Manos, Tijeras, Nucas y Celulares):
-  // Exigencia de al menos un rostro frontal o semi-frontal identificable
+  // Exigencia inquebrantable de al menos un rostro anatómico genuino con dos ojos visibles
   const candidatePhotos = (session.photos && session.photos.length > 0)
     ? session.photos
     : ((customerService?.getCustomerData?.(session.personId)?.photos) ||
        (customerService?.getCustomerData?.(session.tempClientId)?.photos) || []);
 
-  const hasFrontalOrSemiPose = candidatePhotos.some(p =>
-    ['frontal', 'semi_left', 'semi_right'].includes(p?.pose || (p && !p.pose ? 'frontal' : ''))
-  );
+  const hasAnatomicalFace = candidatePhotos.some(p => {
+    const isUprightPose = ['frontal', 'semi_left', 'semi_right'].includes(p?.pose || (p && !p.pose ? 'frontal' : ''));
+    const hasTwoEyes = p?.hasTwoEyes !== undefined
+      ? Boolean(p.hasTwoEyes)
+      : (p?.landmarks && Array.isArray(p.landmarks) && p.landmarks.length >= 5 ? hasTwoEyesVisible(p.landmarks, p.boxNorm, p.pose) : false);
+    return isUprightPose || hasTwoEyes;
+  });
 
-  if (durationMinutes < minMinutes && !hasFrontalOrSemiPose) {
+  // Si una atención jamás mostró un rostro anatómico con 2 ojos (ej. nuca siendo afeitada), se descarta siempre
+  if (!hasAnatomicalFace) {
     if (session.tempClientId) {
       await customerService?.deleteCustomer?.(session.tempClientId, { db });
     }
     if (session.personId && session.personId !== session.tempClientId && !session.personId.startsWith("staff_")) {
       await customerService?.deleteCustomer?.(session.personId, { db });
     }
-    logVerbal(`✋ Sesión corta (< ${minMinutes}m) sin rostro frontal/semi-frontal en ${session.chairName || `Track #${trackId}`}: descartada como ruido anatómico (manos/nuca/objeto).`, 'info');
+    logVerbal(`✋ Sesión de ${durationMinutes}m sin rostro anatómico con dos ojos en ${session.chairName || `Track #${trackId}`}: descartada como falso positivo (nuca/pelo/objeto).`, 'info');
     if (stats) stats.noiseDiscarded++;
     return { shouldDiscard: true };
   }
 
-  // B. Filtro de Densidad Mínima en Sesiones Prolongadas (Tránsito / Silla Vacía)
-  // y Purga de Colitas Residuales (< 2 min):
+  // B. Filtro de Densidad Mínima y Purga de Colitas Efímeras (< 2 min / <= 4 fotos):
   const isUnitTest = /[\\\/]test[\\\/]/.test(process.argv[1] || '') && process.env.IS_LOCAL_SIMULATOR !== "true";
   if (!isUnitTest) {
-    const isTransitEmptyChair = (durationMinutes >= 5 && candidatePhotos.length <= 2);
-    const isMicroTail = (durationMinutes < 2 && candidatePhotos.length < 4);
+    const hasSolidFace = candidatePhotos.some(p => (p.sharpnessScore || 0) >= 50);
+    const isTransitEmptyChair = (durationMinutes >= 4 && (candidatePhotos.length === 0 || (!hasSolidFace && candidatePhotos.length <= 2)));
+    const isMicroTail = (durationMinutes <= 1 && candidatePhotos.length <= 3);
     if (isTransitEmptyChair || isMicroTail) {
       if (session.tempClientId) {
         await customerService?.deleteCustomer?.(session.tempClientId, { db });
@@ -487,7 +493,7 @@ export async function prepareAndFilterSessionForClosure({
       if (session.personId && session.personId !== session.tempClientId && !session.personId.startsWith("staff_")) {
         await customerService?.deleteCustomer?.(session.personId, { db });
       }
-      logVerbal(`⏱️ Sesión de ${durationMinutes} min con densidad o duración insuficiente (${candidatePhotos.length} fotos) en ${session.chairName || `Track #${trackId}`}: descartada como falso positivo de tránsito/silla vacía.`, "info");
+      logVerbal(`⏱️ Sesión de ${durationMinutes} min con densidad o duración insuficiente (${candidatePhotos.length} fotos) en ${session.chairName || `Track #${trackId}`}: descartada como falso positivo de tránsito/barbero limpiando.`, "info");
       if (stats) stats.noiseDiscarded++;
       return { shouldDiscard: true };
     }

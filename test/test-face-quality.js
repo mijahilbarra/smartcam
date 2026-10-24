@@ -174,12 +174,10 @@ assert.strictEqual(profileScore, 0, "Perfil extremo debe tener frontalityScore =
 console.log("\n[10] Probando regla anatómica hasTwoEyesVisible...");
 assert.strictEqual(hasTwoEyesVisible(frontalLandmarks, [0.2, 0.2, 0.8, 0.7], "frontal"), true, "Frontal con landmarks válidos debe tener 2 ojos");
 assert.strictEqual(hasTwoEyesVisible(leftProfileLandmarks, [0.55, 0.05, 0.70, 0.20], "profile_left"), false, "Perfil unilateral con landmarks debe ser false");
-assert.strictEqual(hasTwoEyesVisible(null, null, "frontal"), true, "Fallback por pose frontal debe ser true");
-assert.strictEqual(hasTwoEyesVisible(null, null, "semi_left"), true, "Fallback por pose semi-perfil debe ser true");
-assert.strictEqual(hasTwoEyesVisible(null, null, "tilted_up"), true, "Fallback por pose inclinada debe ser true");
-assert.strictEqual(hasTwoEyesVisible(null, null, "profile_left"), false, "Fallback por pose profile_left debe ser false");
-assert.strictEqual(hasTwoEyesVisible(null, null, "profile_right"), false, "Fallback por pose profile_right debe ser false");
-console.log("-> hasTwoEyesVisible validada exitosamente para landmarks y fallback por pose.");
+assert.strictEqual(hasTwoEyesVisible(null, null, "frontal"), false, "Sin landmarks no se certifican 2 ojos (rechazo de manos/nucas)");
+assert.strictEqual(hasTwoEyesVisible([], null, "frontal"), false, "Landmarks vacíos debe ser false");
+assert.strictEqual(hasTwoEyesVisible(null, null, "profile_left"), false, "Perfil unilateral sin landmarks debe ser false");
+console.log("-> hasTwoEyesVisible validada exitosamente para landmarks anatómicos estrictos.");
 
 console.log("\n🎉 ¡Todos los tests de Face Quality, Nitidez y Estimación de Pose pasaron exitosamente!");
 

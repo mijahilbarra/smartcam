@@ -546,7 +546,7 @@ export class PersonTracker {
   /**
    * Actualiza la identidad y el buffer de mejores caras para un track
    */
-  updateIdentityAndFace(trackId, { identity, faceBuffer, faceBoxNorm, sharpnessScore, thumbnailBase64, embedding, pose, now: overrideNow }) {
+  updateIdentityAndFace(trackId, { identity, faceBuffer, faceBoxNorm, sharpnessScore, thumbnailBase64, embedding, pose, landmarks, hasTwoEyes, frontalityScore, yawScore, pitchScore, now: overrideNow }) {
     const track = this.activeTracks.get(trackId);
     if (!track) return false;
 
@@ -563,6 +563,11 @@ export class PersonTracker {
       const faceShot = {
         faceBuffer,
         faceBoxNorm,
+        landmarks: landmarks || identity?.landmarks || null,
+        hasTwoEyes: hasTwoEyes !== undefined ? hasTwoEyes : identity?.hasTwoEyes,
+        frontalityScore: frontalityScore !== undefined ? frontalityScore : identity?.frontalityScore,
+        yawScore: yawScore !== undefined ? yawScore : identity?.yawScore,
+        pitchScore: pitchScore !== undefined ? pitchScore : identity?.pitchScore,
         sharpnessScore,
         thumbnailBase64: thumbnailBase64 || identity?.thumbnailBase64 || null,
         embedding: targetEmbedding,

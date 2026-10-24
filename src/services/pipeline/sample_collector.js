@@ -93,8 +93,10 @@ export async function ingestFaceSample({
     ? Boolean(sample.hasTwoEyes)
     : hasTwoEyesVisible(sample.landmarks, sample.boxNorm || sample.faceBoxNorm, incomingPose);
 
-  // Bloquear fotos de 1 solo ojo: la galería queda compuesta 100% por fotos con dos ojos visibles
-  if (!hasTwoEyes) {
+  // Regla 1: Fotos con dos ojos visibles son prioritarias.
+  // Las fotos de un solo ojo (perfiles laterales) se admiten si tienen nitidez sólida (>= 50),
+  // garantizando que getRepresentativeFace siempre elija una foto erguida con dos ojos como representante.
+  if (!hasTwoEyes && sharpnessScore < 50) {
     return false;
   }
 
@@ -212,8 +214,8 @@ export async function ingestFaceSample({
   }
 
   // 4. Control de cadencia temporal:
-  // Si la última foto tomada fue hace menos de 20 segundos y es la MISMA pose, solo actualizar si mejora nitidez
-  const cooldownMs = sample.cooldownMs || 20000;
+  // Si la última foto tomada fue hace menos de 10 segundos y es la MISMA pose, solo actualizar si mejora nitidez
+  const cooldownMs = sample.cooldownMs || 10000;
   const samePoseIdx = session.photos.findIndex(p => p.pose === incomingPose);
 
   if (session.photos.length > 0 && session.lastPhotoAt && !skipCooldown && (now - session.lastPhotoAt < cooldownMs)) {
@@ -294,11 +296,7 @@ export async function ingestFaceSample({
         continue;
       }
 
-      // 1. Proteger las primeras 3 fotos ancla (indices 0, 1, 2)
-      if (i < 3 && existingPose !== incomingPose) {
-        continue;
-      }
-      // 2. Cuota máxima de 4 fotos para categoría reclinada (tilted_up*)
+      // 1. Cuota máxima de 4 fotos para categoría reclinada (tilted_up*)
       if (incomingIsReclined && currentReclinedCount >= 4 && !isReclinedPose(existingPose)) {
         continue;
       }

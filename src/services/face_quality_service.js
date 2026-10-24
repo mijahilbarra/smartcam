@@ -276,14 +276,8 @@ export function hasTwoEyesVisible(landmarks, boxNorm = null, pose = null) {
     return isNoseBetween && hasBothEyesSeparated;
   }
 
-  // Fallback sin landmarks:
-  const twoEyePoses = [
-    'frontal', 'semi_left', 'semi_right',
-    'tilted_up', 'tilted_down',
-    'tilted_up_left', 'tilted_up_right',
-    'tilted_down_left', 'tilted_down_right'
-  ];
-  return Boolean(pose && (twoEyePoses.includes(pose) || (typeof pose === 'string' && pose.startsWith('angle_'))));
+  // Sin landmarks anatómicos válidos (5 puntos de ojos, nariz y boca), no es posible certificar la presencia de dos ojos
+  return false;
 }
 
 /**
@@ -931,6 +925,7 @@ export async function evaluateFaceQuality(personCropBuffer, options = {}) {
   const isFrontalOrSemi = ['frontal', 'semi_left', 'semi_right', 'tilted_up', 'tilted_up_left', 'tilted_up_right'].includes(poseData.pose);
   const isConfidenceOk = (detection.confidence || 0) >= minConfidence;
   const hasTwoEyes = hasTwoEyesVisible(detection.landmarks, detection.faceBoxNorm, poseData.pose);
+  const isAnatomicalFace = hasTwoEyes && isFrontalOrSemi;
 
   const isValid = isSharp && isValidPose && isConfidenceOk;
 
@@ -945,6 +940,7 @@ export async function evaluateFaceQuality(personCropBuffer, options = {}) {
 
   return {
     isValid,
+    isAnatomicalFace,
     faceBuffer,
     faceBoxNorm: detection.faceBoxNorm,
     landmarks: detection.landmarks,
