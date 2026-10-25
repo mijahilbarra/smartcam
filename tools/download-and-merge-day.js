@@ -204,6 +204,29 @@ export function formatDuration(sec) {
 }
 
 /**
+ * Genera una barra de progreso visual tipo CLI con corchetes.
+ * Acepta una fracción (0..1) o porcentaje (0..100). Limita con seguridad entre 0 y 100%.
+ * Cero dependencias externas.
+ *
+ * @param {number} ratioOrPercent Fracción (0..1) o Porcentaje (0..100)
+ * @param {number} [width=20] Ancho de la barra en caracteres
+ * @param {string} [fillChar="█"] Carácter para la porción completada
+ * @param {string} [emptyChar="░"] Carácter para la porción restante
+ * @returns {string} Ejemplo: "[██████████░░░░░░░░░░]"
+ */
+export function renderProgressBar(ratioOrPercent = 0, width = 20, fillChar = "█", emptyChar = "░") {
+  const num = Number(ratioOrPercent);
+  const safeNum = Number.isFinite(num) ? num : 0;
+  // Si es mayor a 1, interpretamos como escala porcentual (0..100)
+  const ratio = safeNum > 1 ? safeNum / 100 : safeNum;
+  const clampedRatio = Math.min(1, Math.max(0, ratio));
+  const safeWidth = Math.max(0, Math.floor(Number(width) || 0));
+  const filled = Math.round(clampedRatio * safeWidth);
+  const empty = Math.max(0, safeWidth - filled);
+  return `[${fillChar.repeat(filled)}${emptyChar.repeat(empty)}]`;
+}
+
+/**
  * Imprime la ayuda del comando en consola.
  */
 function printHelp() {
@@ -301,25 +324,32 @@ export async function downloadAndMergeDay(options = {}, injectedClient = null) {
     matchedChunks = matchedChunks.slice(0, options.limit);
   }
 
-  const totalRawBytes = matchedChunks.reduce((acc, c) => acc + (c.size || 0), 0);
-  console.log(`\n✅ Chunks válidos para el día ${dateStr} (${tz}): \x1b[32m${matchedChunks.length}\x1b[0m`);
+  const totalChunks = matchedChunks.length;
+  const totalBytes = matchedChunks.reduce((acc, c) => acc + (c.size || 0), 0);
+
+  console.log(`\n✅ Chunks válidos para el día ${dateStr} (${tz}): \x1b[32m${totalChunks}\x1b[0m`);
   console.log(`⏱️  Rango horario: ${matchedChunks[0].localTime} ➔ ${matchedChunks[matchedChunks.length - 1].localTime}`);
-  console.log(`💾 Tamaño acumulado en Drive: ${formatBytes(totalRawBytes)}`);
+  console.log(`📦 Total de chunks: ${totalChunks}`);
+  console.log(`💾 Tamaño total a procesar: ${formatBytes(totalBytes)}`);
+  console.log(`⏱️ Cobertura temporal estimada: ${totalChunks * 15} minutos (${(totalChunks * 0.25).toFixed(1)} horas)`);
 
   // 5. En caso de Dry Run, mostrar detalle y retornar
   if (dryRun) {
     console.log("\n📋 Desglose detallado de chunks (Dry Run):");
     matchedChunks.forEach((c, idx) => {
+      const chunkNum = idx + 1;
+      const pct = ((chunkNum / totalChunks) * 100).toFixed(0);
+      const bar = renderProgressBar(chunkNum / totalChunks, 15);
       console.log(
-        `  [${String(idx + 1).padStart(2, " ")}/${matchedChunks.length}] ${c.name.padEnd(28)} | Hora Local: ${c.localTime.padEnd(24)} | Tamaño: ${formatBytes(c.size).padStart(9)}`
+        `  [${String(chunkNum).padStart(2, " ")}/${totalChunks}] ${bar} ${pct.padStart(3, " ")}% | ${c.name.padEnd(28)} | Hora Local: ${c.localTime.padEnd(24)} | Tamaño: ${formatBytes(c.size).padStart(9)}`
       );
     });
     console.log(`\n🔍 [Dry Run] Verificación completada sin descargas ni concatenación.`);
     return {
       success: true,
       dryRun: true,
-      totalChunks: matchedChunks.length,
-      totalBytes: totalRawBytes,
+      totalChunks,
+      totalBytes,
       chunks: matchedChunks
     };
   }
@@ -329,33 +359,76 @@ export async function downloadAndMergeDay(options = {}, injectedClient = null) {
     fs.mkdirSync(chunksDir, { recursive: true });
   }
 
-  console.log(`\n📥 Iniciando descarga de ${matchedChunks.length} chunks a '${chunksDir}'...`);
+  console.log(`\n📥 Iniciando descarga de ${totalChunks} chunks a '${chunksDir}'...`);
   const downloadedPaths = [];
+  let completedChunks = 0;
+  let completedBytes = 0;
+  let currentChunkBytes = 0;
 
-  for (let i = 0; i < matchedChunks.length; i++) {
+  for (let i = 0; i < totalChunks; i++) {
     const chunk = matchedChunks[i];
     const destPath = path.join(chunksDir, chunk.name);
-    const prefix = `[${String(i + 1).padStart(2, " ")}/${matchedChunks.length}]`;
 
     // Comprobación de caché
     if (!force && fs.existsSync(destPath)) {
       const stat = fs.statSync(destPath);
       if (stat.size === chunk.size && chunk.size > 0) {
-        console.log(`${prefix} [En caché] ${chunk.name} (${formatBytes(chunk.size)})`);
+        completedChunks++;
+        completedBytes += chunk.size;
+        const pctGlobal = ((completedChunks / totalChunks) * 100).toFixed(1);
+        const barGlobal = renderProgressBar(completedChunks / totalChunks, 20);
+        console.log(`  ✓ [${i + 1}/${totalChunks}] [En caché] ${chunk.name} (${formatBytes(chunk.size)}) | Global: ${barGlobal} ${pctGlobal}%`);
         downloadedPaths.push(destPath);
         continue;
       }
     }
 
-    process.stdout.write(`${prefix} 📥 Descargando ${chunk.name} (${formatBytes(chunk.size)})... `);
-    await driveClient.downloadFile(chunk.id, destPath, {
-      expectedSize: chunk.size
-    });
-    process.stdout.write("✓ Listo\n");
+    // Estado inicial visual antes de comenzar a recibir bytes
+    const initialChunkBar = renderProgressBar(0, 15);
+    const initialOverallRatio = totalBytes > 0 ? completedBytes / totalBytes : completedChunks / totalChunks;
+    const initialOverallBar = renderProgressBar(initialOverallRatio, 20);
+    const initialOverallPct = (initialOverallRatio * 100).toFixed(1);
+    const initialProgressLine = `  [${i + 1}/${totalChunks}] ${initialChunkBar} 0.0% | Global: ${initialOverallBar} ${initialOverallPct}% (${formatBytes(completedBytes)}/${formatBytes(totalBytes)})`;
+    process.stdout.write(`\r${initialProgressLine.padEnd(95, " ")}`);
+
+    let lastProgressTime = 0;
+    try {
+      await driveClient.downloadFile(chunk.id, destPath, {
+        expectedSize: chunk.size,
+        onProgress: ({ downloadedBytes, totalBytes: chunkTotalBytes }) => {
+          currentChunkBytes = downloadedBytes;
+          const targetBytes = chunkTotalBytes || chunk.size || 0;
+          const chunkPct = targetBytes > 0 ? Math.min(100, (downloadedBytes / targetBytes) * 100) : 0;
+          const currentOverallBytes = completedBytes + currentChunkBytes;
+          const overallPct = totalBytes > 0 ? Math.min(100, (currentOverallBytes / totalBytes) * 100) : 0;
+
+          const now = Date.now();
+          if (now - lastProgressTime >= 50 || downloadedBytes >= targetBytes) {
+            lastProgressTime = now;
+            const chunkBar = renderProgressBar(chunkPct / 100, 15);
+            const overallBar = renderProgressBar(overallPct / 100, 20);
+            const progressLine = `  [${i + 1}/${totalChunks}] ${chunkBar} ${chunkPct.toFixed(1)}% | Global: ${overallBar} ${overallPct.toFixed(1)}% (${formatBytes(currentOverallBytes)}/${formatBytes(totalBytes)})`;
+            process.stdout.write(`\r${progressLine.padEnd(95, " ")}`);
+          }
+        }
+      });
+    } catch (err) {
+      process.stdout.write("\n");
+      throw err;
+    }
+
+    completedBytes += chunk.size || currentChunkBytes;
+    completedChunks++;
+    currentChunkBytes = 0;
+    const finalPctGlobal = ((completedChunks / totalChunks) * 100).toFixed(1);
+    const finalBarGlobal = renderProgressBar(completedChunks / totalChunks, 20);
+    const completionLine = `  ✓ [${i + 1}/${totalChunks}] ${chunk.name} (${formatBytes(chunk.size)}) [OK] | Global: ${finalBarGlobal} ${finalPctGlobal}%`;
+    process.stdout.write(`\r${completionLine.padEnd(95, " ")}\n`);
     downloadedPaths.push(destPath);
   }
 
   // 7. Generar concat_list.txt para FFmpeg
+  console.log(`\n⚡ Todos los ${totalChunks} chunks descargados (100%). Iniciando concatenación con FFmpeg...`);
   const concatListPath = path.join(chunksDir, "concat_list.txt");
   const concatContent = downloadedPaths
     .map((p) => `file '${path.resolve(p).replace(/'/g, "'\\''")}'`)

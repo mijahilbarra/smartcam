@@ -18,6 +18,7 @@ import {
   filterAndSortDayChunks,
   formatBytes,
   formatDuration,
+  renderProgressBar,
   downloadAndMergeDay
 } from "../tools/download-and-merge-day.js";
 
@@ -406,6 +407,121 @@ describe("Herramienta CLI: Descarga y Fusión Diaria (Timezone Perú UTC-5)", ()
       assert.strictEqual(result.chunks[0].name, "chunk_20261024_160005.mp4");
       assert.strictEqual(result.chunks[1].name, "chunk_20261024_220000.mp4");
       assert.strictEqual(result.chunks[2].name, "chunk_20261025_011333.mp4");
+    });
+  });
+
+  describe("6. Barra de Progreso CLI: renderProgressBar", () => {
+    it("renderiza correctamente 0%, 50% y 100% con valores de fracción (0..1) y porcentaje (0..100)", () => {
+      // 0%
+      assert.strictEqual(renderProgressBar(0, 20), `[${"░".repeat(20)}]`);
+      assert.strictEqual(renderProgressBar(0.0, 20), `[${"░".repeat(20)}]`);
+
+      // 50% como fracción 0.5 y como porcentaje 50
+      assert.strictEqual(renderProgressBar(0.5, 20), `[${"█".repeat(10)}${"░".repeat(10)}]`);
+      assert.strictEqual(renderProgressBar(50, 20), `[${"█".repeat(10)}${"░".repeat(10)}]`);
+
+      // 100% como fracción 1.0 y como porcentaje 100
+      assert.strictEqual(renderProgressBar(1.0, 20), `[${"█".repeat(20)}]`);
+      assert.strictEqual(renderProgressBar(100, 20), `[${"█".repeat(20)}]`);
+    });
+
+    it("gestiona desbordamientos (overflow >100% o >1.0) limitando al 100%", () => {
+      // Porcentajes > 100%
+      assert.strictEqual(renderProgressBar(101, 20), `[${"█".repeat(20)}]`);
+      assert.strictEqual(renderProgressBar(150, 20), `[${"█".repeat(20)}]`);
+      assert.strictEqual(renderProgressBar(500, 20), `[${"█".repeat(20)}]`);
+    });
+
+    it("gestiona subdesbordamientos (underflow <0) limitando al 0%", () => {
+      // Fracción negativa
+      assert.strictEqual(renderProgressBar(-0.1, 20), `[${"░".repeat(20)}]`);
+      assert.strictEqual(renderProgressBar(-1.0, 20), `[${"░".repeat(20)}]`);
+      // Porcentaje negativo
+      assert.strictEqual(renderProgressBar(-50, 20), `[${"░".repeat(20)}]`);
+      assert.strictEqual(renderProgressBar(-100, 20), `[${"░".repeat(20)}]`);
+    });
+
+    it("soporta ancho y caracteres personalizados de relleno y vacío", () => {
+      assert.strictEqual(renderProgressBar(0.5, 10, "=", "-"), "[=====-----]");
+      assert.strictEqual(renderProgressBar(100, 5, "#", "."), "[#####]");
+      assert.strictEqual(renderProgressBar(0, 5, "#", "."), "[.....]");
+      assert.strictEqual(renderProgressBar(0.8, 5, "*", "_"), "[****_]");
+    });
+
+    it("maneja de forma segura valores nulos, indefinidos o NaN como 0%", () => {
+      assert.strictEqual(renderProgressBar(NaN, 10), "[░░░░░░░░░░]");
+      assert.strictEqual(renderProgressBar(null, 10), "[░░░░░░░░░░]");
+      assert.strictEqual(renderProgressBar(undefined, 10), "[░░░░░░░░░░]");
+    });
+  });
+
+  describe("7. Integración: Descarga y Manejo de Caché con Barras de Progreso", () => {
+    it("emite barras de progreso dinámicas y detecta chunks en caché correctamente", async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "day_progress_test_"));
+      const chunksDir = path.join(tmpDir, "chunks");
+      fs.mkdirSync(chunksDir, { recursive: true });
+
+      // Chunk 1 ya existe en disco con el tamaño exacto (en caché)
+      const cachedFile = path.join(chunksDir, "chunk_20261024_160005.mp4");
+      fs.writeFileSync(cachedFile, Buffer.alloc(1000));
+
+      const stdoutWrites = [];
+      const originalWrite = process.stdout.write;
+      process.stdout.write = function (chunk, ...args) {
+        stdoutWrites.push(String(chunk));
+        return originalWrite.apply(process.stdout, [chunk, ...args]);
+      };
+
+      const mockClient = {
+        rootFolderName: "IOT_Camera_Recordings",
+        async ensureRootFolder() { return "mock_root"; },
+        async findFolder(name) {
+          if (name === "2026-10-24") return { id: "f24" };
+          return null;
+        },
+        async listFiles() {
+          return [
+            { id: "c1", name: "chunk_20261024_160005.mp4", size: 1000 },
+            { id: "c2", name: "chunk_20261024_161505.mp4", size: 2000 }
+          ];
+        },
+        async downloadFile(fileId, destPath, options = {}) {
+          if (typeof options.onProgress === "function") {
+            options.onProgress({ downloadedBytes: 1000, totalBytes: 2000 });
+            options.onProgress({ downloadedBytes: 2000, totalBytes: 2000 });
+          }
+          fs.writeFileSync(destPath, Buffer.alloc(2000));
+          return { destPath, size: 2000 };
+        }
+      };
+
+      try {
+        await downloadAndMergeDay(
+          {
+            date: "2026-10-24",
+            chunksDir,
+            output: path.join(tmpDir, "out.mp4"),
+            tz: "America/Lima"
+          },
+          mockClient
+        );
+      } catch (err) {
+        // FFmpeg puede fallar en concatenar buffers simulados no válidos, lo cual es esperado
+      } finally {
+        process.stdout.write = originalWrite;
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+
+      const allOutput = stdoutWrites.join("");
+      // 1. Verifica detección de chunk en caché
+      assert.ok(allOutput.includes("[En caché] chunk_20261024_160005.mp4"), "Debe registrar chunk en caché");
+      // 2. Verifica reporte de progreso global
+      assert.ok(allOutput.includes("Global:"), "Debe mostrar barra de progreso Global");
+      // 3. Verifica mensaje final de descarga previa a FFmpeg
+      assert.ok(allOutput.includes("Todos los 2 chunks descargados (100%)"), "Debe confirmar descarga al 100%");
+      // 4. Verifica resumen informativo de chunks y cobertura
+      assert.ok(allOutput.includes("Total de chunks: 2"));
+      assert.ok(allOutput.includes("Cobertura temporal estimada: 30 minutos (0.5 horas)"));
     });
   });
 });
