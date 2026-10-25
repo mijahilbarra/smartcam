@@ -143,6 +143,12 @@ export async function ingestFaceSample({
     return false;
   };
 
+  if (sample.box) {
+    session.lastBox = sample.box;
+    if (!session.boxes) session.boxes = [];
+    if (session.boxes.length < 100) session.boxes.push(sample.box);
+  }
+
   const photoItem = {
     thumbnailBase64: finalThumbnailBase64,
     sharpnessScore,
@@ -155,7 +161,9 @@ export async function ingestFaceSample({
       : (incomingPose === 'frontal' ? 0.85 : (incomingPose.startsWith('semi') ? 0.50 : (incomingPose.startsWith('tilted') ? 0.25 : 0.0))),
     yawScore: sample.yawScore ?? 0,
     pitchScore: sample.pitchScore ?? 0,
-    landmarks: sample.landmarks || null
+    landmarks: sample.landmarks || null,
+    box: sample.box || session.lastBox || null,
+    boxNorm: sample.boxNorm || sample.faceBoxNorm || null
   };
 
   // 2b. Verificación por miniatura idéntica en base64

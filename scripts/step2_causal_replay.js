@@ -1,12 +1,13 @@
 /**
  * ⚡ PASO 2 DEFINITIVO: FAST CAUSAL REPLAY (< 10s)
  * 
- * Simulación Causal de Alta Fidelidad en Tiempo Real:
- * - Paridad arquitectónica y algorítmica 100% con streaming en producción.
- * - Reproduce todas las cosechas del Paso 1 sin pre-filtrado artificial de perfiles ni silencios inventados.
- * - Reloj virtual de avance milisegundo a milisegundo con heartbeat de vacancia de silla.
- * - Ejecución causal de PeopleService (reconocimiento/anti-anclaje) + ChairTracker (rotación/timeouts).
- * - Aserciones anti-quimera y validación de ground truth en segundos.
+ * Simulación Causal Canónica de Alta Fidelidad en Tiempo Real:
+ * - Paridad arquitectónica y algorítmica 100% con streaming y producción.
+ * - Ingesta atómica de TrackBlockManager (Cero análisis imagen por imagen).
+ * - Orquestador Causal Canónico (causal_cycle_orchestrator.js).
+ * - Embudo de Cierre: validatePreConsolidationBarber, purgeStaffPhotos, validateSpatialChairAnchor.
+ * - Consolidación Biocéntrica Causal (Capa 13 Incremental): Barrera de capa, veto homólogo, S-Norm adaptativo.
+ * - Reporte y Hoja de Contacto modularizados (causal_report_generator.js).
  */
 
 import Database from "better-sqlite3";
@@ -21,11 +22,20 @@ const PROJECT_ROOT = path.resolve(__dirname, "..");
 import { PIPELINE_CONFIG } from "../src/core/pipeline_config.js";
 import { CustomerService } from "../src/services/customer_service.js";
 import { VisitSessionService } from "../src/services/visit_session_service.js";
-import { processPeopleRecognition } from "../src/services/people_service.js";
-import { isStandingPosture } from "../src/services/pipeline/tracking_step.js";
-import { hasTwoEyesVisible } from "../src/services/face_quality_service.js";
-import { computeCosineSimilarity } from "../src/face_recognizer.js";
 import { SQLiteClient, blobToVector, vectorToBlob } from "../src/infrastructure/storage/sqlite_client.js";
+import { validateSpatialChairAnchor } from "../src/services/pipeline/closure_rules.js";
+import { setCustomQuadrants } from "../src/detector.js";
+import {
+  runProcessCycle,
+  flushProcessPipeline,
+  createProcessAccumulator,
+  generateProcessReport,
+  generateVisualContactSheet,
+  exportRepresentativeFaces,
+  generateMermaidLineage,
+  assertAntiChimeraPurity,
+  TrackBlockManager
+} from "../src/services/processes.js";
 
 // Argumentos CLI
 const args = process.argv.slice(2);
@@ -57,6 +67,15 @@ if (!videoName) {
     process.exit(1);
   }
   videoName = row.video_file;
+} else {
+  const exact = db.prepare("SELECT video_file FROM harvested_crops WHERE video_file = ? LIMIT 1").get(videoName);
+  if (!exact) {
+    const clean = path.basename(videoName, path.extname(videoName));
+    const fuzzy = db.prepare("SELECT video_file FROM harvested_crops WHERE video_file LIKE ? LIMIT 1").get(`%${clean}%`);
+    if (fuzzy) {
+      videoName = fuzzy.video_file;
+    }
+  }
 }
 
 // Configurar tablas aisladas para el experimento
@@ -66,12 +85,36 @@ db.exec(`
   DROP TABLE IF EXISTS experiment_customers;
 `);
 
-// Instanciar servicios experimentales en memoria
+// Limpiar auditorías transitorias previas
+const auditDir = path.join(PROJECT_ROOT, "data", "audit_reports");
+if (fs.existsSync(auditDir)) {
+  try {
+    for (const f of fs.readdirSync(auditDir)) {
+      fs.unlinkSync(path.join(auditDir, f));
+    }
+  } catch (_) {}
+}
+
+// Instanciar cliente SQLite experimental
 const experimentSqliteClient = new SQLiteClient(dbPath, {
   customersTable: "experiment_customers",
   customerEmbeddingsTable: "experiment_customer_embeddings",
   appointmentsTable: "experiment_appointments"
 });
+
+// Cargar cuadrantes espaciales de Firebase desde data/quadrants.json
+const quadrantsPath = path.join(PROJECT_ROOT, "data", "quadrants.json");
+let loadedQuadrants = [];
+if (fs.existsSync(quadrantsPath)) {
+  try {
+    loadedQuadrants = JSON.parse(fs.readFileSync(quadrantsPath, "utf8"));
+    setCustomQuadrants(loadedQuadrants);
+    console.log(`[Quadrants] 📐 Cuadrantes de Firebase cargados desde data/quadrants.json (${loadedQuadrants.length} zonas).`);
+  } catch (e) {
+    console.warn(`[Quadrants] Aviso cargando data/quadrants.json:`, e.message);
+  }
+}
+const chairZone = loadedQuadrants.find(q => q.type === "barber_chair" || q.id === "silla_barbero_puesto2") || loadedQuadrants[0] || null;
 
 // Cargar personal (Barbero) desde data/barberia.db
 let staffEmbeddings = [];
@@ -121,12 +164,20 @@ try {
   console.warn(`[Staff] Aviso al cargar barbero:`, e.message);
 }
 
-// Instanciar CustomerService con las tablas del experimento
+// Configuración espacial de video dinámica
+const videoWidth = Number(process.env.VIDEO_WIDTH) || 1280;
+const videoHeight = Number(process.env.VIDEO_HEIGHT) || 720;
 
+process.env.IS_LOCAL_SIMULATOR = "true";
+
+// Instanciar servicios canónicos
 const experimentCustomerService = new CustomerService({
   sqliteClient: experimentSqliteClient
 });
 await experimentCustomerService.loadProfilesIntoMemory();
+
+// Listener de cierres para auditoría y linaje genealógico (sin monkey-patching)
+const trackedClosures = [];
 
 const visitService = new VisitSessionService({
   sqliteClient: experimentSqliteClient,
@@ -134,7 +185,60 @@ const visitService = new VisitSessionService({
   minAppointmentMinutes: PIPELINE_CONFIG.sessions.minAppointmentMinutes,
   emptyChairTimeoutMs: PIPELINE_CONFIG.sessions.emptyChairTimeoutMs,
   staffThreshold: PIPELINE_CONFIG.staffFilter.staffExclusionThreshold,
-  maxCompletedAppointments: Infinity
+  maxCompletedAppointments: Infinity,
+  quadrants: loadedQuadrants,
+  chairZone,
+  onSessionClosed: ({ session, trackId, options, result, endedAtEpoch }) => {
+    const tramoPhotos = (session?.photosBeforeClose && session.photosBeforeClose.length > 0)
+      ? session.photosBeforeClose
+      : ((session?.photos && session.photos.length > 0) ? session.photos : []);
+
+    const tramoEmbeddings = (session?.embeddingsBeforeClose && session.embeddingsBeforeClose.length > 0)
+      ? session.embeddingsBeforeClose
+      : ((session?.embeddings && session.embeddings.length > 0) ? session.embeddings : []);
+
+    const tramoBoxes = (session?.boxes && session.boxes.length > 0) ? session.boxes : [];
+
+    const spatialCheck = validateSpatialChairAnchor({
+      boxes: tramoBoxes,
+      photos: tramoPhotos,
+      chairId: session?.chairId,
+      chairZone: session?.chairZone || chairZone
+    }, chairZone, {
+      quadrants: loadedQuadrants,
+      width: videoWidth,
+      height: videoHeight
+    });
+
+    const durationMin = options?.durationMinutes !== undefined
+      ? options.durationMinutes
+      : (session?.startedAtEpoch && endedAtEpoch
+        ? Math.max(1, Math.round((endedAtEpoch - session.startedAtEpoch) / 60000))
+        : 1);
+
+    trackedClosures.push({
+      index: trackedClosures.length + 1,
+      sessionId: session?.id,
+      chairId: session?.chairId,
+      startedAtEpoch: session?.startedAtEpoch,
+      durationMinutes: durationMin,
+      photos: tramoPhotos,
+      embeddings: tramoEmbeddings,
+      boxes: tramoBoxes,
+      thumbnailBase64: session?.thumbnailBase64 || tramoPhotos[0]?.thumbnailBase64 || null,
+      spatialCheck,
+      resultAppt: result
+    });
+  }
+});
+
+// Instanciar TrackBlockManager para ciclo de vida atómico por trackId
+const trackBlockManager = new TrackBlockManager({
+  staffProfiles: staffEmbeddings,
+  staffThreshold: PIPELINE_CONFIG.staffFilter.staffExclusionThreshold || 0.46,
+  quadrants: loadedQuadrants,
+  width: videoWidth,
+  height: videoHeight
 });
 
 // Cargar todas las filas cosechadas en orden cronológico puro
@@ -154,7 +258,7 @@ query += " ORDER BY video_second ASC, id ASC";
 const rows = db.prepare(query).all(...params);
 
 console.log(`\n===============================================================`);
-console.log(`   ⚡ PASO 2: FAST CAUSAL REPLAY (ZERO LOOKAHEAD / ZERO MOCKS)`);
+console.log(`   ⚡ PASO 2: FAST CAUSAL REPLAY (TRACKLET-CENTRIC / ZERO-BIAS)`);
 console.log(`===============================================================`);
 console.log(`📹 Video:             ${videoName}`);
 console.log(`🌾 Cosechas en flujo: ${rows.length.toLocaleString()} frames de YOLO`);
@@ -170,189 +274,205 @@ if (rows.length === 0) {
 const t0 = Date.now();
 let lastTimestamp = null;
 let processedCount = 0;
-let rotationsCount = 0;
 
-// Heartbeat y despacho causal con reloj virtual
+const accumulator = createProcessAccumulator();
+
+// Ingesta unificada a través del pipeline funcional central (runProcessCycle)
 for (const row of rows) {
   processedCount++;
-  const currentTs = row.timestamp_epoch;
-
-  // Si hubo un salto temporal mayor a 1 segundo, avanzar el reloj virtual segundo a segundo
-  // para evaluar vacancia física y timeouts con fidelidad matemática 1:1
-  if (lastTimestamp !== null && (currentTs - lastTimestamp) > 1000) {
-    for (let step = lastTimestamp + 1000; step < currentTs; step += 1000) {
-      await visitService.checkChairTimeouts(step, []);
+  const cycle = await runProcessCycle({
+    harvestedRow: row,
+    trackBlockManager,
+    visitService,
+    lastTimestamp
+  }, {
+    causalOptions: {
+      staffProfiles: staffEmbeddings,
+      staffThreshold: PIPELINE_CONFIG.staffFilter.staffExclusionThreshold
     }
-  }
-  lastTimestamp = currentTs;
+  });
 
-  let box = null;
-  if (row.box_json) {
-    try {
-      box = typeof row.box_json === "string" ? JSON.parse(row.box_json) : row.box_json;
-    } catch (_) {}
+  if (cycle.metrics) {
+    accumulator.add(cycle.metrics);
   }
 
-  const isStanding = box ? isStandingPosture(box) : false;
-
-  let activeFace = null;
-  if (row.face_detected && row.embedding_blob) {
-    let landmarks = null;
-    if (row.landmarks_json) {
-      try {
-        landmarks = typeof row.landmarks_json === "string" ? JSON.parse(row.landmarks_json) : row.landmarks_json;
-      } catch (_) {}
-    }
-    const pose = row.pose || 'frontal';
-    const hasTwoEyes = landmarks ? hasTwoEyesVisible(landmarks, null, pose) : (row.has_two_eyes ? Boolean(row.has_two_eyes) : true);
-
-    activeFace = {
-      faceBuffer: row.crop_blob,
-      embedding: blobToVector(row.embedding_blob),
-      sharpnessScore: row.sharpness_score || 0,
-      pose,
-      poseLabel: row.pose_label || (pose === 'frontal' ? 'Frontal' : pose),
-      landmarks,
-      yawScore: row.yaw_score ?? 0,
-      pitchScore: row.pitch_score ?? 0,
-      frontalityScore: row.frontality_score ?? 0,
-      hasTwoEyes
-    };
-  }
-
-  const track = {
-    trackId: row.track_id || 1,
-    currentQuadrant: { id: row.chair_id, label: row.chair_id, type: "barber_chair" },
-    lastChairQuadrant: { id: row.chair_id, label: row.chair_id, type: "barber_chair" },
-    isFormallySeated: !isStanding,
-    consecutiveChairFrames: 10,
-    confidence: row.confidence || 0.90,
-    box,
-    role: isStanding ? "staff" : "client",
-    latestFace: activeFace,
-    bestFace: activeFace
-  };
-
-  // Ejecución causal de PeopleService (Reconocimiento, anti-anclaje y enriquecimiento)
-  if (activeFace && activeFace.embedding) {
-    const cropItem = {
-      id: row.id,
-      buffer: row.crop_blob,
-      box,
-      trackId: row.track_id,
-      confidence: row.confidence,
-      embedding: activeFace.embedding,
-      quality: {
-        sharpnessScore: activeFace.sharpnessScore,
-        pose: activeFace.pose,
-        poseLabel: activeFace.poseLabel,
-        hasTwoEyes: activeFace.hasTwoEyes,
-        landmarks: activeFace.landmarks
-      }
-    };
-    const activeSessList = Array.from(visitService.activeSessions.values());
-    const identified = await processPeopleRecognition(
-      null,
-      [{ id: row.id, box, trackId: row.track_id }],
-      [cropItem],
-      activeSessList,
-      {
-        customerService: experimentCustomerService,
-        backgroundSync: false,
-        nowEpoch: currentTs
-      }
-    );
-    if (identified && identified[0]) {
-      track.identity = identified[0];
-    }
-  }
-
-  // Ejecución causal de ChairTracker
-  const res = await visitService.processTrack(track, { now: currentTs });
-  if (res?.rotated) {
-    rotationsCount++;
-  }
+  lastTimestamp = row.timestamp_epoch;
 }
 
-// Al terminar el stream, forzar avance de reloj y cierre ordenado
-if (lastTimestamp !== null) {
-  const finalStep = lastTimestamp + PIPELINE_CONFIG.sessions.emptyChairTimeoutMs + 1000;
-  await visitService.checkChairTimeouts(finalStep, []);
-  for (const [chairOrTrack, activeSess] of Array.from(visitService.activeSessions.entries())) {
-    await visitService.closeSession(chairOrTrack, { endedAtEpoch: lastTimestamp });
-  }
+// 3. Finalización ordenada de todos los bloques y sillas al término del stream
+await flushProcessPipeline({
+  lastTimestamp,
+  trackBlockManager,
+  visitService
+});
+
+// Resolución de citas definitivas
+const rawCompletedAppts = visitService.completedAppointments || [];
+const baseVideoEpoch = rows.length > 0 ? (rows[0].timestamp_epoch - rows[0].video_second * 1000) : 0;
+
+const completedAppts = rawCompletedAppts.map((appt, idx) => {
+  const startMs = appt.startedAtEpoch || new Date(appt.startedAt).getTime();
+  const endMs = appt.endedAtEpoch || new Date(appt.endedAt).getTime();
+  const startSec = Math.max(0, Math.round((startMs - baseVideoEpoch) / 1000));
+  const endSec = Math.max(startSec, Math.round((endMs - baseVideoEpoch) / 1000));
+  return {
+    ...appt,
+    clientName: `Cliente #${idx + 1}`,
+    personName: `Cliente #${idx + 1}`,
+    startSecond: startSec,
+    endSecond: endSec
+  };
+});
+
+if (experimentSqliteClient && completedAppts.length > 0) {
+  try {
+    db.prepare("DELETE FROM experiment_appointments").run();
+    for (const a of completedAppts) {
+      experimentSqliteClient.saveAppointment(a);
+    }
+  } catch (_) {}
 }
 
 const elapsedSec = ((Date.now() - t0) / 1000).toFixed(2);
-const completedAppts = visitService.completedAppointments || [];
+
+const now = new Date();
+const padTime = (n) => String(n).padStart(2, '0');
+const timestampFile = `${now.getFullYear()}${padTime(now.getMonth()+1)}${padTime(now.getDate())}_${padTime(now.getHours())}${padTime(now.getMinutes())}${padTime(now.getSeconds())}`;
+
+// Generación de artefactos y reportes vía Causal Report Generator
+const simDirName = `simulacion_${path.basename(videoName, path.extname(videoName))}`;
+const assetsDir = path.join(PROJECT_ROOT, "docs", "assets", simDirName);
+const repCitasDir = path.join(assetsDir, "rep_citas");
+
+// Limpiar artefactos visuales previos de esta simulación para evitar acumulación
+if (fs.existsSync(assetsDir)) {
+  const oldSheets = fs.readdirSync(assetsDir).filter(f => f.startsWith("contact_sheet_") && f.endsWith(".jpg"));
+  for (const sheet of oldSheets) {
+    try { fs.unlinkSync(path.join(assetsDir, sheet)); } catch (_) {}
+  }
+}
+if (fs.existsSync(repCitasDir)) {
+  try { fs.rmSync(repCitasDir, { recursive: true, force: true }); } catch (_) {}
+}
+fs.mkdirSync(repCitasDir, { recursive: true });
+
+const contactSheetPath = await generateVisualContactSheet({
+  completedAppts,
+  outputDir: assetsDir,
+  timestampFile
+});
+
+await exportRepresentativeFaces({
+  completedAppts,
+  trackedClosures,
+  repCitasDir
+});
+
+const mermaidTree = generateMermaidLineage({
+  trackedClosures,
+  completedAppts,
+  repCitasDir
+});
+
+const docsDir = path.join(PROJECT_ROOT, "docs");
+// Rotación de reportes Markdown antiguos (conservar máximo 2 para no dejar basura)
+try {
+  const existingReports = fs.readdirSync(docsDir)
+    .filter(f => f.startsWith("REPORTE_FUNNEL_") && f.endsWith(".md") && f !== "REPORTE_FUNNEL_LATEST.md")
+    .map(f => ({ path: path.join(docsDir, f), time: fs.statSync(path.join(docsDir, f)).mtimeMs }))
+    .sort((a, b) => b.time - a.time);
+
+  for (const oldRep of existingReports.slice(2)) {
+    try { fs.unlinkSync(oldRep.path); } catch (_) {}
+  }
+} catch (_) {}
+
+const reportPath = path.join(docsDir, `REPORTE_FUNNEL_${timestampFile}.md`);
+await generateProcessReport({
+  reportPath,
+  videoName,
+  dbPath,
+  elapsedSec,
+  metrics: {
+    ...accumulator.toJSON(),
+    confirmedBlocksCount: (trackBlockManager.totalConfirmedBlocksCount ?? trackBlockManager.completedBlocks.length)
+  },
+  completedAppts,
+  trackedClosures,
+  mermaidTree,
+  contactSheetPath,
+  baseVideoEpoch
+});
+
+try {
+  const latestReportPath = path.join(docsDir, "REPORTE_FUNNEL_LATEST.md");
+  fs.copyFileSync(reportPath, latestReportPath);
+} catch (_) {}
+
+// Registrar corrida en experiment_runs
+try {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS experiment_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_timestamp TEXT,
+      video_file TEXT,
+      total_crops_evaluated INTEGER,
+      appointments_found INTEGER,
+      clients_found INTEGER,
+      barber_segments_discarded INTEGER,
+      execution_time_sec REAL,
+      options_json TEXT
+    );
+  `);
+  db.prepare(`
+    INSERT INTO experiment_runs (
+      run_timestamp, video_file, total_crops_evaluated, appointments_found,
+      clients_found, barber_segments_discarded, execution_time_sec, options_json
+    ) VALUES (
+      @ts, @video, @total, @appts, @clients, @barber, @sec, @opts
+    )
+  `).run({
+    ts: timestampFile,
+    video: videoName,
+    total: processedCount,
+    appts: completedAppts.length,
+    clients: completedAppts.length,
+    barber: accumulator.countStaffExcluded,
+    sec: Number(elapsedSec),
+    opts: JSON.stringify({ mode: "causal_replay_track_block", staffThreshold: PIPELINE_CONFIG.staffFilter.staffExclusionThreshold })
+  });
+} catch (_) {}
 
 console.log(`\n===============================================================`);
 console.log(`   🎉 FAST CAUSAL REPLAY COMPLETADO EN ${elapsedSec}s`);
 console.log(`===============================================================`);
 console.log(`⚡ Cuadros evaluados:    ${processedCount.toLocaleString()}`);
-console.log(`🔄 Rotaciones detectadas: ${rotationsCount}`);
+console.log(`👤 Exclusión staff/pie:  ${accumulator.countStaffExcluded.toLocaleString()} capturas`);
+console.log(`✂️ Clientes aprobados:   ${accumulator.countClientPassed.toLocaleString()} capturas`);
+console.log(`🧱 Bloques confirmados:  ${(trackBlockManager.totalConfirmedBlocksCount ?? trackBlockManager.completedBlocks.length)}`);
 console.log(`👥 Citas finales:        ${completedAppts.length}`);
+console.log(`📑 Reporte Markdown:     ${reportPath}`);
+if (contactSheetPath) console.log(`🖼️ Hoja de Contacto:     ${contactSheetPath}`);
 console.log(`===============================================================\n`);
 
-// ASERCIONES Y VALIDACIÓN BIOMÉTRICA CAUSAL (Argon 4)
+// Aserciones biométricas causales (Argon 4)
+const chimeraCheck = assertAntiChimeraPurity(completedAppts, PIPELINE_CONFIG.biometrics?.chimeraThreshold ?? 0.38);
+
 console.log(`📋 DETALLE CRONOLÓGICO DE ATENCIONES FORMALIZADAS:\n`);
-let hasChimera = false;
-let c3DurationMin = 0;
-let c4StartedAtSec = 0;
-
-for (let i = 0; i < completedAppts.length; i++) {
-  const appt = completedAppts[i];
-  const startEp = appt.startedAtEpoch || new Date(appt.startedAt).getTime();
-  const endEp = appt.endedAtEpoch || new Date(appt.endedAt).getTime();
-  const durMin = Math.round((endEp - startEp) / 60000);
-  const photos = appt.photos || [];
-  const embeddings = (appt.embeddings || []).map(e => Array.isArray(e) ? e : (e?.vector || null)).filter(Boolean);
-
-  // Test de pureza intra-sesión (Anti-Quimera)
-  let minPairSim = 1.0;
-  let maxPairSim = 0.0;
-  let sumSim = 0;
-  let pairCount = 0;
-  for (let a = 0; a < embeddings.length; a++) {
-    for (let b = a + 1; b < embeddings.length; b++) {
-      const sim = computeCosineSimilarity(embeddings[a], embeddings[b]);
-      if (sim < minPairSim) minPairSim = sim;
-      if (sim > maxPairSim) maxPairSim = sim;
-      sumSim += sim;
-      pairCount++;
-    }
-  }
-  const avgPairSim = pairCount > 0 ? (sumSim / pairCount).toFixed(3) : "1.000";
-
-  const isChimeraDetected = pairCount > 0 && minPairSim < 0.38;
-  if (isChimeraDetected) {
-    hasChimera = true;
-  }
-
-  const startSec = Math.round(startEp / 1000);
-  const endSec = Math.round(endEp / 1000);
-
-  if (i === 2) {
-    c3DurationMin = durMin;
-  }
-  if (i === 3) {
-    c4StartedAtSec = startSec;
-  }
-
-  const statusIcon = isChimeraDetected ? "❌ [QUIMERA]" : "✅";
-  console.log(`${statusIcon} [Cita #${i + 1}] ${appt.customerName || appt.clientName || 'Cliente'}:`);
-  console.log(`   - Duración:  ${durMin} min (${new Date(startEp).toISOString().slice(11, 19)} a ${new Date(endEp).toISOString().slice(11, 19)})`);
-  console.log(`   - Fotos:     ${photos.length} fotos | Score máx: ${appt.bestFaceScore || 0}`);
-  console.log(`   - Biometría: ${embeddings.length} vectores | MinSim: ${minPairSim.toFixed(3)} | AvgSim: ${avgPairSim} | MaxSim: ${maxPairSim.toFixed(3)}`);
+for (const item of chimeraCheck.results) {
+  const statusIcon = item.isChimeraDetected ? "❌ [QUIMERA]" : "✅";
+  console.log(`${statusIcon} [Cita #${item.index}] ${item.clientName}:`);
+  console.log(`   - Duración:  ${item.durMin} min (${item.startIso} a ${item.endIso})`);
+  console.log(`   - Fotos:     ${item.photosCount} fotos | Score máx: ${item.bestFaceScore}`);
+  console.log(`   - Biometría: ${item.embeddingsCount} vectores | MinSim: ${item.minPairSim.toFixed(3)} | AvgSim: ${item.avgPairSim} | MaxSim: ${item.maxPairSim.toFixed(3)}`);
   console.log(``);
 }
 
 console.log(`---------------------------------------------------------------`);
 console.log(`🛡️ RESULTADO DE LAS ASERCIONES CAUSALES (Argon 4):`);
-if (hasChimera) {
-  console.error(`❌ FALLA DE ASERCIÓN: Se detectaron quimeras intra-sesión (similitud < 0.38 entre fotos de la misma cita).`);
+if (chimeraCheck.hasChimera) {
+  console.error(`❌ FALLA DE ASERCIÓN: Se detectaron quimeras intra-sesión (similitud < ${PIPELINE_CONFIG.biometrics?.chimeraThreshold ?? 0.38} entre fotos de la misma cita).`);
 } else {
   console.log(`✅ ASERCIÓN ANTI-QUIMERA: Superada al 100%. Todas las citas son biométricamente puras.`);
 }
-
 console.log(`===============================================================\n`);

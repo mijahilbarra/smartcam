@@ -17,10 +17,27 @@ import {
   findChimeraSplit,
   splitChimeraSession,
   prepareAndFilterSessionForClosure,
+  validateSpatialChairAnchor,
   validateBiometricsForFinalization,
   validatePostConsolidationNoise,
   isCapeBarrierSeparating
 } from "./closure_rules.js";
+import {
+  consolidateChairAppointment,
+  computeCleanCentroid,
+  computePercentile,
+  computeCleanSims,
+  evaluateCausalConsolidation
+} from "./causal_biocentric_consolidator.js";
+
+export {
+  consolidateChairAppointment,
+  computeCleanCentroid,
+  computePercentile,
+  computeCleanSims,
+  evaluateCausalConsolidation,
+  validateSpatialChairAnchor
+};
 
 export const isVector = (v) => Array.isArray(v) || ArrayBuffer.isView(v);
 
@@ -98,6 +115,31 @@ export function getRepresentativeFace(photos = [], embeddings = []) {
     });
   }
 
+  // Estrategia de Medoide de Clúster (Cluster Medoid):
+  // Evalúa la centralidad (similitud promedio de cada candidato con sus pares en el clúster)
+  // para garantizar que el representante sea el centro de gravedad biométrico y no un outlier periférico.
+  if (candidates.length >= 3) {
+    for (let i = 0; i < candidates.length; i++) {
+      let sumSim = 0;
+      let count = 0;
+      for (let j = 0; j < candidates.length; j++) {
+        if (i === j) continue;
+        const sim = computeCosineSimilarity(candidates[i].vector, candidates[j].vector);
+        sumSim += sim;
+        count++;
+      }
+      candidates[i].centrality = count > 0 ? (sumSim / count) : 1.0;
+    }
+  } else {
+    for (const c of candidates) {
+      c.centrality = 1.0;
+    }
+  }
+
+  for (const c of candidates) {
+    // Puntuación Medoide: 50% centralidad de clúster + 30% frontalidad anatómica + 20% nitidez
+    c.medoidScore = (c.centrality * 0.50) + (c.frontalityScore * 0.30) + (Math.min(1.0, c.score / 100) * 0.20);
+  }
 
   if (candidates.length === 0) {
     if (embeddings && embeddings.length > 0) {
@@ -117,6 +159,7 @@ export function getRepresentativeFace(photos = [], embeddings = []) {
           vector: firstVec,
           score: bestScore,
           frontalityScore: 0,
+          centrality: 1.0,
           hasFrontalAnchor: false
         };
       }
@@ -124,8 +167,8 @@ export function getRepresentativeFace(photos = [], embeddings = []) {
     return null;
   }
 
-  // 1. Jerarquía de selección de foto representativa:
-  // Nivel A: Foto erguida con dos ojos visibles (frontal, semi_left, semi_right)
+  // 1. Jerarquía de selección de foto representativa orientada a Medoide:
+  // Nivel A: Foto erguida con dos ojos visibles (frontal, semi_left, semi_right) ordenada por medoidScore.
   //          SIEMPRE gana sobre cualquier cara reclinada/tilted aunque la reclinada tenga mayor nitidez.
   // Nivel B: Foto con dos ojos visibles aunque sea reclinada/tilted.
   // Nivel C: Cualquier foto válida restante (perfiles o 1 ojo).
@@ -134,267 +177,45 @@ export function getRepresentativeFace(photos = [], embeddings = []) {
   const twoEyesCandidates = candidates.filter(c => c.hasTwoEyes);
 
   if (uprightCandidates.length > 0) {
-    uprightCandidates.sort((a, b) => b.compositeScore - a.compositeScore);
+    uprightCandidates.sort((a, b) => b.medoidScore - a.medoidScore || b.compositeScore - a.compositeScore);
     const best = uprightCandidates[0];
     return {
       photo: best.photo,
       vector: best.vector,
       score: best.score,
       frontalityScore: best.frontalityScore,
+      centrality: best.centrality,
       hasFrontalAnchor: true
     };
   }
 
   if (twoEyesCandidates.length > 0) {
-    twoEyesCandidates.sort((a, b) => b.compositeScore - a.compositeScore);
+    twoEyesCandidates.sort((a, b) => b.medoidScore - a.medoidScore || b.compositeScore - a.compositeScore);
     const best = twoEyesCandidates[0];
     return {
       photo: best.photo,
       vector: best.vector,
       score: best.score,
       frontalityScore: best.frontalityScore,
+      centrality: best.centrality,
       hasFrontalAnchor: false
     };
   }
 
   // 2. Solo se recurre a fotos de 1 ojo si la sesión carece por completo de fotos de 2 ojos
-  candidates.sort((a, b) => b.score - a.score);
+  candidates.sort((a, b) => b.medoidScore - a.medoidScore || b.score - a.score);
   const sharpest = candidates[0];
   return {
     photo: sharpest.photo,
     vector: sharpest.vector,
     score: sharpest.score,
     frontalityScore: sharpest.frontalityScore || 0,
+    centrality: sharpest.centrality || 1.0,
     hasFrontalAnchor: false
   };
 }
 
-/**
- * Intenta consolidar un segmento cerrado dentro de la atención previa en la misma silla si hay continuidad
- * @param {Object} params
- * @returns {Promise<Object|null>} Retorna la cita previa consolidada si hubo unión, o null si es independiente
- */
-export async function consolidateChairAppointment({
-  session,
-  prevSameChairAppt,
-  durationMinutes,
-  now,
-  customerService,
-  sqliteClient,
-  db,
-  bucket,
-  logVerbal = console.log,
-  stats
-}) {
-  if (
-    session._blockPrevChairMerge ||
-    !prevSameChairAppt ||
-    prevSameChairAppt.chairId !== session.chairId ||
-    !session.embeddings ||
-    session.embeddings.length === 0
-  ) {
-    return null;
-  }
 
-  // Barrera dura de capa: retiro formal de capa impide fusión de tramos
-  if (isCapeBarrierSeparating(prevSameChairAppt, session)) {
-    logVerbal(`[Appointment] 🛑 Consolidación bloqueada por barrera de capa (isCapeBarrierSeparating).`);
-    return null;
-  }
-
-  const prevEndedMs = new Date(prevSameChairAppt.endedAt).getTime();
-  const gapMs = session.startedAtEpoch - prevEndedMs;
-  const minMergeGap = PIPELINE_CONFIG.consolidation?.minMergeGapMs ?? -300000;
-  const maxMergeGap = 30 * 60 * 1000; // a) Brecha de ausencia <= 30 minutos
-
-  if (gapMs < minMergeGap || gapMs > maxMergeGap) {
-    return null;
-  }
-
-  const prevStartMs = new Date(prevSameChairAppt.startedAt).getTime();
-  const consolidatedDurationMin = Math.max(
-    (prevSameChairAppt.durationMinutes || 0) + durationMinutes,
-    Math.round((now - prevStartMs) / 60000)
-  );
-
-  const prevClient = customerService?.getCustomerData?.(prevSameChairAppt.clientId) ||
-                     sqliteClient?.getCustomerById?.(prevSameChairAppt.clientId);
-
-  let prevVecs = Array.isArray(prevSameChairAppt._allSegmentEmbeddings) && prevSameChairAppt._allSegmentEmbeddings.length > 0
-    ? prevSameChairAppt._allSegmentEmbeddings.map(e => isVector(e) ? e : e?.vector).filter(Boolean)
-    : (Array.isArray(prevClient?.embeddings)
-      ? prevClient.embeddings.map(e => isVector(e) ? e : e?.vector).filter(Boolean)
-      : []);
-
-  if (prevVecs.length === 0 && Array.isArray(prevSameChairAppt.embeddings)) {
-    prevVecs = prevSameChairAppt.embeddings.map(e => isVector(e) ? e : e?.vector).filter(Boolean);
-  }
-
-  const prevPhotos = Array.isArray(prevSameChairAppt._allSegmentPhotos) && prevSameChairAppt._allSegmentPhotos.length > 0
-    ? prevSameChairAppt._allSegmentPhotos
-    : (Array.isArray(prevClient?.photos) && prevClient.photos.length > 0
-      ? prevClient.photos
-      : (prevSameChairAppt.photos || []));
-
-  if (prevVecs.length === 0) {
-    return null;
-  }
-
-  const repA = getRepresentativeFace(prevPhotos, prevVecs);
-  const repB = getRepresentativeFace(session.photos || [], session.embeddings || []);
-
-  if (!repA?.vector || !repB?.vector) {
-    return null;
-  }
-
-  const repSim = computeCosineSimilarity(repA.vector, repB.vector);
-
-  // c) Coincidencia biométrica adaptativa por pose/landmarks:
-  const isLandmarkAligned = (
-    repA?.photo?.yawScore !== undefined && repB?.photo?.yawScore !== undefined &&
-    Math.abs(repA.photo.yawScore - repB.photo.yawScore) < 0.35 &&
-    Math.abs((repA.photo.pitchScore || 0) - (repB.photo.pitchScore || 0)) < 0.35
-  );
-
-  const isSamePose = Boolean(
-    repA?.photo?.pose && repB?.photo?.pose &&
-    repA.photo.pose === repB.photo.pose &&
-    (repA.photo.yawScore !== undefined ? isLandmarkAligned : true)
-  );
-
-  const reqThresh = isSamePose
-    ? (PIPELINE_CONFIG.biometrics?.samePoseThreshold ?? 0.60)
-    : (PIPELINE_CONFIG.biometrics?.crossPoseThreshold ?? 0.48);
-
-  const setToSet = computeSetToSetMetrics(prevVecs, prevPhotos, session.embeddings || [], session.photos || []);
-  const avgFrontality = ((repA.frontalityScore || 0) + (repB.frontalityScore || 0)) / 2;
-  const frontalityWeighted = repSim * Math.min(1.0, avgFrontality + 0.20);
-  const weightedSim = Math.max(
-    setToSet.top3AvgSim,
-    setToSet.maxCompatiblePoseSim,
-    setToSet.maxSim,
-    frontalityWeighted,
-    repSim
-  );
-
-  const isBiometricMatch = (repSim >= reqThresh) || (repSim >= (reqThresh - 0.04) && weightedSim >= reqThresh);
-  if (!isBiometricMatch) {
-    return null;
-  }
-
-  // Regla 1.6: Pureza de la Galería en fusiones:
-  // solo ingresan a la galería fotos con hasTwoEyes = true y similitud con el representante >= 0.40
-  const repRef = repA?.vector ? repA : repB;
-  const filteredNewPhotos = [];
-  const filteredNewEmbeddings = [];
-  for (let k = 0; k < (session.photos || []).length; k++) {
-    const ph = session.photos[k];
-    const emb = session.embeddings?.[k] || null;
-    const v = isVector(emb) ? emb : (emb?.vector || null);
-    const hasTwo = ph?.hasTwoEyes !== undefined
-      ? Boolean(ph.hasTwoEyes)
-      : hasTwoEyesVisible(ph?.landmarks, ph?.boxNorm, ph?.pose);
-    if (!hasTwo) continue;
-    if (repRef?.vector && v) {
-      const sim = computeCosineSimilarity(v, repRef.vector);
-      if (sim < 0.40) continue;
-    }
-    filteredNewPhotos.push(ph);
-    filteredNewEmbeddings.push(emb);
-  }
-
-  // Consolidar este tramo dentro de prevSameChairAppt y su cliente sin crear cita duplicada
-  prevSameChairAppt._tramoA_photo = repA?.photo || prevPhotos[0];
-  prevSameChairAppt._tramoB_photo = repB?.photo || (session.photos && session.photos[0]);
-  prevSameChairAppt._allSegmentPhotos = [...prevPhotos, ...filteredNewPhotos];
-  prevSameChairAppt._allSegmentEmbeddings = [...prevVecs, ...filteredNewEmbeddings];
-  const merged = mergePhotosAndEmbeddings(
-    prevSameChairAppt.photos || [],
-    filteredNewPhotos,
-    prevSameChairAppt.embeddings || prevVecs,
-    filteredNewEmbeddings
-  );
-  const deduped = deduplicateSessionPhotos(merged.photos, merged.embeddings, 20);
-
-  prevSameChairAppt.endedAt = new Date(now).toISOString();
-  prevSameChairAppt.durationMinutes = consolidatedDurationMin;
-  prevSameChairAppt.photos = deduped.photos;
-  prevSameChairAppt.embeddings = deduped.embeddings;
-  if ((session.bestFaceScore || 0) > (prevSameChairAppt.bestFaceScore || 0)) {
-    prevSameChairAppt.bestFaceScore = session.bestFaceScore;
-    prevSameChairAppt.thumbnailBase64 = session.thumbnailBase64 || prevSameChairAppt.thumbnailBase64;
-  }
-
-  if (prevClient) {
-    prevClient.lastSeen = new Date(now).toISOString();
-    prevClient.photos = deduped.photos;
-    prevClient.embeddings = deduped.embeddings;
-    prevClient.bestFaceScore = prevSameChairAppt.bestFaceScore;
-    await customerService?.saveOrUpdateCustomer?.(prevClient, {
-      db,
-      bucket,
-      galleryUpdated: true,
-      forceSync: true
-    });
-  }
-
-  if (session.tempClientId && session.tempClientId !== prevSameChairAppt.clientId) {
-    await customerService?.deleteCustomer?.(session.tempClientId, { db });
-  }
-  if (session.personId && session.personId !== prevSameChairAppt.clientId && session.personId !== session.tempClientId) {
-    await customerService?.deleteCustomer?.(session.personId, { db });
-  }
-
-  const sqlite = sqliteClient || (customerService?.sqliteClient);
-  if (sqlite?.saveAppointment) {
-    try { sqlite.saveAppointment(prevSameChairAppt); } catch (_) {}
-  }
-  if (db) {
-    try { await db.doc(`camera_catcher_appointments/${prevSameChairAppt.id}`).set(prevSameChairAppt); } catch (_) {}
-  }
-
-  try {
-    const fs = await import("fs");
-    const path = await import("path");
-    const reportDir = path.resolve(process.cwd(), "data/audit_reports");
-    if (!fs.existsSync(reportDir)) fs.mkdirSync(reportDir, { recursive: true });
-    const combinedBefore = [
-      ...(prevSameChairAppt._photosBeforeClose || prevSameChairAppt.photos || []),
-      ...(session.photosBeforeClose || [])
-    ];
-    prevSameChairAppt._photosBeforeClose = combinedBefore;
-    const auditPayload = {
-      appointmentId: prevSameChairAppt.id,
-      clientId: prevSameChairAppt.clientId,
-      clientName: prevSameChairAppt.clientName,
-      clientStatus: prevSameChairAppt.clientStatus,
-      matchedClient: null,
-      durationMinutes: prevSameChairAppt.durationMinutes,
-      photosBeforeClose: combinedBefore.map((p, i) => ({
-        idx: i + 1,
-        pose: p.pose,
-        poseLabel: p.poseLabel,
-        sharpnessScore: p.sharpnessScore,
-        thumbnailBase64: p.thumbnailBase64
-      })),
-      photosAfterClose: (prevSameChairAppt.photos || []).map((p, i) => ({
-        idx: i + 1,
-        pose: p.pose,
-        poseLabel: p.poseLabel,
-        sharpnessScore: p.sharpnessScore,
-        thumbnailBase64: p.thumbnailBase64
-      }))
-    };
-    fs.writeFileSync(path.join(reportDir, `audit_${prevSameChairAppt.id}.json`), JSON.stringify(auditPayload, null, 2));
-  } catch (_) {}
-
-  logVerbal(`🔗 Tramo de ${durationMinutes} min consolidado en la atención en curso ${prevSameChairAppt.id} (${prevSameChairAppt.clientName}, duración total: ${consolidatedDurationMin} min, brecha: ${Math.round(gapMs / 1000)}s).`, "success");
-  if (stats) {
-    stats.continuousMergesCount = (stats.continuousMergesCount || 0) + 1;
-    stats.consolidated = (stats.consolidated || 0) + 1;
-  }
-  return prevSameChairAppt;
-}
 
 /**
  * Formaliza el cliente final (recurrente o nuevo), actualiza su galería y persiste el registro de Appointment
@@ -593,39 +414,41 @@ export async function finalizeCustomerAndAppointment({
     }
   }
 
-  // Exportar auditoría fotográfica antes/después de closeSession
-  try {
-    const fs = await import("fs");
-    const path = await import("path");
-    const reportDir = path.resolve(process.cwd(), "data/audit_reports");
-    if (!fs.existsSync(reportDir)) fs.mkdirSync(reportDir, { recursive: true });
-    const auditPayload = {
-      appointmentId: appointmentRecord.id,
-      clientId: finalClient.id,
-      clientName: finalClient.name,
-      clientStatus: finalClient.status,
-      matchedClient: matchedClient ? { id: matchedClient.id, name: matchedClient.name, status: matchedClient.status } : null,
-      durationMinutes,
-      photosBeforeClose: (session.photosBeforeClose || []).map((p, i) => ({
-        idx: i + 1,
-        pose: p.pose,
-        poseLabel: p.poseLabel,
-        sharpnessScore: p.sharpnessScore,
-        thumbnailBase64: p.thumbnailBase64
-      })),
-      photosAfterClose: (session.photos || []).map((p, i) => ({
-        idx: i + 1,
-        pose: p.pose,
-        poseLabel: p.poseLabel,
-        sharpnessScore: p.sharpnessScore,
-        thumbnailBase64: p.thumbnailBase64
-      }))
-    };
-    const filePath = path.join(reportDir, `audit_${appointmentRecord.id}.json`);
-    fs.writeFileSync(filePath, JSON.stringify(auditPayload, null, 2));
-    console.log(`[Appointment] 📑 Reporte de auditoría de cierre exportado a: ${filePath}`);
-  } catch (auditErr) {
-    console.warn(`[Appointment] Error exportando auditoría:`, auditErr.message);
+  // Exportar auditoría fotográfica antes/después de closeSession (solo si EXPORT_AUDIT_JSON=true)
+  if (process.env.EXPORT_AUDIT_JSON === "true" || process.env.DEBUG_AUDIT_REPORTS === "true") {
+    try {
+      const fs = await import("fs");
+      const path = await import("path");
+      const reportDir = path.resolve(process.cwd(), "data/audit_reports");
+      if (!fs.existsSync(reportDir)) fs.mkdirSync(reportDir, { recursive: true });
+      const auditPayload = {
+        appointmentId: appointmentRecord.id,
+        clientId: finalClient.id,
+        clientName: finalClient.name,
+        clientStatus: finalClient.status,
+        matchedClient: matchedClient ? { id: matchedClient.id, name: matchedClient.name, status: matchedClient.status } : null,
+        durationMinutes,
+        photosBeforeClose: (session.photosBeforeClose || []).map((p, i) => ({
+          idx: i + 1,
+          pose: p.pose,
+          poseLabel: p.poseLabel,
+          sharpnessScore: p.sharpnessScore,
+          thumbnailBase64: p.thumbnailBase64
+        })),
+        photosAfterClose: (session.photos || []).map((p, i) => ({
+          idx: i + 1,
+          pose: p.pose,
+          poseLabel: p.poseLabel,
+          sharpnessScore: p.sharpnessScore,
+          thumbnailBase64: p.thumbnailBase64
+        }))
+      };
+      const filePath = path.join(reportDir, `audit_${appointmentRecord.id}.json`);
+      fs.writeFileSync(filePath, JSON.stringify(auditPayload, null, 2));
+      console.log(`[Appointment] 📑 Reporte de auditoría de cierre exportado a: ${filePath}`);
+    } catch (auditErr) {
+      console.warn(`[Appointment] Error exportando auditoría:`, auditErr.message);
+    }
   }
 
   return appointmentRecord;
@@ -671,15 +494,24 @@ export async function executeSessionClosurePipeline({
     customerService,
     db,
     stats,
+    options,
     logVerbal
   });
   if (prep.shouldDiscard) return null;
 
   session.status = "to_verify";
 
-  // Referencia al Cliente Anterior en la misma silla (comparación secuencial)
-  const prevSameChairAppt = [...completedAppointments].reverse().find(a => a.chairId === session.chairId) ||
-    (completedAppointments.length > 0 ? completedAppointments[completedAppointments.length - 1] : null);
+  // Regla Estricta Causal: Al cerrarse la sesión en la silla C, se evalúan las citas históricas
+  // previas en la misma silla (t_prev < t_actual, gap <= 45 min)
+  const currentStartMs = session.startedAtEpoch || (session.startedAt ? new Date(session.startedAt).getTime() : now);
+  const minMergeGap = PIPELINE_CONFIG.consolidation?.minMergeGapMs ?? -300000;
+  const candidatePrevAppts = [...completedAppointments].reverse().filter(a => {
+    if (a.chairId !== session.chairId) return false;
+    const aEnd = a.endedAtEpoch || (a.endedAt ? new Date(a.endedAt).getTime() : 0);
+    const gap = currentStartMs - aEnd;
+    return gap >= minMergeGap && gap <= 45 * 60 * 1000;
+  });
+  const prevSameChairAppt = candidatePrevAppts[0] || null;
 
   // Partición Post-Hoc Anti-Quimera
   if (
@@ -715,19 +547,35 @@ export async function executeSessionClosurePipeline({
   });
   if (!bioCheck.isValid) return null;
 
-  // Consolidación cronológica
-  const consolidatedAppt = await consolidateChairAppointment({
-    session,
-    prevSameChairAppt,
-    durationMinutes,
-    now,
-    customerService,
-    sqliteClient,
-    db,
-    bucket,
-    logVerbal,
-    stats
-  });
+  // Consolidación cronológica causal (Capa 13 con Cirugía Argon 4)
+  // Evalúa la cita previa de la misma silla (o la penúltima solo si la inmediata fue un micro-tramo <= 3 min)
+  const targetCandidateAppts = [];
+  if (candidatePrevAppts.length > 0) {
+    targetCandidateAppts.push(candidatePrevAppts[0]);
+    if ((candidatePrevAppts[0].durationMinutes || 0) <= 3 && candidatePrevAppts.length > 1) {
+      targetCandidateAppts.push(candidatePrevAppts[1]);
+    }
+  }
+
+  let consolidatedAppt = null;
+  for (const prevAppt of targetCandidateAppts) {
+    consolidatedAppt = await consolidateChairAppointment({
+      session,
+      prevSameChairAppt: prevAppt,
+      pastAppointments: completedAppointments,
+      durationMinutes,
+      now,
+      customerService,
+      sqliteClient,
+      db,
+      bucket,
+      logVerbal,
+      stats
+    });
+    if (consolidatedAppt) {
+      break;
+    }
+  }
   if (consolidatedAppt) {
     return consolidatedAppt;
   }

@@ -23,6 +23,8 @@ npm-debug.log*
 test/*-output.jpg
 test/*-crop.jpg
 docs/assets/
+docs/REPORTE_FUNNEL_*.md
+docs/REPORTE_FOTOGRAFICO_*.md
 
 # Local databases
 data/

@@ -959,3 +959,35 @@ export async function evaluateFaceQuality(personCropBuffer, options = {}) {
     reason
   };
 }
+
+export const LEFT_FACING_POSES = Object.freeze([
+  'semi_left',
+  'tilted_down_left',
+  'tilted_up_left',
+  'profile_left'
+]);
+
+/**
+ * Garantiza que la miniatura facial esté en orientación canónica (espeja horizontalmente poses hacia la izquierda)
+ * @param {Buffer|string} bufferOrBase64 - Buffer o base64 de la imagen
+ * @param {string} pose - Pose estimada del rostro
+ * @returns {Promise<Buffer>}
+ */
+export async function ensureCanonicalFaceBuffer(bufferOrBase64, pose) {
+  let buf;
+  if (typeof bufferOrBase64 === "string") {
+    const cleanB64 = bufferOrBase64.replace(/^data:image\/\w+;base64,/, "");
+    buf = Buffer.from(cleanB64, "base64");
+  } else {
+    buf = bufferOrBase64;
+  }
+  const isLeft = LEFT_FACING_POSES.includes(pose);
+  if (isLeft && buf) {
+    try {
+      return await sharp(buf).flop().toBuffer();
+    } catch (_) {
+      return buf;
+    }
+  }
+  return buf;
+}

@@ -37,7 +37,8 @@ const BASE_CONFIG_DEFAULTS = {
     minChairFrames: 6,
     leaveDebounceFrames: 6,
     minChairDurationMs: 2000,
-    leaveDebounceDurationMs: 2000
+    leaveDebounceDurationMs: 2000,
+    blockInactivityTimeoutMs: 20000
   },
   sessions: {
     emptyChairTimeoutMs: 45000,
@@ -55,7 +56,8 @@ const BASE_CONFIG_DEFAULTS = {
   },
   biometrics: {
     samePoseThreshold: 0.60,
-    crossPoseThreshold: 0.48
+    crossPoseThreshold: 0.48,
+    chimeraThreshold: 0.38
   }
 };
 
@@ -103,7 +105,8 @@ function buildConfig() {
     minChairFrames: process.env.MIN_CHAIR_FRAMES ? parseInt(process.env.MIN_CHAIR_FRAMES, 10) : (fileConfig.tracking?.minChairFrames ?? BASE_CONFIG_DEFAULTS.tracking.minChairFrames),
     leaveDebounceFrames: process.env.LEAVE_DEBOUNCE_FRAMES ? parseInt(process.env.LEAVE_DEBOUNCE_FRAMES, 10) : (fileConfig.tracking?.leaveDebounceFrames ?? BASE_CONFIG_DEFAULTS.tracking.leaveDebounceFrames),
     minChairDurationMs: process.env.MIN_CHAIR_DURATION_MS ? parseInt(process.env.MIN_CHAIR_DURATION_MS, 10) : (fileConfig.tracking?.minChairDurationMs ?? BASE_CONFIG_DEFAULTS.tracking.minChairDurationMs),
-    leaveDebounceDurationMs: process.env.LEAVE_DEBOUNCE_DURATION_MS ? parseInt(process.env.LEAVE_DEBOUNCE_DURATION_MS, 10) : (fileConfig.tracking?.leaveDebounceDurationMs ?? BASE_CONFIG_DEFAULTS.tracking.leaveDebounceDurationMs)
+    leaveDebounceDurationMs: process.env.LEAVE_DEBOUNCE_DURATION_MS ? parseInt(process.env.LEAVE_DEBOUNCE_DURATION_MS, 10) : (fileConfig.tracking?.leaveDebounceDurationMs ?? BASE_CONFIG_DEFAULTS.tracking.leaveDebounceDurationMs),
+    blockInactivityTimeoutMs: process.env.BLOCK_INACTIVITY_TIMEOUT_MS ? parseInt(process.env.BLOCK_INACTIVITY_TIMEOUT_MS, 10) : (fileConfig.tracking?.blockInactivityTimeoutMs ?? BASE_CONFIG_DEFAULTS.tracking.blockInactivityTimeoutMs)
   };
 
   const sessions = {
@@ -130,7 +133,8 @@ function buildConfig() {
     ...BASE_CONFIG_DEFAULTS.biometrics,
     ...(fileConfig.biometrics || {}),
     samePoseThreshold: process.env.SAME_POSE_THRESHOLD ? parseFloat(process.env.SAME_POSE_THRESHOLD) : (fileConfig.biometrics?.samePoseThreshold ?? BASE_CONFIG_DEFAULTS.biometrics.samePoseThreshold),
-    crossPoseThreshold: process.env.CROSS_POSE_THRESHOLD ? parseFloat(process.env.CROSS_POSE_THRESHOLD) : (fileConfig.biometrics?.crossPoseThreshold ?? BASE_CONFIG_DEFAULTS.biometrics.crossPoseThreshold)
+    crossPoseThreshold: process.env.CROSS_POSE_THRESHOLD ? parseFloat(process.env.CROSS_POSE_THRESHOLD) : (fileConfig.biometrics?.crossPoseThreshold ?? BASE_CONFIG_DEFAULTS.biometrics.crossPoseThreshold),
+    chimeraThreshold: process.env.CHIMERA_THRESHOLD ? parseFloat(process.env.CHIMERA_THRESHOLD) : (fileConfig.biometrics?.chimeraThreshold ?? BASE_CONFIG_DEFAULTS.biometrics.chimeraThreshold)
   };
 
   const config = {

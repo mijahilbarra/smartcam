@@ -17,6 +17,60 @@ export const BARBERSHOP_QUADRANTS = {};
 
 
 /**
+ * Calcula la fracción del cuerpo humano [x1, y1, x2, y2] que cae DENTRO del encuadre de la silla configurada en Firebase:
+ * insideRatio = Area(intersección(cajaPersona, cajaSillaFirebase)) / Area(cajaPersona)
+ *
+ * @param {[number, number, number, number]} detBox - Caja de la persona [x1, y1, x2, y2]
+ * @param {Object} chairZone - Zona de la silla (contiene boxNorm, polygonNorm o box)
+ * @param {number} [width=1280] - Ancho del fotograma
+ * @param {number} [height=720] - Alto del fotograma
+ * @returns {number} Fracción entre 0.0 y 1.0
+ */
+export function computeBoxInsideChairRatio(detBox, chairZone, width = 1280, height = 720) {
+  if (!detBox || !Array.isArray(detBox) || detBox.length < 4 || !chairZone) return 0;
+
+  const isNorm = detBox.every(v => v >= 0 && v <= 1.05);
+  const w = isNorm ? 1 : (width || 1280);
+  const h = isNorm ? 1 : (height || 720);
+
+  let cx1, cy1, cx2, cy2;
+  if (chairZone.box && !isNorm) {
+    [cx1, cy1, cx2, cy2] = chairZone.box;
+  } else if (chairZone.boxNorm && Array.isArray(chairZone.boxNorm) && chairZone.boxNorm.length === 4) {
+    const [cymin, cxmin, cymax, cxmax] = chairZone.boxNorm;
+    cx1 = cxmin * w;
+    cy1 = cymin * h;
+    cx2 = cxmax * w;
+    cy2 = cymax * h;
+  } else if (chairZone.polygonNorm && Array.isArray(chairZone.polygonNorm) && chairZone.polygonNorm.length >= 3) {
+    const xs = chairZone.polygonNorm.map(p => (typeof p.x === 'number' ? p.x : p[0]));
+    const ys = chairZone.polygonNorm.map(p => (typeof p.y === 'number' ? p.y : p[1]));
+    cx1 = Math.min(...xs) * w;
+    cx2 = Math.max(...xs) * w;
+    cy1 = Math.min(...ys) * h;
+    cy2 = Math.max(...ys) * h;
+  } else if (chairZone.box && isNorm) {
+    cx1 = chairZone.box[0] / (width || 1280);
+    cy1 = chairZone.box[1] / (height || 720);
+    cx2 = chairZone.box[2] / (width || 1280);
+    cy2 = chairZone.box[3] / (height || 720);
+  } else {
+    return 0;
+  }
+
+  const [px1, py1, px2, py2] = detBox;
+  const ix1 = Math.max(px1, cx1);
+  const iy1 = Math.max(py1, cy1);
+  const ix2 = Math.min(px2, cx2);
+  const iy2 = Math.min(py2, cy2);
+
+  const interArea = Math.max(0, ix2 - ix1) * Math.max(0, iy2 - iy1);
+  const personArea = Math.max(0, px2 - px1) * Math.max(0, py2 - py1);
+
+  return personArea > 0 ? (interArea / personArea) : 0;
+}
+
+/**
  * Determina si una detección [x1, y1, x2, y2] solapa espacialmente con una zona configurada
  * @param {[number, number, number, number]} detBox
  * @param {Object} zone

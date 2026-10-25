@@ -79,6 +79,7 @@ import {
   STEP_DESCRIPTION as PERSISTENCE_DESCRIPTION,
   formatStepSummary as formatPersistenceSummary
 } from "./pipeline/persistence_step.js";
+import { executeCausalCycle } from "./pipeline/canonical_causal_pipeline.js";
 
 // Re-exportar funciones y metadatos de pipeline para acceso unificado sin duplicación
 export {
@@ -157,17 +158,167 @@ export {
 
 export { analyzeCapeState, trackCapeLifecycle, isCapeBarrierSeparating, CAPE_STATES } from "./pipeline/cape_detector.js";
 
+export { TrackBlockManager } from "./pipeline/track_block_manager.js";
+export {
+  evaluateCropStep,
+  ingestSampleStep,
+  evaluateInactiveBlocksStep,
+  dispatchConfirmedBlocksStep,
+  heartbeatStep,
+  executeCausalCycle,
+  flushCausalPipeline,
+  flushCausalPipeline as flushProcessPipeline
+} from "./pipeline/canonical_causal_pipeline.js";
+export {
+  processCausalSample,
+  advanceCausalHeartbeat
+} from "./pipeline/causal_cycle_orchestrator.js";
+export {
+  consolidateChairAppointment,
+  computeCleanCentroid,
+  computePercentile,
+  evaluateCausalConsolidation
+} from "./pipeline/causal_biocentric_consolidator.js";
+export {
+  generateFunnelReportMarkdown,
+  generateFunnelReportMarkdown as generateProcessReport,
+  generateVisualContactSheet,
+  exportRepresentativeFaces,
+  generateMermaidLineage,
+  assertAntiChimeraPurity
+} from "./pipeline/causal_report_generator.js";
+
+/**
+ * Acumulador unificado de métricas para todos los canales (streaming, causal, producción)
+ */
+export class ProcessMetricsAccumulator {
+  constructor() {
+    this.reset();
+  }
+
+  reset() {
+    this.countHarvested = 0;
+    this.countFaceDetected = 0;
+    this.countAntiObjects = 0;
+    this.countSharpness = 0;
+    this.countValidPoses = 0;
+    this.countUpright = 0;
+    this.countReclined = 0;
+    this.countStaffExcluded = 0;
+    this.countClientPassed = 0;
+    this.confirmedBlocksCount = 0;
+  }
+
+  add(metrics = {}) {
+    if (!metrics) return;
+    this.countHarvested += (metrics.harvested ?? metrics.countHarvested ?? 0);
+    this.countFaceDetected += (metrics.faceDetected ?? metrics.countFaceDetected ?? 0);
+    this.countAntiObjects += (metrics.antiObjects ?? metrics.countAntiObjects ?? 0);
+    this.countSharpness += (metrics.sharpness ?? metrics.countSharpness ?? 0);
+    this.countValidPoses += (metrics.validPoses ?? metrics.countValidPoses ?? 0);
+    this.countUpright += (metrics.upright ?? metrics.countUpright ?? 0);
+    this.countReclined += (metrics.reclined ?? metrics.countReclined ?? 0);
+    this.countStaffExcluded += (metrics.staffExcluded ?? metrics.countStaffExcluded ?? 0);
+    this.countClientPassed += (metrics.clientPassed ?? metrics.countClientPassed ?? 0);
+    this.confirmedBlocksCount += (metrics.confirmedBlocks ?? metrics.confirmedBlocksCount ?? 0);
+  }
+
+  toJSON() {
+    return {
+      countHarvested: this.countHarvested,
+      countFaceDetected: this.countFaceDetected,
+      countAntiObjects: this.countAntiObjects,
+      countSharpness: this.countSharpness,
+      countValidPoses: this.countValidPoses,
+      countUpright: this.countUpright,
+      countReclined: this.countReclined,
+      countStaffExcluded: this.countStaffExcluded,
+      countClientPassed: this.countClientPassed,
+      confirmedBlocksCount: this.confirmedBlocksCount
+    };
+  }
+}
+
+export function createProcessAccumulator() {
+  return new ProcessMetricsAccumulator();
+}
+
 /**
  * Pipeline principal de ejecución: orquesta el flujo paso a paso
  * de manera lineal, limpia y declarativa (< 90 líneas).
  *
- * @param {Object} context - Dependencias del ciclo (db, bucket, tracker, visitService, streamServer, tomlPath)
+ * @param {Object} context - Dependencias del ciclo (db, bucket, tracker, visitService, streamServer, tomlPath, harvestedRow)
  * @param {Object} options - Parámetros del ciclo (triggerSource: 'realtime' | 'manual' | 'startup')
  * @returns {Promise<Object>} Resultado del ciclo
  */
 export async function runProcessCycle(context = {}, options = {}) {
+  // Modalidad Causal Replay / Harvested Row (unificada a través del pipeline central)
+  if (context.harvestedRow) {
+    const row = context.harvestedRow;
+    const { visitService, trackBlockManager, lastTimestamp } = context;
+    let box = null;
+    if (row.box_json) {
+      try {
+        box = typeof row.box_json === "string" ? JSON.parse(row.box_json) : row.box_json;
+      } catch (_) {}
+    }
+
+    const cycleMetrics = {
+      harvested: 1,
+      faceDetected: row.face_detected ? 1 : 0,
+      antiObjects: 0,
+      sharpness: 0,
+      validPoses: 0,
+      upright: 0,
+      reclined: 0,
+      staffExcluded: 0,
+      clientPassed: 0,
+      confirmedBlocks: 0
+    };
+
+    const cycleResult = await executeCausalCycle({
+      cropInput: row,
+      sample: {
+        trackId: row.track_id || 1,
+        chairId: row.chair_id,
+        timestampEpoch: row.timestamp_epoch,
+        videoSecond: row.video_second,
+        box
+      },
+      trackBlockManager,
+      visitService,
+      lastTimestamp,
+      options: options.causalOptions || {
+        staffProfiles: trackBlockManager?.staffProfiles || [],
+        staffThreshold: trackBlockManager?.staffThreshold
+      },
+      hooks: {
+        onCropEvaluated: (evalRes) => {
+          if (evalRes.stage >= 3) cycleMetrics.antiObjects++;
+          if (evalRes.stage >= 4) cycleMetrics.sharpness++;
+          if (evalRes.stage >= 5) cycleMetrics.validPoses++;
+          if (evalRes.faceData?.isUpright) cycleMetrics.upright++;
+          else if (evalRes.stage >= 6) cycleMetrics.reclined++;
+          if (evalRes.isStaff || evalRes.isStanding) cycleMetrics.staffExcluded++;
+          if (evalRes.passed) cycleMetrics.clientPassed++;
+          if (options.hooks?.onCropEvaluated) options.hooks.onCropEvaluated(evalRes);
+        },
+        ...(options.hooks || {})
+      }
+    });
+
+    cycleMetrics.confirmedBlocks = cycleResult.confirmedBlocks?.length || 0;
+
+    return {
+      status: "success",
+      mode: "harvested",
+      metrics: cycleMetrics,
+      cycleResult
+    };
+  }
+
   const {
-    db, bucket, tomlPath, streamServer, tracker, visitService, localOutputPath
+    db, bucket, tomlPath, streamServer, tracker, visitService, localOutputPath, trackBlockManager
   } = context;
 
   const triggerSource = options.triggerSource || "manual";
@@ -219,7 +370,7 @@ export async function runProcessCycle(context = {}, options = {}) {
   matchIdentitiesToTracks({ tracker, activeTracks, identifiedPeople, now: virtualNow });
 
   // 7. Gestión del ciclo de vida de visitas y sesiones en sillas
-  await updateVisits({ visitService, tracker, activeTracks, now: virtualNow });
+  const visitsResult = await updateVisits({ visitService, tracker, activeTracks, now: virtualNow, trackBlockManager });
 
   // 8. Cálculo dinámico de métricas de ocupación
   const occupancy = computeOccupancy({
@@ -230,8 +381,14 @@ export async function runProcessCycle(context = {}, options = {}) {
   broadcastTelemetry({ docId, mlResult, activeTracks, identifiedPeople, occupancy });
 
   // 10. Persistencia atómica y reporte de estado (SSE / Firestore)
-  return await persistCycleData({
+  const persistResult = await persistCycleData({
     db, docId, timestamp, storagePath, clientRecords, identifiedPeople,
     mlResult, visitService, activeTracks, occupancy, isRealtime
   });
+
+  return {
+    ...persistResult,
+    metrics: visitsResult?.cycleMetrics || null,
+    confirmedBlocks: visitsResult?.confirmedBlocks || []
+  };
 }
