@@ -416,7 +416,7 @@ export class VisitSessionService {
       emptySinceEpoch: null,
       pendingRotationSplitEpoch: null,
       rotatedFromPrevSession: isRotatedFromMismatch,
-      _blockPrevChairMerge: isRotatedFromMismatch,
+      _blockPrevChairMerge: false,
       rotationCandidates: [],
       lastPresenceLogAt: now,
       status: "en_corte",

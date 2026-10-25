@@ -246,7 +246,7 @@ export async function initChairSession({
     emptySinceEpoch: null,
     pendingRotationSplitEpoch: null,
     rotatedFromPrevSession: hasInitialCandidates,
-    _blockPrevChairMerge: hasInitialCandidates,
+    _blockPrevChairMerge: false,
     rotationCandidates: [],
     lastPresenceLogAt: now,
     status: "en_corte",

@@ -305,7 +305,10 @@ export function purgeStaffPhotos(photos = [], embeddings = [], staffProfiles = [
       }
 
       // Regla: similitud alta directa, misma pose, o afinidad con barbero
-      if (maxStaffSim >= 0.43 || maxStaffSamePoseSim >= 0.40 || (N > 1 && maxStaffSim >= 0.38 && maxStaffSim > maxClientSim - 0.05)) {
+      const isCanonicalStaff = maxStaffSim >= 0.46 || (maxStaffSamePoseSim >= 0.44 && maxStaffSim > maxClientSim + 0.05);
+      const isStaffAffinity = N >= 4 && maxStaffSim >= 0.40 && maxStaffSim > maxClientSim + 0.05;
+
+      if (isCanonicalStaff || isStaffAffinity) {
         isStaffPhoto = true;
         console.log(`[Appointment] ✂️ Purga de cluster: Eliminada foto #${i + 1} (${photoPose}) del corte por pertenecer al Barbero/Staff (StaffSim: ${maxStaffSim.toFixed(3)}, SamePoseSim: ${maxStaffSamePoseSim.toFixed(3)}, ClientSim: ${maxClientSim.toFixed(3)}).`);
       }

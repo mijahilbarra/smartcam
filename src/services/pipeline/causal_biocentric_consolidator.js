@@ -187,7 +187,7 @@ export function evaluateCausalConsolidation({
     maxGallerySim = maxBiometric;
   }
 
-  const isBiometricallyIncompatible = (repSim !== null && repSim < 0.30) || centroidSim < 0.40 || maxGallerySim < 0.45;
+  const isBiometricallyIncompatible = centroidSim < 0.35 && maxGallerySim < 0.40;
 
   // 3. VETO HOMÓLOGO INCONDICIONAL (Hard Biometric Veto - Argon 4)
   const poseA = repA?.pose || repA?.photo?.pose;
@@ -290,7 +290,14 @@ export function evaluateCausalConsolidation({
   let isSamePerson = false;
   let mergeReason = '';
 
-  if (!isHomologousDifferentPerson && !isBiometricallyIncompatible) {
+  const isSameClientBiometrics = robustSim >= 0.50 &&
+    (centroidSim >= 0.48 || (metrics.top3AvgSim || 0) >= 0.50) &&
+    maxGallerySim >= 0.52;
+
+  if (isSameClientBiometrics) {
+    isSamePerson = true;
+    mergeReason = `concordantBiometricsSameClient (robust=${robustSim.toFixed(3)}, centroid=${centroidSim.toFixed(3)}, top3Avg=${(metrics.top3AvgSim || 0).toFixed(3)}, maxGallery=${maxGallerySim.toFixed(3)})`;
+  } else if (!isHomologousDifferentPerson && !isBiometricallyIncompatible) {
     // 5. CONTINUIDAD CAUSAL EN SILLA (gap <= 6 min)
     if (gapMs <= 6 * 60 * 1000) {
       const hasSolidBiometricContinuity = (centroidSim >= 0.52 && robustSim >= 0.55) ||
@@ -360,7 +367,7 @@ export function evaluateCausalConsolidation({
       }
     }
   } else if (isBiometricallyIncompatible) {
-    logVerbal(`[CausalConsolidator] 🛑 Incompatibilidad biométrica (centroidSim=${centroidSim.toFixed(3)} < 0.40 || repSim=${repSim?.toFixed(3)} < 0.30 || maxGallerySim=${maxGallerySim.toFixed(3)} < 0.45). No se consolida.`);
+    logVerbal(`[CausalConsolidator] 🛑 Incompatibilidad biométrica (centroidSim=${centroidSim.toFixed(3)} < 0.35 && maxGallerySim=${maxGallerySim.toFixed(3)} < 0.40). No se consolida.`);
   }
 
   return {
