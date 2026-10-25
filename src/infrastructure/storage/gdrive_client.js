@@ -6,6 +6,8 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { Readable, Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 
 /**
  * Carga variables de .env en process.env si aún no están definidas (zero dependencies).
@@ -325,6 +327,157 @@ export class GoogleDriveClient {
       fileName: data.name || targetFileName,
       size: data.size !== undefined ? Number(data.size) : fileSize,
       md5Checksum: data.md5Checksum || null
+    };
+  }
+
+  /**
+   * Lista archivos no eliminados dentro de una carpeta específica de Google Drive.
+   * Soporta paginación automática si la carpeta contiene más de 1000 elementos.
+   * @param {string} folderId ID de la carpeta
+   * @param {Object} [options]
+   * @param {number} [options.pageSize=1000]
+   * @param {string} [options.orderBy='name']
+   * @returns {Promise<Array<{id: string, name: string, size: number, mimeType: string, createdTime: string}>>}
+   */
+  async listFiles(folderId, options = {}) {
+    if (!folderId) {
+      throw new Error("[GoogleDriveClient] folderId es requerido para listFiles");
+    }
+
+    const token = await this.getAccessToken();
+    const pageSize = options.pageSize || 1000;
+    const orderBy = options.orderBy || "name";
+    const allFiles = [];
+    let pageToken = null;
+
+    do {
+      const q = `'${folderId}' in parents and trashed = false`;
+      const url = new URL("https://www.googleapis.com/drive/v3/files");
+      url.searchParams.set("q", q);
+      url.searchParams.set("fields", "nextPageToken,files(id,name,size,mimeType,createdTime)");
+      url.searchParams.set("pageSize", String(pageSize));
+      url.searchParams.set("orderBy", orderBy);
+      if (pageToken) {
+        url.searchParams.set("pageToken", pageToken);
+      }
+
+      const res = await this.fetchFn(url.toString(), {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`[GoogleDriveClient] Error listando archivos en carpeta '${folderId}' (HTTP ${res.status}): ${errText}`);
+      }
+
+      const data = await res.json();
+      const files = data.files || [];
+      for (const f of files) {
+        allFiles.push({
+          id: f.id,
+          name: f.name,
+          size: f.size !== undefined ? Number(f.size) : 0,
+          mimeType: f.mimeType,
+          createdTime: f.createdTime
+        });
+      }
+      pageToken = data.nextPageToken || null;
+    } while (pageToken);
+
+    return allFiles;
+  }
+
+  /**
+   * Descarga un archivo desde Google Drive hacia el sistema de archivos local mediante stream.
+   * @param {string} fileId ID del archivo en Google Drive
+   * @param {string} destPath Ruta de destino local
+   * @param {Object} [options]
+   * @param {number} [options.expectedSize] Tamaño esperado en bytes para validación
+   * @param {Function} [options.onProgress] Callback ({ downloadedBytes, totalBytes })
+   * @returns {Promise<{destPath: string, size: number}>}
+   */
+  async downloadFile(fileId, destPath, options = {}) {
+    if (!fileId) {
+      throw new Error("[GoogleDriveClient] fileId es requerido para downloadFile");
+    }
+    if (!destPath) {
+      throw new Error("[GoogleDriveClient] destPath es requerido para downloadFile");
+    }
+
+    const token = await this.getAccessToken();
+    const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
+
+    const res = await this.fetchFn(url, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`[GoogleDriveClient] Error al descargar archivo '${fileId}' (HTTP ${res.status}): ${errText}`);
+    }
+
+    // Asegurar directorio destino
+    fs.mkdirSync(path.dirname(destPath), { recursive: true });
+
+    const contentLengthHeader = res.headers?.get ? res.headers.get("content-length") : res.headers?.["content-length"];
+    const totalBytes = Number(contentLengthHeader) || options.expectedSize || 0;
+    let downloadedBytes = 0;
+
+    let nodeStream;
+    if (res.body && typeof res.body.getReader === "function") {
+      nodeStream = Readable.fromWeb(res.body);
+    } else if (res.body && typeof res.body.pipe === "function") {
+      nodeStream = res.body;
+    } else if (res.body && typeof res.body[Symbol.asyncIterator] === "function") {
+      nodeStream = Readable.from(res.body);
+    } else if (Buffer.isBuffer(res.body) || typeof res.body === "string") {
+      nodeStream = Readable.from([res.body]);
+    } else {
+      throw new Error(`[GoogleDriveClient] res.body no es un stream válido`);
+    }
+
+    const progressTracker = new Transform({
+      transform(chunk, encoding, callback) {
+        downloadedBytes += chunk.length;
+        if (typeof options.onProgress === "function") {
+          options.onProgress({ downloadedBytes, totalBytes });
+        }
+        callback(null, chunk);
+      }
+    });
+
+    const fileStream = fs.createWriteStream(destPath);
+
+    try {
+      await pipeline(nodeStream, progressTracker, fileStream);
+    } catch (err) {
+      try {
+        if (fs.existsSync(destPath)) fs.unlinkSync(destPath);
+      } catch (_) {}
+      throw new Error(`[GoogleDriveClient] Error durante stream de descarga para '${fileId}': ${err.message}`);
+    }
+
+    // Validación post-descarga
+    if (!fs.existsSync(destPath)) {
+      throw new Error(`[GoogleDriveClient] El archivo descargado no existe en disco: ${destPath}`);
+    }
+
+    const stat = fs.statSync(destPath);
+    if (stat.size === 0) {
+      try { fs.unlinkSync(destPath); } catch (_) {}
+      throw new Error(`[GoogleDriveClient] El archivo descargado está corrupto o vacío (0 bytes): ${destPath}`);
+    }
+
+    if (totalBytes > 0 && stat.size !== totalBytes) {
+      try { fs.unlinkSync(destPath); } catch (_) {}
+      throw new Error(
+        `[GoogleDriveClient] El tamaño descargado (${stat.size} bytes) no coincide con el esperado (${totalBytes} bytes): ${destPath}`
+      );
+    }
+
+    return {
+      destPath,
+      size: stat.size
     };
   }
 }
