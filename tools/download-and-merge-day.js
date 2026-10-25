@@ -227,6 +227,126 @@ export function renderProgressBar(ratioOrPercent = 0, width = 20, fillChar = "�
 }
 
 /**
+ * Valida la integridad de un chunk de video usando ffprobe.
+ * Detecta si el archivo es legible, el contenedor MP4 está completo (moov atom presente)
+ * y extrae la resolución, duración y codec de video.
+ *
+ * @param {string} filePath
+ * @returns {Promise<{ valid: boolean, width?: number, height?: number, duration?: number, codec?: string, error?: string }>}
+ */
+export async function probeChunkIntegrity(filePath) {
+  try {
+    const { stdout } = await execFileAsync("ffprobe", [
+      "-v", "error",
+      "-select_streams", "v:0",
+      "-show_entries", "stream=codec_name,width,height:format=duration",
+      "-of", "json",
+      filePath
+    ]);
+
+    const info = JSON.parse(stdout);
+    const stream = info.streams && info.streams[0];
+    if (!stream || stream.width == null || stream.height == null) {
+      return { valid: false, error: "Stream de video no encontrado o incompleto" };
+    }
+
+    return {
+      valid: true,
+      width: Number(stream.width),
+      height: Number(stream.height),
+      duration: Number(info.format?.duration) || 0,
+      codec: String(stream.codec_name || "")
+    };
+  } catch (err) {
+    return {
+      valid: false,
+      error: err.message
+    };
+  }
+}
+
+/**
+ * Normaliza la resolución de un chunk de video usando FFmpeg a una resolución objetivo.
+ * Si el archivo destino ya existe y su tamaño es mayor a 0, omite la re-codificación (salvo que force=true).
+ *
+ * @param {string} inputPath Ruta del chunk de entrada
+ * @param {string} outputPath Ruta del chunk normalizado de salida
+ * @param {number} [targetWidth=640] Ancho objetivo
+ * @param {number} [targetHeight=360] Alto objetivo
+ * @param {boolean|{force?: boolean}} [optionsOrForce=false] Forzar re-codificación
+ * @returns {Promise<string>} Ruta del archivo resultante
+ */
+export async function normalizeChunkResolution(
+  inputPath,
+  outputPath,
+  targetWidth = 640,
+  targetHeight = 360,
+  optionsOrForce = false
+) {
+  const force = typeof optionsOrForce === "object" ? Boolean(optionsOrForce?.force) : Boolean(optionsOrForce);
+
+  if (!force && fs.existsSync(outputPath)) {
+    const stat = fs.statSync(outputPath);
+    if (stat.size > 0) {
+      return outputPath;
+    }
+  }
+
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+
+  const ffmpegArgs = [
+    "-y",
+    "-i", inputPath,
+    "-vf", `scale=${targetWidth}:${targetHeight}`,
+    "-c:v", "libx264",
+    "-preset", "ultrafast",
+    "-crf", "26",
+    "-an",
+    outputPath
+  ];
+
+  await execFileAsync("ffmpeg", ffmpegArgs);
+  return outputPath;
+}
+
+/**
+ * Determina la resolución dominante entre una lista de chunks con probe de ffprobe.
+ * Por defecto retorna 640x360 si no hay información suficiente.
+ *
+ * @param {Array<{ probe?: { width: number, height: number } }>} items
+ * @param {number} [defaultWidth=640]
+ * @param {number} [defaultHeight=360]
+ * @returns {{ width: number, height: number }}
+ */
+export function determineDominantResolution(items = [], defaultWidth = 640, defaultHeight = 360) {
+  if (!Array.isArray(items) || items.length === 0) {
+    return { width: defaultWidth, height: defaultHeight };
+  }
+
+  const counts = new Map();
+  for (const item of items) {
+    const probe = item.probe || item;
+    if (probe && probe.width && probe.height) {
+      const key = `${probe.width}x${probe.height}`;
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+  }
+
+  let dominant = { width: defaultWidth, height: defaultHeight };
+  let maxCount = -1;
+
+  for (const [key, count] of counts.entries()) {
+    if (count > maxCount) {
+      maxCount = count;
+      const [w, h] = key.split("x").map(Number);
+      dominant = { width: w, height: h };
+    }
+  }
+
+  return dominant;
+}
+
+/**
  * Imprime la ayuda del comando en consola.
  */
 function printHelp() {
@@ -361,6 +481,7 @@ export async function downloadAndMergeDay(options = {}, injectedClient = null) {
 
   console.log(`\n📥 Iniciando descarga de ${totalChunks} chunks a '${chunksDir}'...`);
   const downloadedPaths = [];
+  const downloadedItems = [];
   let completedChunks = 0;
   let completedBytes = 0;
   let currentChunkBytes = 0;
@@ -379,6 +500,7 @@ export async function downloadAndMergeDay(options = {}, injectedClient = null) {
         const barGlobal = renderProgressBar(completedChunks / totalChunks, 20);
         console.log(`  ✓ [${i + 1}/${totalChunks}] [En caché] ${chunk.name} (${formatBytes(chunk.size)}) | Global: ${barGlobal} ${pctGlobal}%`);
         downloadedPaths.push(destPath);
+        downloadedItems.push({ chunk, destPath });
         continue;
       }
     }
@@ -425,12 +547,54 @@ export async function downloadAndMergeDay(options = {}, injectedClient = null) {
     const completionLine = `  ✓ [${i + 1}/${totalChunks}] ${chunk.name} (${formatBytes(chunk.size)}) [OK] | Global: ${finalBarGlobal} ${finalPctGlobal}%`;
     process.stdout.write(`\r${completionLine.padEnd(95, " ")}\n`);
     downloadedPaths.push(destPath);
+    downloadedItems.push({ chunk, destPath });
   }
 
-  // 7. Generar concat_list.txt para FFmpeg
+  // 7. Validación de integridad pre-flight de chunks
   console.log(`\n⚡ Todos los ${totalChunks} chunks descargados (100%). Iniciando concatenación con FFmpeg...`);
+  console.log(`🔍 Validando integridad de ${downloadedItems.length} chunks con ffprobe...`);
+  const validChunks = [];
+  for (const item of downloadedItems) {
+    const probe = await probeChunkIntegrity(item.destPath);
+    if (!probe.valid) {
+      console.log(`⚠️  [Chunk dañado omitido] ${item.chunk.name} (moov atom corrupto o incompleto)`);
+    } else {
+      validChunks.push({
+        ...item,
+        probe
+      });
+    }
+  }
+
+  if (validChunks.length === 0) {
+    throw new Error("No se encontraron chunks válidos para concatenar tras la validación de integridad.");
+  }
+
+  console.log(`✅ Chunks íntegros listos para procesar: ${validChunks.length} de ${totalChunks} (${totalChunks - validChunks.length} omitidos)`);
+
+  // 8. Estandarización / Normalización de resolución
+  const dominant = determineDominantResolution(validChunks, 640, 360);
+  const targetWidth = dominant.width;
+  const targetHeight = dominant.height;
+
+  const concatListPaths = [];
+  const normalizedPaths = [];
+
+  for (const item of validChunks) {
+    if (item.probe.width !== targetWidth || item.probe.height !== targetHeight) {
+      console.log(`⚙️  Normalizando resolución de ${item.chunk.name} (${item.probe.width}x${item.probe.height} -> ${targetWidth}x${targetHeight})...`);
+      const normPath = path.join(chunksDir, `norm_${item.chunk.name}`);
+      await normalizeChunkResolution(item.destPath, normPath, targetWidth, targetHeight, force);
+      concatListPaths.push(normPath);
+      normalizedPaths.push(normPath);
+    } else {
+      concatListPaths.push(item.destPath);
+    }
+  }
+
+  // 9. Generar concat_list.txt para FFmpeg
   const concatListPath = path.join(chunksDir, "concat_list.txt");
-  const concatContent = downloadedPaths
+  const concatContent = concatListPaths
     .map((p) => `file '${path.resolve(p).replace(/'/g, "'\\''")}'`)
     .join("\n");
   fs.writeFileSync(concatListPath, concatContent, "utf-8");
@@ -438,8 +602,8 @@ export async function downloadAndMergeDay(options = {}, injectedClient = null) {
   // Asegurar directorio del archivo de salida
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 
-  // 8. Concatenar con FFmpeg
-  console.log(`\n⚡ Concatenando ${downloadedPaths.length} segmentos con FFmpeg (-c copy)...`);
+  // 10. Concatenar con FFmpeg
+  console.log(`\n⚡ Concatenando ${concatListPaths.length} segmentos con FFmpeg (-c copy)...`);
   const ffmpegArgs = [
     "-y",
     "-f", "concat",
@@ -456,7 +620,7 @@ export async function downloadAndMergeDay(options = {}, injectedClient = null) {
     throw new Error(`[download-and-merge-day] Error ejecutando FFmpeg: ${err.message}`);
   }
 
-  // 9. Validar archivo generado con ffprobe
+  // 11. Validar archivo generado con ffprobe
   console.log(`🔍 Validando archivo resultante con ffprobe...`);
   let durationSec = 0;
   let finalSizeBytes = 0;
@@ -478,10 +642,15 @@ export async function downloadAndMergeDay(options = {}, injectedClient = null) {
     }
   }
 
-  // 10. Limpieza opcional de chunks individuales
+  // 12. Limpieza opcional de chunks individuales
   if (cleanChunks) {
     console.log(`\n🧹 Limpiando chunks temporales (--clean-chunks activado)...`);
     for (const p of downloadedPaths) {
+      try {
+        if (fs.existsSync(p)) fs.unlinkSync(p);
+      } catch (_) {}
+    }
+    for (const p of normalizedPaths) {
       try {
         if (fs.existsSync(p)) fs.unlinkSync(p);
       } catch (_) {}
@@ -495,12 +664,12 @@ export async function downloadAndMergeDay(options = {}, injectedClient = null) {
     console.log(`✓ Chunks temporales purgados exitosamente.`);
   }
 
-  // 11. Resumen final
+  // 13. Resumen final
   console.log("\n\x1b[32m%s\x1b[0m", "================================================================");
   console.log("\x1b[32m%s\x1b[0m", " ✅ FUSIÓN DIARIA COMPLETADA CON ÉXITO");
   console.log("\x1b[32m%s\x1b[0m", "================================================================");
   console.log(`📅 Día: ${dateStr} (${tz})`);
-  console.log(`📦 Chunks procesados: ${downloadedPaths.length}`);
+  console.log(`📦 Chunks procesados: ${concatListPaths.length} de ${totalChunks} (Válidos: ${validChunks.length}, Omitidos: ${totalChunks - validChunks.length})`);
   console.log(`⏱️  Duración continua: ${formatDuration(durationSec)} (${durationSec.toFixed(1)} segundos)`);
   console.log(`💾 Tamaño del video MP4: ${formatBytes(finalSizeBytes)} (${finalSizeBytes.toLocaleString()} bytes)`);
   console.log(`🎬 Archivo final: ${outputPath}`);
@@ -509,7 +678,9 @@ export async function downloadAndMergeDay(options = {}, injectedClient = null) {
   return {
     success: true,
     outputPath,
-    totalChunks: downloadedPaths.length,
+    totalChunks: concatListPaths.length,
+    validChunks: validChunks.length,
+    skippedChunks: totalChunks - validChunks.length,
     durationSec,
     finalSizeBytes
   };

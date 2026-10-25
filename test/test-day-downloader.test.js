@@ -10,6 +10,8 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { Readable } from "node:stream";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { GoogleDriveClient } from "../src/infrastructure/storage/gdrive_client.js";
 import {
   parseArgs,
@@ -19,8 +21,13 @@ import {
   formatBytes,
   formatDuration,
   renderProgressBar,
+  probeChunkIntegrity,
+  normalizeChunkResolution,
+  determineDominantResolution,
   downloadAndMergeDay
 } from "../tools/download-and-merge-day.js";
+
+const execFileAsync = promisify(execFile);
 
 describe("Herramienta CLI: Descarga y Fusión Diaria (Timezone Perú UTC-5)", () => {
   describe("1. Lógica de Timezone y Filtrado de Chunks", () => {
@@ -522,6 +529,129 @@ describe("Herramienta CLI: Descarga y Fusión Diaria (Timezone Perú UTC-5)", ()
       // 4. Verifica resumen informativo de chunks y cobertura
       assert.ok(allOutput.includes("Total de chunks: 2"));
       assert.ok(allOutput.includes("Cobertura temporal estimada: 30 minutos (0.5 horas)"));
+    });
+  });
+
+  describe("8. Validación de Integridad Pre-flight de Chunks (probeChunkIntegrity)", () => {
+    it("retorna valid=false y mensaje descriptivo para archivos corruptos o incompletos", async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "probe_corrupt_test_"));
+      const corruptFile = path.join(tmpDir, "corrupted_chunk.mp4");
+      fs.writeFileSync(corruptFile, Buffer.from("DATOS_CORRUPTOS_SIN_MOOV_ATOM_NI_CABECERA_VALIDA"));
+
+      try {
+        const probe = await probeChunkIntegrity(corruptFile);
+        assert.strictEqual(probe.valid, false);
+        assert.ok(typeof probe.error === "string");
+        assert.ok(probe.error.length > 0);
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it("retorna valid=false si el archivo no existe en el sistema de archivos", async () => {
+      const probe = await probeChunkIntegrity("/tmp/archivo_que_no_existe_para_probe_12345.mp4");
+      assert.strictEqual(probe.valid, false);
+      assert.ok(typeof probe.error === "string");
+    });
+
+    it("valida video MP4 íntegro extrayendo dimensiones, duración y codec de video", async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "probe_valid_test_"));
+      const validFile = path.join(tmpDir, "valid_chunk.mp4");
+
+      try {
+        // Genera un video de prueba real de 1 segundo en 640x360 con ffmpeg lavfi
+        await execFileAsync("ffmpeg", [
+          "-y",
+          "-f", "lavfi",
+          "-i", "testsrc=duration=1:size=640x360:rate=1",
+          "-c:v", "libx264",
+          "-pix_fmt", "yuv420p",
+          validFile
+        ]);
+
+        const probe = await probeChunkIntegrity(validFile);
+        assert.strictEqual(probe.valid, true);
+        assert.strictEqual(probe.width, 640);
+        assert.strictEqual(probe.height, 360);
+        assert.strictEqual(probe.codec, "h264");
+        assert.ok(probe.duration >= 0.8 && probe.duration <= 1.2);
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe("9. Lógica de Resolución Dominante y Normalización", () => {
+    it("determina resolución dominante entre lista mixta de resoluciones (ej: 640x360 vs 896x512)", () => {
+      // Simula el escenario real de 19 chunks en 640x360 y 10 en 896x512
+      const mixedItems = [
+        ...Array.from({ length: 19 }, () => ({ probe: { width: 640, height: 360 } })),
+        ...Array.from({ length: 10 }, () => ({ probe: { width: 896, height: 512 } }))
+      ];
+
+      const dominant = determineDominantResolution(mixedItems);
+      assert.strictEqual(dominant.width, 640);
+      assert.strictEqual(dominant.height, 360);
+
+      // Escenario inverso
+      const otherItems = [
+        { probe: { width: 1280, height: 720 } },
+        { probe: { width: 1280, height: 720 } },
+        { probe: { width: 640, height: 360 } }
+      ];
+      const otherDominant = determineDominantResolution(otherItems);
+      assert.strictEqual(otherDominant.width, 1280);
+      assert.strictEqual(otherDominant.height, 720);
+
+      // Valores por defecto ante lista vacía o nula
+      assert.deepStrictEqual(determineDominantResolution([]), { width: 640, height: 360 });
+      assert.deepStrictEqual(determineDominantResolution(null), { width: 640, height: 360 });
+    });
+
+    it("normaliza un chunk de resolución distinta a la objetivo (896x512 -> 640x360) usando FFmpeg", async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "norm_test_"));
+      const input896 = path.join(tmpDir, "chunk_896x512.mp4");
+      const output640 = path.join(tmpDir, "norm_chunk_640x360.mp4");
+
+      try {
+        // Generar video sintético de 1 segundo en 896x512
+        await execFileAsync("ffmpeg", [
+          "-y",
+          "-f", "lavfi",
+          "-i", "testsrc=duration=1:size=896x512:rate=1",
+          "-c:v", "libx264",
+          "-pix_fmt", "yuv420p",
+          input896
+        ]);
+
+        const returnedPath = await normalizeChunkResolution(input896, output640, 640, 360);
+        assert.strictEqual(returnedPath, output640);
+        assert.ok(fs.existsSync(output640));
+
+        // Validar que el archivo resultante tiene dimensiones 640x360 e integridad íntegra
+        const probe = await probeChunkIntegrity(output640);
+        assert.strictEqual(probe.valid, true);
+        assert.strictEqual(probe.width, 640);
+        assert.strictEqual(probe.height, 360);
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it("omite la re-codificación si el archivo normalizado ya existe y no se especifica force", async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "skip_norm_test_"));
+      const fakeOutput = path.join(tmpDir, "already_normalized.mp4");
+      // Escribir archivo con tamaño > 0
+      fs.writeFileSync(fakeOutput, Buffer.from("VIDEO_YA_NORMALIZADO_PREVIAMENTE"));
+
+      try {
+        // Al pasar inputPath inexistente, si intentara re-codificar lanzaría error
+        const result = await normalizeChunkResolution("/tmp/no_existe.mp4", fakeOutput, 640, 360, false);
+        assert.strictEqual(result, fakeOutput);
+        assert.strictEqual(fs.readFileSync(fakeOutput, "utf-8"), "VIDEO_YA_NORMALIZADO_PREVIAMENTE");
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
     });
   });
 });
