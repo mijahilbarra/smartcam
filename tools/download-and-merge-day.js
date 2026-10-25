@@ -31,6 +31,7 @@ export function parseArgs(argv = process.argv.slice(2)) {
     cleanChunks: false,
     force: false,
     dryRun: false,
+    limit: null,
     tz: "America/Lima",
     help: false
   };
@@ -57,6 +58,10 @@ export function parseArgs(argv = process.argv.slice(2)) {
       options.force = true;
     } else if (arg === "--dry-run") {
       options.dryRun = true;
+    } else if (arg === "--limit" || arg === "-l") {
+      options.limit = Number(argv[++i]);
+    } else if (arg.startsWith("--limit=")) {
+      options.limit = Number(arg.slice(8));
     } else if (arg === "--tz") {
       options.tz = argv[++i];
     } else if (arg.startsWith("--tz=")) {
@@ -284,11 +289,16 @@ export async function downloadAndMergeDay(options = {}, injectedClient = null) {
   console.log(`📄 Archivos encontrados: ${filesFolder1.length} en '${folderDay1}', ${filesFolder2.length} en '${folderDay2}'`);
 
   // 4. Filtrar y ordenar por zona horaria
-  const matchedChunks = filterAndSortDayChunks([...filesFolder1, ...filesFolder2], dateStr, tz);
+  let matchedChunks = filterAndSortDayChunks([...filesFolder1, ...filesFolder2], dateStr, tz);
 
   if (matchedChunks.length === 0) {
     console.warn(`\x1b[33m[Aviso] No se encontraron chunks correspondientes a la fecha ${dateStr} en horario ${tz}.\x1b[0m`);
     return { success: false, totalChunks: 0, reason: "no_matching_chunks" };
+  }
+
+  if (options.limit && options.limit > 0) {
+    console.log(`⚡ Límite aplicado: procesando los primeros ${options.limit} de ${matchedChunks.length} chunks.`);
+    matchedChunks = matchedChunks.slice(0, options.limit);
   }
 
   const totalRawBytes = matchedChunks.reduce((acc, c) => acc + (c.size || 0), 0);
