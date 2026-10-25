@@ -246,6 +246,7 @@ export async function initChairSession({
     emptySinceEpoch: null,
     pendingRotationSplitEpoch: null,
     rotatedFromPrevSession: hasInitialCandidates,
+    _blockPrevChairMerge: false,
     rotationCandidates: [],
     lastPresenceLogAt: now,
     status: "en_corte",
@@ -470,7 +471,9 @@ export async function evaluateChairTimeouts({
         }
       }
       session.lastSeenEpoch = now;
-      session.lastClientSeenEpoch = now;
+      if (trackInChair.trackId === session.trackId || !trackInChair.trackId) {
+        session.lastClientSeenEpoch = now;
+      }
     } else if (session.status === "en_corte" && barberWorkingAtChair && (now - (session.lastClientSeenEpoch || session.lastSeenEpoch || now) <= 35000)) {
       // El barbero está trabajando activamente en la silla (hasta 35s de gracia sin ver al cliente por oclusión de cuerpo del barbero o toalla)
       session.lastSeenEpoch = now;

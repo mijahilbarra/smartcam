@@ -121,8 +121,8 @@ export class TrackBlockManager {
         ? Boolean(faceData.hasTwoEyes)
         : (faceData.landmarks && Array.isArray(faceData.landmarks) && faceData.landmarks.length >= 5);
 
-      const isAnatomicalPose = ['frontal', 'semi_left', 'semi_right', 'tilted_up', 'tilted_up_left', 'tilted_up_right'].includes(faceData.pose);
-      const isAnatomical = hasTwoEyes && isAnatomicalPose;
+      const isAnatomicalPose = ['frontal', 'semi_left', 'semi_right', 'profile_left', 'profile_right', 'tilted_down', 'tilted_down_left', 'tilted_down_right', 'tilted_up', 'tilted_up_left', 'tilted_up_right'].includes(faceData.pose);
+      const isAnatomical = hasTwoEyes || (faceData.landmarks && Array.isArray(faceData.landmarks) && faceData.landmarks.length >= 5 && isAnatomicalPose);
 
       // Evaluar similitud con staff conocido para esta muestra puntual
       let sampleStaffSim = 0;
@@ -314,14 +314,16 @@ export class TrackBlockManager {
       }
     }
 
-    // 2. FILTRO DE INTEGRIDAD ANATÓMICA (ANTI-NUCA / ANTI-FALSO POSITIVO)
+    // 2. FILTRO DE INTEGRIDAD ANATÓMICA (ANTI-NUCA / ANTI-FALSO POSITIVO / ANTI-LIMPIEZA SIN ROSTRO)
     // Para que un bloque sea un servicio humano real, DEBE tener al menos 1 rostro anatómico genuino
-    // con dos ojos visibles y pose válida. Las nucas con clipper/peine no tienen 2 ojos ni pose erguida.
-    if (block.crops.length > 0 && block.anatomicalFacesCount === 0) {
+    // con dos ojos visibles y pose válida. Las nucas con clipper/peine no tienen 2 ojos ni pose erguida,
+    // y los eventos de limpieza o manipulación de capa no tienen cliente humano visible.
+    if (!block.crops || block.crops.length === 0 || !block.anatomicalFacesCount || block.anatomicalFacesCount === 0) {
+      const cropsCount = block.crops ? block.crops.length : 0;
       const decision = {
         valid: false,
         verdict: "DISCARDED_NO_ANATOMICAL_FACE",
-        reason: `Cero rostros anatómicos con dos ojos visibles en ${block.crops.length} fotos (falso positivo de nuca/pelo)`,
+        reason: `Cero rostros anatómicos con dos ojos visibles (${cropsCount} fotos) (falso positivo de nuca/pelo/limpieza sin cliente humano)`,
         block: { ...block, durationMinutes, durationSeconds }
       };
       this._emitDecision(decision);

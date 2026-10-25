@@ -60,6 +60,71 @@ export function filterOutlierSamples(photos = [], embeddings = []) {
 }
 
 /**
+ * Purga codiciosa de fotos que violan la pureza biométrica intra-sesión (pares con similitud < threshold).
+ * Elimina recursivamente la muestra que participa en más violaciones hasta que todos los pares restantes
+ * superen el umbral o quede una sola muestra.
+ *
+ * @param {Array<Object>} photos
+ * @param {Array<Array<number>|Object>} embeddings
+ * @param {number} [threshold=0.38]
+ * @returns {{ photos: Array<Object>, embeddings: Array<Array<number>|Object> }}
+ */
+export function purgeChimeraPairs(photos = [], embeddings = [], threshold = 0.38) {
+  if (!Array.isArray(photos) || photos.length <= 1 || !Array.isArray(embeddings) || embeddings.length <= 1) {
+    return { photos: [...photos], embeddings: [...embeddings] };
+  }
+
+  let p = [...photos];
+  let e = [...embeddings];
+
+  while (p.length > 1) {
+    let minSim = 1.0;
+    const N = Math.min(p.length, e.length);
+    const vecs = e.slice(0, N).map(item => isVector(item) ? item : (item?.vector || null));
+    const violations = new Array(N).fill(0);
+    const avgSims = new Array(N).fill(0);
+
+    for (let i = 0; i < N; i++) {
+      if (!vecs[i]) continue;
+      let sum = 0;
+      let count = 0;
+      for (let j = 0; j < N; j++) {
+        if (i === j || !vecs[j]) continue;
+        const s = computeCosineSimilarity(vecs[i], vecs[j]);
+        sum += s;
+        count++;
+        if (s < threshold) {
+          violations[i]++;
+          if (s < minSim) minSim = s;
+        }
+      }
+      avgSims[i] = count > 0 ? (sum / count) : 1.0;
+    }
+
+    if (minSim >= threshold) {
+      break;
+    }
+
+    // Identificar el índice con mayor número de violaciones (o menor avgSim en caso de empate)
+    let dropIdx = 0;
+    let maxViolations = -1;
+    let minAvg = 2.0;
+    for (let i = 0; i < N; i++) {
+      if (violations[i] > maxViolations || (violations[i] === maxViolations && avgSims[i] < minAvg)) {
+        maxViolations = violations[i];
+        minAvg = avgSims[i];
+        dropIdx = i;
+      }
+    }
+
+    p.splice(dropIdx, 1);
+    e.splice(dropIdx, 1);
+  }
+
+  return { photos: p, embeddings: e };
+}
+
+/**
  * Deduplica fotos de sesión eliminando miniaturas idénticas y similitud coseno >= 0.88 (misma pose)
  * Limita a un máximo de fotos diversas y nítidas para la atención, privilegiando
  * consistentemente fotos con dos ojos visibles (hasTwoEyes = true).

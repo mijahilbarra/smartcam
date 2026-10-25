@@ -88,6 +88,7 @@ function normalizeCropInput(cropInput) {
     landmarks,
     faceBoxNorm,
     thumbnailBase64,
+    chairId: cropInput.chairId || cropInput.chair_id || cropInput.raw?.chair_id || null,
     yawScore: cropInput.yawScore ?? cropInput.yaw_score ?? cropInput.quality?.yawScore ?? 0,
     pitchScore: cropInput.pitchScore ?? cropInput.pitch_score ?? cropInput.quality?.pitchScore ?? 0,
     frontalityScore: cropInput.frontalityScore ?? cropInput.frontality_score ?? cropInput.quality?.frontalityScore ?? 0
@@ -115,7 +116,8 @@ export function evaluateCrop7Stages(cropInput, options = {}) {
   const imgHeight = options.imgHeight || 720;
 
   // Etapa 1: Postura Física y Anclaje Espacial
-  const isStanding = norm.box ? isStandingPosture(norm.box, imgHeight) : false;
+  const isChairZone = Boolean(norm.chairId && (norm.chairId.includes('silla') || norm.chairId.includes('chair')));
+  const isStanding = isChairZone ? false : (norm.box ? isStandingPosture(norm.box, imgHeight) : false);
 
   // Filtro de transeúntes de fondo (en puerta o calle exterior)
   if (norm.box && Array.isArray(norm.box) && norm.box.length >= 4) {
@@ -192,7 +194,7 @@ export function evaluateCrop7Stages(cropInput, options = {}) {
     }
   }
 
-  const isValidPose = validPoses.includes(pose) || pose.startsWith('angle_');
+  const isValidPose = validPoses.includes(pose) || pose.startsWith('angle_') || pose.startsWith('profile_');
   const poseMinSharpness = (pose === "tilted_down_left" || pose === "tilted_down_right") ? 35 : minSharpness;
 
   if (!isValidPose || norm.sharpness < poseMinSharpness) {
