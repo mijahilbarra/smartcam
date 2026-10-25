@@ -13,7 +13,7 @@ import fs from "fs";
 import path from "path";
 import { computeCosineSimilarity, arePosesCompatible } from "../../face_recognizer.js";
 import { computeSubsetCohesion, computeSetToSetMetrics } from "./biometrics_math.js";
-import { deduplicateSessionPhotos } from "./gallery_curator.js";
+import { deduplicateSessionPhotos, filterOutlierSamples, purgeChimeraPairs } from "./gallery_curator.js";
 import { hasTwoEyesVisible } from "../face_quality_service.js";
 import { doesDetectionOverlapZone, computeBoxInsideChairRatio, BARBERSHOP_QUADRANTS, isTransitZone } from "../../core/barbershop_rules.js";
 import { boxNormToPolygonNorm } from "../../core/geometry.js";
@@ -304,8 +304,8 @@ export function purgeStaffPhotos(photos = [], embeddings = [], staffProfiles = [
         if (cSim > maxClientSim) maxClientSim = cSim;
       }
 
-      // Regla: similitud alta directa, misma pose, o mayor afinidad con barbero que con el cliente
-      if (maxStaffSim >= 0.47 || maxStaffSamePoseSim >= 0.44 || (N > 1 && maxStaffSim > maxClientSim + 0.04 && maxStaffSim >= 0.40)) {
+      // Regla: similitud alta directa, misma pose, o afinidad con barbero
+      if (maxStaffSim >= 0.43 || maxStaffSamePoseSim >= 0.40 || (N > 1 && maxStaffSim >= 0.38 && maxStaffSim > maxClientSim - 0.05)) {
         isStaffPhoto = true;
         console.log(`[Appointment] ✂️ Purga de cluster: Eliminada foto #${i + 1} (${photoPose}) del corte por pertenecer al Barbero/Staff (StaffSim: ${maxStaffSim.toFixed(3)}, SamePoseSim: ${maxStaffSamePoseSim.toFixed(3)}, ClientSim: ${maxClientSim.toFixed(3)}).`);
       }
@@ -619,6 +619,7 @@ export async function splitChimeraSession({
     startedAt: new Date(bestSplitEpoch).toISOString(),
     startedAtEpoch: bestSplitEpoch,
     rotatedFromPrevSession: true,
+    _blockPrevChairMerge: true,
     tempClientId: rightTempClientId,
     personId: rightTempClientId,
     personName: "Cliente (Por verificar)",
@@ -715,7 +716,7 @@ export async function prepareAndFilterSessionForClosure({
        (customerService?.getCustomerData?.(session.tempClientId)?.photos) || []);
 
   const hasAnatomicalFace = candidatePhotos.some(p => {
-    const isUprightPose = ['frontal', 'semi_left', 'semi_right'].includes(p?.pose || (p && !p.pose ? 'frontal' : ''));
+    const isUprightPose = ['frontal', 'semi_left', 'semi_right', 'profile_left', 'profile_right', 'tilted_down', 'tilted_down_left', 'tilted_down_right', 'tilted_up', 'tilted_up_left', 'tilted_up_right'].includes(p?.pose || (p && !p.pose ? 'frontal' : ''));
     const hasTwoEyes = p?.hasTwoEyes !== undefined
       ? Boolean(p.hasTwoEyes)
       : (p?.landmarks && Array.isArray(p.landmarks) && p.landmarks.length >= 5 ? hasTwoEyesVisible(p.landmarks, p.boxNorm, p.pose) : false);
@@ -740,7 +741,7 @@ export async function prepareAndFilterSessionForClosure({
   if (!isUnitTest) {
     const hasSolidFace = candidatePhotos.some(p => (p.sharpnessScore || 0) >= 50);
     const isTransitEmptyChair = (durationMinutes >= 4 && (candidatePhotos.length === 0 || (!hasSolidFace && candidatePhotos.length <= 2)));
-    const isMicroTail = (durationMinutes <= 1 && candidatePhotos.length <= 3);
+    const isMicroTail = (durationMinutes <= 1 && candidatePhotos.length <= 4) || (durationMinutes <= 2 && !hasSolidFace);
     if (isTransitEmptyChair || isMicroTail) {
       if (session.tempClientId) {
         await customerService?.deleteCustomer?.(session.tempClientId, { db });
@@ -774,11 +775,13 @@ export async function prepareAndFilterSessionForClosure({
     }
   }
 
-  // Purga de outliers extremos
+  // Purga de outliers extremos y filtrado de dispersión
   if (session.photos && session.photos.length >= 4 && session.embeddings && session.embeddings.length >= 4) {
     const cleaned = purgeIsolatedOutliers(session.photos, session.embeddings);
-    session.photos = cleaned.photos;
-    session.embeddings = cleaned.embeddings;
+    const outlierFiltered = filterOutlierSamples(cleaned.photos, cleaned.embeddings);
+    const chimeraCleaned = purgeChimeraPairs(outlierFiltered.photos, outlierFiltered.embeddings, 0.38);
+    session.photos = chimeraCleaned.photos;
+    session.embeddings = chimeraCleaned.embeddings;
   }
 
   // Deduplicación estricta de fotos de la sesión
@@ -869,14 +872,16 @@ export async function validatePostConsolidationNoise({
 
   const photosCount = session.photos ? session.photos.length : 0;
 
-  if (isSingleLateralNoise || (durationMinutes < minMinutes && (photosCount < 3 || !hasFrontalOrSemi))) {
+  const isUnmergedMicroTail = durationMinutes <= 2;
+
+  if (isSingleLateralNoise || isUnmergedMicroTail || (durationMinutes < minMinutes && (photosCount < 3 || !hasFrontalOrSemi))) {
     if (session.tempClientId) {
       await customerService?.deleteCustomer?.(session.tempClientId, { db });
     }
     if (session.personId && session.personId !== session.tempClientId && !session.personId.startsWith("staff_")) {
       await customerService?.deleteCustomer?.(session.personId, { db });
     }
-    logVerbal(`⏱️ Estancia de ${durationMinutes} min en ${session.chairName} descartada (${isSingleLateralNoise ? '1 sola foto no frontal' : `< ${minMinutes} min y ${photosCount} fotos`}).`, "info");
+    logVerbal(`⏱️ Estancia de ${durationMinutes} min en ${session.chairName} descartada (${isSingleLateralNoise ? '1 sola foto no frontal' : isUnmergedMicroTail ? `micro-estancia no consolidada (duración <= 2 min)` : `< ${minMinutes} min y ${photosCount} fotos`}).`, "info");
     if (stats) stats.noiseDiscarded++;
     return { isNoise: true };
   }

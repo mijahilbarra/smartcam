@@ -16,7 +16,7 @@
 import { PIPELINE_CONFIG } from "../../core/pipeline_config.js";
 import { computeCosineSimilarity } from "../../face_recognizer.js";
 import { computeSetToSetMetrics, computeCohortSNorm } from "./biometrics_math.js";
-import { mergePhotosAndEmbeddings, deduplicateSessionPhotos } from "./gallery_curator.js";
+import { mergePhotosAndEmbeddings, deduplicateSessionPhotos, purgeChimeraPairs } from "./gallery_curator.js";
 import { getRepresentativeFace, isVector } from "./appointment_finalizer.js";
 import { isCapeBarrierSeparating } from "./closure_rules.js";
 import { hasTwoEyesVisible } from "../face_quality_service.js";
@@ -176,6 +176,19 @@ export function evaluateCausalConsolidation({
     repSim !== null ? repSim : 0
   );
 
+  let maxGallerySim = 0;
+  for (const va of prevVecs) {
+    for (const vb of sessionVecs) {
+      const sim = computeCosineSimilarity(va, vb);
+      if (sim > maxGallerySim) maxGallerySim = sim;
+    }
+  }
+  if (maxBiometric > maxGallerySim) {
+    maxGallerySim = maxBiometric;
+  }
+
+  const isBiometricallyIncompatible = (repSim !== null && repSim < 0.30) || centroidSim < 0.40 || maxGallerySim < 0.45;
+
   // 3. VETO HOMÓLOGO INCONDICIONAL (Hard Biometric Veto - Argon 4)
   const poseA = repA?.pose || repA?.photo?.pose;
   const poseB = repB?.pose || repB?.photo?.pose;
@@ -277,14 +290,14 @@ export function evaluateCausalConsolidation({
   let isSamePerson = false;
   let mergeReason = '';
 
-  if (!isHomologousDifferentPerson) {
+  if (!isHomologousDifferentPerson && !isBiometricallyIncompatible) {
     // 5. CONTINUIDAD CAUSAL EN SILLA (gap <= 6 min)
     if (gapMs <= 6 * 60 * 1000) {
       const hasSolidBiometricContinuity = (centroidSim >= 0.52 && robustSim >= 0.55) ||
         (robustSim >= 0.62 && (repSim === null || repSim >= 0.40)) ||
         (sNorm >= 2.2 && contrastRatio >= 1.30 && robustSim >= 0.50);
 
-      const isUltraShortMicroPause = gapMs <= 45 * 1000 && (repSim === null || repSim >= 0.38) && centroidSim >= 0.45;
+      const isUltraShortMicroPause = gapMs <= 45 * 1000 && (repSim === null || repSim >= 0.38) && centroidSim >= 0.45 && robustSim >= 0.50;
 
       const isDirectContinuity = maxBiometric >= 0.68;
 
@@ -301,9 +314,8 @@ export function evaluateCausalConsolidation({
       const isBiometricallyCertain = (centroidSim >= 0.58 && robustSim >= 0.65 && (sNorm >= 1.8 || strictlyPastAppts.length < 2)) ||
         (robustSim >= 0.70 && centroidSim >= 0.54) ||
         (centroidSim >= 0.70 && (metrics.top3AvgSim >= 0.60 || robustSim >= 0.52) && (repSim === null || repSim >= 0.35));
-      const isBiometricallyIncompatible = (repSim !== null && repSim < 0.30) || centroidSim < 0.35;
 
-      if (isBiometricallyCertain && !isBiometricallyIncompatible) {
+      if (isBiometricallyCertain) {
         isSamePerson = true;
         mergeReason = `highBiometricCertainty (robust=${robustSim.toFixed(3)}, centroid=${centroidSim.toFixed(3)}, sNorm=${sNorm.toFixed(2)})`;
       }
@@ -311,8 +323,7 @@ export function evaluateCausalConsolidation({
 
     // 7. S-Norm y Contraste
     if (!isSamePerson) {
-      const isBiometricallyIncompatible = (repSim !== null && repSim < 0.30) || centroidSim < 0.35;
-      if (!isBiometricallyIncompatible && strictlyPastAppts.length >= 2) {
+      if (strictlyPastAppts.length >= 2) {
         if (sNorm >= 2.5 && contrastRatio >= 1.7 && metrics.top3AvgSim >= 0.48) {
           isSamePerson = true;
           mergeReason = `sNormAndContrast (sNorm=${sNorm.toFixed(2)}, contrast=${contrastRatio.toFixed(2)})`;
@@ -322,41 +333,40 @@ export function evaluateCausalConsolidation({
 
     // 8. Biometría estándar para retornos de lavacabezas / micro-transiciones
     if (!isSamePerson) {
-      const isBiometricallyIncompatible = (repSim !== null && repSim < 0.30) || centroidSim < 0.35;
-      if (!isBiometricallyIncompatible) {
-        const isDirectRepMatch = repSim !== null && repSim >= dynamicThreshold;
-        const isRepWithSetMatch = repSim !== null && repSim >= (dynamicThreshold - 0.04) && metrics.top3AvgSim >= dynamicThreshold;
-        const isSetToSetMatch = (
-          (metrics.maxCompatiblePoseSim >= dynamicThreshold && metrics.top3AvgSim >= (dynamicThreshold - 0.01) && compatiblePeersCount >= 2 && (repSim === null || repSim >= 0.38) && (gapMs <= 6 * 60 * 1000 || sNorm >= 2.0)) ||
-          (metrics.top3AvgSim >= dynamicThreshold && metrics.maxSim >= dynamicThreshold && compatiblePeersCount >= 5 && (repSim === null || repSim >= 0.38) && (gapMs <= 6 * 60 * 1000 || sNorm >= 2.0))
-        );
-        const isTransitionalChair = (gapMs <= 30000 && (isDirectRepMatch || isSetToSetMatch));
-        const weightedSim = Math.max(
-          metrics.top3AvgSim || 0,
-          metrics.maxCompatiblePoseSim || 0,
-          metrics.maxSim || 0,
-          repSim || 0
-        );
-        const isWashbasinReturn = Boolean(
-          (contrastRatio >= 1.0) &&
-          (
-            (repSim !== null && repSim >= dynamicThreshold && (metrics.top3AvgSim >= (dynamicThreshold - 0.03) || centroidSim >= 0.55)) ||
-            (metrics.maxCompatiblePoseSim >= dynamicThreshold && metrics.top3AvgSim >= dynamicThreshold && compatiblePeersCount >= 3)
-          )
-        );
+      const isDirectRepMatch = repSim !== null && repSim >= dynamicThreshold;
+      const isRepWithSetMatch = repSim !== null && repSim >= (dynamicThreshold - 0.04) && metrics.top3AvgSim >= dynamicThreshold;
+      const isSetToSetMatch = (
+        (metrics.maxCompatiblePoseSim >= dynamicThreshold && metrics.top3AvgSim >= (dynamicThreshold - 0.01) && compatiblePeersCount >= 2 && (repSim === null || repSim >= 0.38) && (gapMs <= 6 * 60 * 1000 || sNorm >= 2.0)) ||
+        (metrics.top3AvgSim >= dynamicThreshold && metrics.maxSim >= dynamicThreshold && compatiblePeersCount >= 5 && (repSim === null || repSim >= 0.38) && (gapMs <= 6 * 60 * 1000 || sNorm >= 2.0))
+      );
+      const isTransitionalChair = (gapMs <= 30000 && (isDirectRepMatch || isSetToSetMatch));
+      const weightedSim = Math.max(
+        metrics.top3AvgSim || 0,
+        metrics.maxCompatiblePoseSim || 0,
+        metrics.maxSim || 0,
+        repSim || 0
+      );
+      const isWashbasinReturn = Boolean(
+        (contrastRatio >= 1.0) &&
+        (
+          (repSim !== null && repSim >= dynamicThreshold && (metrics.top3AvgSim >= (dynamicThreshold - 0.03) || centroidSim >= 0.55)) ||
+          (metrics.maxCompatiblePoseSim >= dynamicThreshold && metrics.top3AvgSim >= dynamicThreshold && compatiblePeersCount >= 3)
+        )
+      );
 
-        if (isDirectRepMatch || isRepWithSetMatch || isSetToSetMatch || isTransitionalChair || isWashbasinReturn) {
-          isSamePerson = true;
-          mergeReason = `standardBiometrics (dynamicThreshold=${dynamicThreshold})`;
-        }
+      if (isDirectRepMatch || isRepWithSetMatch || isSetToSetMatch || isTransitionalChair || isWashbasinReturn) {
+        isSamePerson = true;
+        mergeReason = `standardBiometrics (dynamicThreshold=${dynamicThreshold})`;
       }
     }
+  } else if (isBiometricallyIncompatible) {
+    logVerbal(`[CausalConsolidator] 🛑 Incompatibilidad biométrica (centroidSim=${centroidSim.toFixed(3)} < 0.40 || repSim=${repSim?.toFixed(3)} < 0.30 || maxGallerySim=${maxGallerySim.toFixed(3)} < 0.45). No se consolida.`);
   }
 
   return {
     shouldMerge: isSamePerson,
     reason: mergeReason,
-    metrics: { repSim, robustSim, centroidSim, sNorm, contrastRatio, gapMs },
+    metrics: { repSim, robustSim, centroidSim, sNorm, contrastRatio, gapMs, maxGallerySim },
     repA,
     repB
   };
@@ -436,6 +446,7 @@ export async function consolidateChairAppointment({
     filteredNewEmbeddings
   );
   const deduped = deduplicateSessionPhotos(merged.photos, merged.embeddings, 20);
+  const pureMerged = purgeChimeraPairs(deduped.photos, deduped.embeddings, 0.38);
 
   const prevStartMs = new Date(prevSameChairAppt.startedAt).getTime();
   const sessionEndMs = session.endedAtEpoch || (session.endedAt ? new Date(session.endedAt).getTime() : now);
@@ -447,8 +458,8 @@ export async function consolidateChairAppointment({
   prevSameChairAppt.endedAt = new Date(sessionEndMs).toISOString();
   prevSameChairAppt.endedAtEpoch = sessionEndMs;
   prevSameChairAppt.durationMinutes = consolidatedDurationMin;
-  prevSameChairAppt.photos = deduped.photos;
-  prevSameChairAppt.embeddings = deduped.embeddings;
+  prevSameChairAppt.photos = pureMerged.photos;
+  prevSameChairAppt.embeddings = pureMerged.embeddings;
 
   if ((session.bestFaceScore || 0) > (prevSameChairAppt.bestFaceScore || 0)) {
     prevSameChairAppt.bestFaceScore = session.bestFaceScore;

@@ -174,7 +174,10 @@ export async function heartbeatStep({
     const active = [];
     if (trackBlockManager && trackBlockManager.activeBlocks) {
       for (const b of trackBlockManager.activeBlocks.values()) {
-        if (!b.isStaffConfirmed && (step - b.lastSeenEpoch <= inactivityTimeoutMs)) {
+        const totalFrames = (b.seatedFrames || 0) + (b.standingFrames || 0);
+        const isStanding = totalFrames > 0 && ((b.standingFrames || 0) / totalFrames >= 0.65) && ((b.seatedFrames || 0) < 15);
+        const isStaleNoFace = (step - b.startedAtEpoch > 45000) && ((b.anatomicalFacesCount || 0) === 0);
+        if (!b.isStaffConfirmed && !isStanding && !isStaleNoFace && (step - b.lastSeenEpoch <= inactivityTimeoutMs)) {
           active.push({
             trackId: b.trackId,
             currentQuadrant: { id: b.chairId, label: b.chairId, type: "barber_chair" },

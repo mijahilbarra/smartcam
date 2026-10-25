@@ -208,6 +208,7 @@ export class VisitSessionService {
     const chairName = block.chairName || chairId;
 
     let session = this.findSessionByChair(chairId);
+    let isRotatedFromMismatch = false;
 
     if (session) {
       const repPrev = getRepresentativeFace(session.photos || [], session.embeddings || []);
@@ -282,18 +283,21 @@ export class VisitSessionService {
             this.logVerbal(`🛡️ Veto evitado en ${chairName}: la galería acumulada tiene coincidencia contundente (maxGallerySim=${maxGallerySim.toFixed(3)} >= 0.52). Protegiendo representante discrepante.`, "process");
           }
 
-          // Inercia de Silla: 0ms pasa a 10 segundos
+          // Inercia de Silla: vacancia < 10 segundos
           // Si la persona no ha dejado la silla por al menos 10 segundos (vacancia < 10s),
-          // NO se debe declarar rotación inmediata por una discrepancia de pose de una sola foto (repSim).
-          // En continuidad física en la silla (vacancia < 10s), solo se permitiría rotación si existe divergencia
-          // contundente comprobada a nivel de clúster/centroide (centroidSim < 0.25 && maxGallerySim < 0.45) o vacancia real >= 10s.
+          // SOLO puede descartar una discrepancia de pose de foto única si la galería acumulada
+          // tiene coincidencia biométrica real (maxGallerySim >= 0.42 || centroidSim >= 0.38).
+          // Si maxGallerySim < 0.38 || repSim < 0.22 || centroidSim < 0.32, es una divergencia probada
+          // y el veto NO se anula; se cierra la sesión anterior por rotación.
           if (isVeto) {
-            const isPhysicalContinuity = !session.emptySinceEpoch || (now - session.emptySinceEpoch) < 10000;
+            const vacancyMs = session.emptySinceEpoch
+              ? (now - session.emptySinceEpoch)
+              : (session.lastClientSeenEpoch && block.startedAtEpoch ? Math.max(0, block.startedAtEpoch - session.lastClientSeenEpoch) : 0);
+            const isPhysicalContinuity = vacancyMs < 10000;
             if (isPhysicalContinuity) {
               const isClusterDivergence = centroidSim < 0.18 && maxGallerySim < 0.30;
               if (!isClusterDivergence) {
                 isVeto = false;
-                const vacancyMs = session.emptySinceEpoch ? (now - session.emptySinceEpoch) : 0;
                 this.logVerbal(`🛡️ Inercia de Silla en ${chairName} (vacancia=${(vacancyMs / 1000).toFixed(1)}s < 10s): Se descarta rotación por foto única (${vetoReason}). Continuidad física activa (centroidSim=${centroidSim.toFixed(3)}, maxGallerySim=${maxGallerySim.toFixed(3)}).`, "process");
               } else {
                 vetoReason += ` + divergencia de centroide (centroidSim=${centroidSim.toFixed(3)} < 0.18, maxGallerySim=${maxGallerySim.toFixed(3)} < 0.30)`;
@@ -309,6 +313,7 @@ export class VisitSessionService {
       }
 
       if (isRadicalMismatch) {
+        isRotatedFromMismatch = true;
         await this.closeSession(chairId, {
           endedAtEpoch: block.startedAtEpoch || now
         });
@@ -410,7 +415,8 @@ export class VisitSessionService {
       lastMatchedClientFaceEpoch: block.lastSeenEpoch || now,
       emptySinceEpoch: null,
       pendingRotationSplitEpoch: null,
-      rotatedFromPrevSession: false,
+      rotatedFromPrevSession: isRotatedFromMismatch,
+      _blockPrevChairMerge: isRotatedFromMismatch,
       rotationCandidates: [],
       lastPresenceLogAt: now,
       status: "en_corte",

@@ -11,7 +11,7 @@
 import { PIPELINE_CONFIG } from "../../core/pipeline_config.js";
 import { computeCosineSimilarity } from "../../face_recognizer.js";
 import { computeSetToSetMetrics } from "./biometrics_math.js";
-import { mergePhotosAndEmbeddings, deduplicateSessionPhotos } from "./gallery_curator.js";
+import { mergePhotosAndEmbeddings, deduplicateSessionPhotos, purgeChimeraPairs } from "./gallery_curator.js";
 import { computeFrontalityScore, hasTwoEyesVisible, isValidFaceGeometry } from "../face_quality_service.js";
 import {
   findChimeraSplit,
@@ -359,6 +359,32 @@ export async function finalizeCustomerAndAppointment({
   }
 
   const repAppt = getRepresentativeFace(session.photos || [], session.embeddings || []);
+  if (repAppt?.vector && session.photos && session.photos.length >= 3) {
+    const cleanP = [];
+    const cleanE = [];
+    for (let k = 0; k < session.photos.length; k++) {
+      const v = isVector(session.embeddings?.[k]) ? session.embeddings[k] : (session.embeddings?.[k]?.vector || null);
+      if (v) {
+        const sim = computeCosineSimilarity(v, repAppt.vector);
+        if (sim < 0.38) {
+          logVerbal(`[Appointment] 🧹 Foto #${k + 1} excluida de la galería final por incompatibilidad con el representante (sim=${sim.toFixed(3)} < 0.38).`);
+          continue;
+        }
+      }
+      cleanP.push(session.photos[k]);
+      cleanE.push(session.embeddings?.[k] || null);
+    }
+    if (cleanP.length >= 1) {
+      session.photos = cleanP;
+      session.embeddings = cleanE;
+    }
+  }
+
+  if (session.photos && session.photos.length >= 2) {
+    const pure = purgeChimeraPairs(session.photos, session.embeddings || [], 0.38);
+    session.photos = pure.photos;
+    session.embeddings = pure.embeddings;
+  }
   const repApptThumbnail = repAppt?.photo?.thumbnailBase64 || null;
   const repApptScore = repAppt?.score ?? (session.bestFaceScore || 0);
 
