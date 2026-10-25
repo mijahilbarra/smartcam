@@ -9,10 +9,239 @@
  * 5. Comparación Set-to-Set contra la base de clientes recurrentes
  */
 
+import fs from "fs";
+import path from "path";
 import { computeCosineSimilarity, arePosesCompatible } from "../../face_recognizer.js";
 import { computeSubsetCohesion, computeSetToSetMetrics } from "./biometrics_math.js";
 import { deduplicateSessionPhotos } from "./gallery_curator.js";
 import { hasTwoEyesVisible } from "../face_quality_service.js";
+import { doesDetectionOverlapZone, computeBoxInsideChairRatio, BARBERSHOP_QUADRANTS, isTransitZone } from "../../core/barbershop_rules.js";
+import { boxNormToPolygonNorm } from "../../core/geometry.js";
+
+export { computeBoxInsideChairRatio };
+
+let _cachedQuadrants = null;
+
+/**
+ * Carga y cachea los cuadrantes desde data/quadrants.json
+ * @returns {Array<Object>}
+ */
+export function getCachedQuadrants() {
+  if (_cachedQuadrants && _cachedQuadrants.length > 0) return _cachedQuadrants;
+  try {
+    const p = path.resolve(process.cwd(), "data", "quadrants.json");
+    if (fs.existsSync(p)) {
+      const raw = fs.readFileSync(p, "utf8");
+      _cachedQuadrants = JSON.parse(raw);
+      return _cachedQuadrants;
+    }
+  } catch (_) {}
+  return [];
+}
+
+/**
+ * Resuelve la zona de la silla de corte configurada a partir de un identificador,
+ * objeto o catálogo de cuadrantes.
+ * @param {Object|string} [chairIdOrZone]
+ * @param {Array<Object>|Object} [quadrants]
+ * @returns {Object|null}
+ */
+export function resolveChairZone(chairIdOrZone, quadrants = null) {
+  if (chairIdOrZone && typeof chairIdOrZone === "object" && (chairIdOrZone.boxNorm || chairIdOrZone.polygonNorm || chairIdOrZone.box)) {
+    return chairIdOrZone;
+  }
+
+  const chairId = typeof chairIdOrZone === "string" ? chairIdOrZone : null;
+
+  let list = [];
+  if (Array.isArray(quadrants)) {
+    list = quadrants;
+  } else if (quadrants && typeof quadrants === "object") {
+    list = Object.values(quadrants);
+  } else if (BARBERSHOP_QUADRANTS && Object.keys(BARBERSHOP_QUADRANTS).length > 0) {
+    list = Object.values(BARBERSHOP_QUADRANTS);
+  } else {
+    list = getCachedQuadrants();
+  }
+
+  if (chairId && list.length > 0) {
+    const found = list.find(q => q && (q.id === chairId || q.name === chairId || q.label === chairId));
+    if (found) return found;
+    return null;
+  }
+
+  return list.find(q => q && (q.type === "barber_chair" || (q.role === "client" && !isTransitZone(q)))) || null;
+}
+
+/**
+ * Valida la consistencia espacial entre las cajas delimitadoras del cuerpo humano (YOLO)
+ * y la geometría configurada para la silla de corte en Firebase (Firestore / data/quadrants.json).
+ *
+ * @param {Object} sessionOrBlock - Sesión o bloque a evaluar (contiene boxes, crops, photos o box)
+ * @param {Object|string} [chairZone] - Zona de la silla de Firebase o ID de la silla
+ * @param {Object} [options] - Parámetros de validación
+ * @param {number} [options.width=1280] - Ancho del fotograma para desnormalizar si aplica
+ * @param {number} [options.height=720] - Alto del fotograma para desnormalizar si aplica
+ * @param {number} [options.minOverlapRatio=0.60] - Proporción mínima requerida dentro de la silla
+ * @param {number} [options.minY2=550] - Coordenada Y2 mínima para confirmar descenso al plano de la silla
+ * @param {Array<Object>} [options.quadrants] - Cuadrantes alternativos si chairZone no se suministra
+ * @param {boolean} [options.allowEmptyBoxes=true] - Si no hay cajas registradas (ej. mocks), no descartar
+ * @returns {{ isValid: boolean, reason: string, insideCount: number, totalBoxes: number, overlapRatio: number, avgInsideRatio: number, avgY2: number }}
+ */
+export function validateSpatialChairAnchor(sessionOrBlock, chairZone = null, options = {}) {
+  if (!sessionOrBlock) {
+    return { isValid: false, reason: "fuera_de_caja_silla_firebase", insideCount: 0, totalBoxes: 0, overlapRatio: 0, avgInsideRatio: 0, avgY2: 0 };
+  }
+
+  // 1. Extraer todas las cajas humanas registradas con sus metadatos (ej. faceCenterY)
+  const rawItems = [];
+  if (Array.isArray(sessionOrBlock.boxes) && sessionOrBlock.boxes.length > 0) {
+    for (const b of sessionOrBlock.boxes) rawItems.push({ box: b, faceCenterY: null });
+  }
+  if (Array.isArray(sessionOrBlock.crops)) {
+    for (const c of sessionOrBlock.crops) {
+      const b = c?.box || c?.faceData?.box;
+      let fcy = null;
+      if (c?.faceData?.boxNorm && b && Array.isArray(b)) {
+        const h = b[3] - b[1];
+        fcy = b[1] + ((c.faceData.boxNorm[0] + c.faceData.boxNorm[2]) / 2) * h;
+      } else if (c?.faceData?.landmarks && Array.isArray(c.faceData.landmarks) && c.faceData.landmarks.length >= 3) {
+        fcy = c.faceData.landmarks[2][1];
+      }
+      if (b) rawItems.push({ box: b, faceCenterY: fcy });
+    }
+  }
+  if (Array.isArray(sessionOrBlock.photos)) {
+    for (const p of sessionOrBlock.photos) {
+      const b = p?.box || p?.bodyBox;
+      let fcy = null;
+      if (p?.landmarks && Array.isArray(p.landmarks) && p.landmarks.length >= 3) {
+        fcy = p.landmarks[2][1];
+      }
+      if (b) rawItems.push({ box: b, faceCenterY: fcy });
+    }
+  }
+  if (Array.isArray(sessionOrBlock.photosBeforeClose)) {
+    for (const p of sessionOrBlock.photosBeforeClose) {
+      const b = p?.box || p?.bodyBox;
+      let fcy = null;
+      if (p?.landmarks && Array.isArray(p.landmarks) && p.landmarks.length >= 3) {
+        fcy = p.landmarks[2][1];
+      }
+      if (b) rawItems.push({ box: b, faceCenterY: fcy });
+    }
+  }
+  if (sessionOrBlock.box) rawItems.push({ box: sessionOrBlock.box, faceCenterY: null });
+  if (sessionOrBlock.lastBox) rawItems.push({ box: sessionOrBlock.lastBox, faceCenterY: null });
+
+  // Normalizar formato de cajas: parsear strings JSON y asegurar arrays válidos de 4 números
+  const validItems = [];
+  for (const item of rawItems) {
+    let parsed = item.box;
+    if (typeof parsed === "string") {
+      try { parsed = JSON.parse(parsed); } catch (_) { continue; }
+    }
+    if (Array.isArray(parsed) && parsed.length >= 4 && parsed.slice(0, 4).every(v => typeof v === "number" && Number.isFinite(v))) {
+      validItems.push({ box: parsed.slice(0, 4), faceCenterY: item.faceCenterY });
+    }
+  }
+
+  // Si no se registraron cajas (ej. pruebas unitarias sintéticas sin video/cajas):
+  if (validItems.length === 0) {
+    if (options.requireBoxes === true || options.allowEmptyBoxes === false) {
+      return { isValid: false, reason: "fuera_de_caja_silla_firebase", insideCount: 0, totalBoxes: 0, overlapRatio: 0, avgInsideRatio: 0, avgY2: 0 };
+    }
+    return { isValid: true, reason: "sin_cajas_registradas", insideCount: 0, totalBoxes: 0, overlapRatio: 1.0, avgInsideRatio: 1.0, avgY2: 720 };
+  }
+
+  // 2. Resolver la geometría de la silla de corte en Firebase (Firestore / data/quadrants.json)
+  const targetChair = resolveChairZone(
+    chairZone || sessionOrBlock.chairZone || sessionOrBlock.chairId,
+    options.quadrants
+  );
+
+  if (!targetChair) {
+    // Si no hay zona configurada, no se puede vetar por zona inexistente
+    return {
+      isValid: true,
+      reason: "sin_zona_silla_configurada",
+      insideCount: validItems.length,
+      totalBoxes: validItems.length,
+      overlapRatio: 1.0,
+      avgInsideRatio: 1.0,
+      avgY2: 720
+    };
+  }
+
+  const frameWidth = options.width || 1280;
+  const frameHeight = options.height || 720;
+  const minOverlapRatio = options.minOverlapRatio ?? 0.60;
+  const minY2 = options.minY2 ?? 550;
+
+  // 3. Evaluar solapamiento de cada caja con el encuadre de la silla
+  let insideCount = 0;
+  let totalInsideRatio = 0;
+  let totalY2 = 0;
+
+  for (const item of validItems) {
+    const b = item.box;
+    const isNorm = b.every(v => v >= 0 && v <= 1.05);
+    const w = isNorm ? 1 : frameWidth;
+    const h = isNorm ? 1 : frameHeight;
+
+    const ratio = computeBoxInsideChairRatio(b, targetChair, w, h);
+    totalInsideRatio += ratio;
+
+    const y1 = isNorm ? b[1] * frameHeight : b[1];
+    const y2 = isNorm ? b[3] * frameHeight : b[3];
+    totalY2 += y2;
+
+    const fcy = item.faceCenterY !== null
+      ? (isNorm ? item.faceCenterY * frameHeight : item.faceCenterY)
+      : null;
+
+    // Regla de Aprobación individual:
+    // 1. insideRatio >= 0.60
+    // 2. y2 >= 550 (o y2 / frameHeight >= 0.75)
+    // 3. Cabeza no en zona alta de fondo: (y1 >= 240 || (faceCenterY !== null ? faceCenterY >= 320 : y1 >= 200))
+    const isRatioOk = ratio >= minOverlapRatio;
+    const isY2Ok = y2 >= minY2 || (y2 / frameHeight >= 0.75);
+    const isHeadOk = (y1 >= 240) || (fcy !== null ? fcy >= 320 : y1 >= 200);
+
+    if (isRatioOk && isY2Ok && isHeadOk) {
+      insideCount++;
+    }
+  }
+
+  const totalBoxes = validItems.length;
+  const overlapRatio = totalBoxes > 0 ? insideCount / totalBoxes : 0;
+  const avgInsideRatio = totalBoxes > 0 ? totalInsideRatio / totalBoxes : 0;
+  const avgY2 = totalBoxes > 0 ? totalY2 / totalBoxes : 0;
+
+  // Si la sesión o bloque tiene un promedio de insideRatio < 0.60 o y2 < 550,
+  // se descarta formalmente con motivo fuera_de_caja_silla_firebase.
+  if (insideCount === 0 || overlapRatio < minOverlapRatio || avgInsideRatio < minOverlapRatio || avgY2 < minY2) {
+    return {
+      isValid: false,
+      reason: "fuera_de_caja_silla_firebase",
+      insideCount,
+      totalBoxes,
+      overlapRatio,
+      avgInsideRatio,
+      avgY2
+    };
+  }
+
+  return {
+    isValid: true,
+    reason: "dentro_de_caja_silla",
+    insideCount,
+    totalBoxes,
+    overlapRatio,
+    avgInsideRatio,
+    avgY2
+  };
+}
 
 /**
  * Purga fotos individuales que pertenezcan al Barbero/Staff dentro del cluster de fotos de una atención
@@ -151,7 +380,7 @@ export function purgeIsolatedOutliers(photos = [], embeddings = []) {
  * @returns {Object|null}
  */
 export function findChimeraSplit(photos = [], embeddings = [], startedAtEpoch = 0, now = Date.now()) {
-  if (!photos || photos.length < 6 || !embeddings || embeddings.length < 6) {
+  if (!photos || photos.length < 8 || !embeddings || embeddings.length < 8) {
     return null;
   }
   const N = Math.min(photos.length, embeddings.length);
@@ -161,7 +390,7 @@ export function findChimeraSplit(photos = [], embeddings = [], startedAtEpoch = 
   let bestLeftMin = 0;
   let bestRightMin = 0;
 
-  for (let k = 3; k <= N - 3; k++) {
+  for (let k = 4; k <= N - 4; k++) {
     const photosL = photos.slice(0, k);
     const embL = embeddings.slice(0, k);
     const photosR = photos.slice(k, N);
@@ -180,9 +409,19 @@ export function findChimeraSplit(photos = [], embeddings = [], startedAtEpoch = 
     if (cohesionL < 0.48 || cohesionR < 0.48) continue;
 
     const crossMetrics = computeSetToSetMetrics(embL, photosL, embR, photosR);
+
+    const UPRIGHT = ['frontal', 'semi_left', 'semi_right'];
+    const hasUprightL = photosL.some(p => UPRIGHT.includes(p?.pose));
+    const hasUprightR = photosR.some(p => UPRIGHT.includes(p?.pose));
+    const bothHaveUpright = hasUprightL && hasUprightR;
+
+    // Si ambos lados tienen poses erguidas comparables, exigir divergencia clara (< 0.42).
+    // Si uno de los lados carece de poses erguidas (ej. cabeza inclinada hacia abajo durante el corte),
+    // solo partir si hay contradicción extrema (< 0.22).
+    const splitThreshold = bothHaveUpright ? 0.42 : 0.22;
     if (
-      crossMetrics.top3AvgSim < 0.44 &&
-      crossMetrics.maxCompatiblePoseSim < 0.46
+      crossMetrics.top3AvgSim < splitThreshold &&
+      crossMetrics.maxCompatiblePoseSim < (splitThreshold + 0.02)
     ) {
       const gain = ((cohesionL + cohesionR) / 2) - crossMetrics.top3AvgSim;
       if (gain > bestGain) {
@@ -425,6 +664,7 @@ export async function prepareAndFilterSessionForClosure({
   customerService,
   db,
   stats,
+  options = {},
   logVerbal = console.log
 }) {
   // 1. Si es personal/barbero, no se registra como atención de cliente
@@ -450,6 +690,21 @@ export async function prepareAndFilterSessionForClosure({
         ? [...custData.embeddings]
         : (Array.isArray(custData.embedding) ? [custData.embedding] : []);
     }
+  }
+
+  // 2. Validación de Caja del Humano (YOLO) vs Caja de la Silla de Firebase (Firestore / data/quadrants.json)
+  const chairZone = options?.chairZone || session.chairZone || session.chairId;
+  const spatialRes = validateSpatialChairAnchor(session, chairZone, options);
+  if (!spatialRes.isValid) {
+    if (session.tempClientId) {
+      await customerService?.deleteCustomer?.(session.tempClientId, { db });
+    }
+    if (session.personId && session.personId !== session.tempClientId && !session.personId.startsWith("staff_")) {
+      await customerService?.deleteCustomer?.(session.personId, { db });
+    }
+    logVerbal(`📐 Sesión en ${session.chairName || `Track #${trackId}`}: descartada por validación espacial (${spatialRes.reason || 'fuera_de_caja_silla_firebase'}).`, 'info');
+    if (stats) stats.noiseDiscarded = (stats.noiseDiscarded || 0) + 1;
+    return { shouldDiscard: true, reason: spatialRes.reason || "fuera_de_caja_silla_firebase" };
   }
 
   // A. Filtro Anti-Ruido Anatómico (Manos, Tijeras, Nucas y Celulares):

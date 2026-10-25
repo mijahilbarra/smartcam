@@ -35,14 +35,18 @@ import { reconcileOrphanedProvisionalProfiles } from "./pipeline/provisional_rec
 import {
   consolidateChairAppointment,
   finalizeCustomerAndAppointment,
-  executeSessionClosurePipeline
+  executeSessionClosurePipeline,
+  getRepresentativeFace,
+  isVector
 } from "./pipeline/appointment_finalizer.js";
+import { computeCleanCentroid } from "./pipeline/causal_biocentric_consolidator.js";
 import { ingestFaceSample } from "./pipeline/sample_collector.js";
 import {
   isChairMatch,
   evaluateChairTimeouts,
   orchestrateChairTrack
 } from "./pipeline/chair_tracker.js";
+import { computeCosineSimilarity } from "../face_recognizer.js";
 
 export {
   arePosesCompatibleEnhanced,
@@ -51,12 +55,29 @@ export {
 };
 
 export class VisitSessionService {
-  constructor({ db, bucket, sqliteClient, customerService, minAppointmentMinutes, emptyChairTimeoutMs, minConsecutiveChairFrames, staffThreshold, clockFn, maxCompletedAppointments } = {}) {
+  constructor({
+    db,
+    bucket,
+    sqliteClient,
+    customerService,
+    minAppointmentMinutes,
+    emptyChairTimeoutMs,
+    minConsecutiveChairFrames,
+    staffThreshold,
+    clockFn,
+    maxCompletedAppointments,
+    quadrants = null,
+    chairZone = null,
+    onSessionClosed = null
+  } = {}) {
     this.db = db;
     this.bucket = bucket;
     this.sqliteClient = sqliteClient || null;
     this.customerService = customerService || defaultCustomerService;
     this.clockFn = typeof clockFn === "function" ? clockFn : null;
+    this.quadrants = quadrants;
+    this.chairZone = chairZone;
+    this.onSessionClosed = typeof onSessionClosed === "function" ? onSessionClosed : null;
     this.minAppointmentMinutes = typeof minAppointmentMinutes === "number"
       ? minAppointmentMinutes
       : (process.env.MIN_APPOINTMENT_MINUTES ? parseInt(process.env.MIN_APPOINTMENT_MINUTES, 10) : PIPELINE_CONFIG.sessions.minAppointmentMinutes);
@@ -175,6 +196,283 @@ export class VisitSessionService {
   }
 
   /**
+   * Procesa un bloque confirmado de cliente emitido por TrackBlockManager
+   * @param {Object} block
+   * @param {Object} [options]
+   * @returns {Promise<Object|null>}
+   */
+  async processConfirmedBlock(block, options = {}) {
+    if (!block || !block.chairId) return null;
+    const now = this.getNow(options.now || block.lastSeenEpoch);
+    const chairId = block.chairId;
+    const chairName = block.chairName || chairId;
+
+    let session = this.findSessionByChair(chairId);
+
+    if (session) {
+      const repPrev = getRepresentativeFace(session.photos || [], session.embeddings || []);
+      const repBlock = getRepresentativeFace(block.photos || [], block.embeddings || []);
+
+      let isRadicalMismatch = false;
+      if (repPrev?.vector && repBlock?.vector) {
+        const repSim = computeCosineSimilarity(repPrev.vector, repBlock.vector);
+        const posePrev = repPrev?.photo?.pose;
+        const poseBlock = repBlock?.photo?.pose;
+        const isSamePose = Boolean(posePrev && poseBlock && posePrev === poseBlock);
+        const UPRIGHT_POSES = ['frontal', 'semi_left', 'semi_right'];
+        const isBothUpright = Boolean(
+          posePrev && poseBlock &&
+          UPRIGHT_POSES.includes(posePrev) &&
+          UPRIGHT_POSES.includes(poseBlock)
+        );
+
+        // Argon 4: Veto Homólogo Incondicional
+        const scorePrev = Number(repPrev?.score ?? repPrev?.photo?.sharpnessScore ?? 0);
+        const scoreBlock = Number(repBlock?.score ?? repBlock?.photo?.sharpnessScore ?? 0);
+        const hasGoodSharpness = scorePrev >= 55 && scoreBlock >= 55;
+
+        // Excepción de Perfiles Opuestos (isOppositeProfiles):
+        // Si un representante es semi_left y el otro semi_right, relajar el umbral de veto a 0.22 (en lugar de 0.35)
+        const isOppositeProfiles = (posePrev === 'semi_left' && poseBlock === 'semi_right') ||
+                                   (posePrev === 'semi_right' && poseBlock === 'semi_left');
+        const uprightVetoThreshold = isOppositeProfiles ? 0.22 : 0.35;
+
+        let isVeto = false;
+        let vetoReason = "";
+
+        if (isBothUpright && hasGoodSharpness && repSim < uprightVetoThreshold) {
+          isVeto = true;
+          vetoReason = isOppositeProfiles
+            ? `repSim=${repSim.toFixed(3)} < 0.22 entre perfiles opuestos`
+            : `repSim=${repSim.toFixed(3)} < 0.35 entre erguidos`;
+        } else if (isSamePose && repSim < 0.33) {
+          isVeto = true;
+          vetoReason = `repSim=${repSim.toFixed(3)} < 0.33 misma pose`;
+        } else if ((isSamePose || isBothUpright) && repSim < (isOppositeProfiles ? 0.22 : 0.33)) {
+          isVeto = true;
+          vetoReason = `repSim=${repSim.toFixed(3)} < ${isOppositeProfiles ? '0.22' : '0.33'}`;
+        }
+
+        // Proteger los vetos por representante de foto única: si la galería acumulada ya tiene
+        // coincidencia contundente (maxGallerySim >= 0.52), NO vetar por un solo fotograma de discrepancia.
+        if (isVeto) {
+          let maxGallerySim = 0;
+          const prevVecs = (session.embeddings || []).map(e => isVector(e) ? e : e?.vector).filter(Boolean);
+          const blockVecs = (block.embeddings || []).map(e => isVector(e) ? e : e?.vector).filter(Boolean);
+          if (prevVecs.length === 0 && repPrev?.vector) prevVecs.push(repPrev.vector);
+          if (blockVecs.length === 0 && repBlock?.vector) blockVecs.push(repBlock.vector);
+
+          for (const va of prevVecs) {
+            for (const vb of blockVecs) {
+              const sim = computeCosineSimilarity(va, vb);
+              if (sim > maxGallerySim) maxGallerySim = sim;
+            }
+          }
+
+          const staffProfiles = this.customerService?.getComparisonProfiles?.()?.filter(p => p.isStaff) || [];
+          const cleanCentroidPrev = computeCleanCentroid(prevVecs, staffProfiles, this.staffThreshold) || repPrev.vector;
+          const cleanCentroidBlock = computeCleanCentroid(blockVecs, staffProfiles, this.staffThreshold) || repBlock.vector;
+          const centroidSim = (cleanCentroidPrev && cleanCentroidBlock)
+            ? computeCosineSimilarity(cleanCentroidPrev, cleanCentroidBlock)
+            : 0;
+
+          // Válvula de escape: coincidencia contundente en la galería acumulada (maxGallerySim >= 0.52)
+          if (maxGallerySim >= 0.52) {
+            isVeto = false;
+            this.logVerbal(`🛡️ Veto evitado en ${chairName}: la galería acumulada tiene coincidencia contundente (maxGallerySim=${maxGallerySim.toFixed(3)} >= 0.52). Protegiendo representante discrepante.`, "process");
+          }
+
+          // Inercia de Silla: 0ms pasa a 10 segundos
+          // Si la persona no ha dejado la silla por al menos 10 segundos (vacancia < 10s),
+          // NO se debe declarar rotación inmediata por una discrepancia de pose de una sola foto (repSim).
+          // En continuidad física en la silla (vacancia < 10s), solo se permitiría rotación si existe divergencia
+          // contundente comprobada a nivel de clúster/centroide (centroidSim < 0.25 && maxGallerySim < 0.45) o vacancia real >= 10s.
+          if (isVeto) {
+            const isPhysicalContinuity = !session.emptySinceEpoch || (now - session.emptySinceEpoch) < 10000;
+            if (isPhysicalContinuity) {
+              const isClusterDivergence = centroidSim < 0.18 && maxGallerySim < 0.30;
+              if (!isClusterDivergence) {
+                isVeto = false;
+                const vacancyMs = session.emptySinceEpoch ? (now - session.emptySinceEpoch) : 0;
+                this.logVerbal(`🛡️ Inercia de Silla en ${chairName} (vacancia=${(vacancyMs / 1000).toFixed(1)}s < 10s): Se descarta rotación por foto única (${vetoReason}). Continuidad física activa (centroidSim=${centroidSim.toFixed(3)}, maxGallerySim=${maxGallerySim.toFixed(3)}).`, "process");
+              } else {
+                vetoReason += ` + divergencia de centroide (centroidSim=${centroidSim.toFixed(3)} < 0.18, maxGallerySim=${maxGallerySim.toFixed(3)} < 0.30)`;
+              }
+            }
+          }
+        }
+
+        if (isVeto) {
+          isRadicalMismatch = true;
+          this.logVerbal(`🛑 Veto Homólogo directo en ${chairName} (${vetoReason}, poses: ${posePrev} vs ${poseBlock}). Cerrando sesión previa por rotación.`, "process");
+        }
+      }
+
+      if (isRadicalMismatch) {
+        await this.closeSession(chairId, {
+          endedAtEpoch: block.startedAtEpoch || now
+        });
+        session = null;
+      } else {
+        session.lastSeenEpoch = Math.max(session.lastSeenEpoch || 0, block.lastSeenEpoch || now);
+        session.lastClientSeenEpoch = Math.max(session.lastClientSeenEpoch || 0, block.lastSeenEpoch || now);
+        session.emptySinceEpoch = null;
+        if (session.status === "esperando_liberacion") {
+          session.status = "en_corte";
+        }
+
+        if (block.photos && block.photos.length > 0) {
+          const repRef = repPrev?.vector ? repPrev : repBlock;
+          const filteredBlockPhotos = [];
+          const filteredBlockEmbeddings = [];
+          for (let k = 0; k < (block.photos || []).length; k++) {
+            const ph = block.photos[k];
+            const emb = block.embeddings?.[k] || null;
+            const v = isVector(emb) ? emb : (emb?.vector || null);
+            if (repRef?.vector && v) {
+              const sim = computeCosineSimilarity(v, repRef.vector);
+              if (sim < 0.40) continue;
+            }
+            filteredBlockPhotos.push(ph);
+            filteredBlockEmbeddings.push(emb);
+          }
+
+          if (filteredBlockPhotos.length > 0) {
+            const merged = mergePhotosAndEmbeddings(
+              session.photos || [],
+              filteredBlockPhotos,
+              session.embeddings || [],
+              filteredBlockEmbeddings
+            );
+            const deduped = deduplicateSessionPhotos(merged.photos, merged.embeddings, 20);
+            session.photos = deduped.photos;
+            session.embeddings = deduped.embeddings;
+          }
+        }
+
+        if ((block.bestFaceScore || 0) > (session.bestFaceScore || 0)) {
+          session.bestFaceScore = block.bestFaceScore;
+          if (block.bestFaceThumbnail) {
+            session.thumbnailBase64 = block.bestFaceThumbnail;
+          }
+        }
+
+        if (block.trackId && block.trackId !== session.trackId) {
+          this.activeSessions.delete(session.trackId);
+          session.trackId = block.trackId;
+          this.activeSessions.set(block.trackId, session);
+        }
+
+        if (this.customerService && session.personId) {
+          const cust = this.customerService.getCustomerData(session.personId);
+          if (cust) {
+            cust.lastSeen = new Date(session.lastSeenEpoch).toISOString();
+            cust.photos = session.photos;
+            cust.embeddings = session.embeddings;
+            if (session.bestFaceScore > (cust.bestFaceScore || 0)) {
+              cust.bestFaceScore = session.bestFaceScore;
+              cust.thumbnailBase64 = session.thumbnailBase64;
+            }
+          }
+        }
+
+        if (block.boxes && block.boxes.length > 0) {
+          if (!session.boxes) session.boxes = [];
+          session.boxes.push(...block.boxes);
+          if (session.boxes.length > 100) session.boxes = session.boxes.slice(-100);
+        }
+
+        this.logVerbal(`🔄 Sesión en ${chairName} extendida con bloque #${block.trackId} (${block.photos?.length || 0} fotos, total: ${session.photos?.length || 0}).`, "info");
+        return session;
+      }
+    }
+
+    const startedAt = block.startedAtEpoch || now;
+    const tempClientId = `person_${startedAt}_${block.trackId}`;
+    const visitId = `appt_${startedAt}_${block.trackId}`;
+
+    const deduped = (block.photos && block.photos.length > 0)
+      ? deduplicateSessionPhotos(block.photos, block.embeddings || [], 20)
+      : { photos: [], embeddings: [] };
+
+    const newSession = {
+      id: visitId,
+      visitId,
+      appointmentId: visitId,
+      trackId: block.trackId,
+      chairId,
+      chairName,
+      chairZone: block.chairZone || null,
+      startedAt: new Date(startedAt).toISOString(),
+      startedAtEpoch: startedAt,
+      lastSeenEpoch: block.lastSeenEpoch || now,
+      lastClientSeenEpoch: block.lastSeenEpoch || now,
+      lastMatchedClientFaceEpoch: block.lastSeenEpoch || now,
+      emptySinceEpoch: null,
+      pendingRotationSplitEpoch: null,
+      rotatedFromPrevSession: false,
+      rotationCandidates: [],
+      lastPresenceLogAt: now,
+      status: "en_corte",
+      tempClientId,
+      personId: tempClientId,
+      personName: "Cliente (Por verificar)",
+      clientId: tempClientId,
+      clientName: "Cliente (Por verificar)",
+      isStaff: false,
+      visitCount: 1,
+      bestFaceScore: block.bestFaceScore || 0,
+      bestFaceStoragePath: null,
+      thumbnailBase64: block.bestFaceThumbnail || (deduped.photos[0]?.thumbnailBase64) || null,
+      lastPhotoAt: 0,
+      lastSyncAt: now,
+      photos: deduped.photos,
+      embeddings: deduped.embeddings,
+      boxes: block.boxes ? [...block.boxes] : (block.crops ? block.crops.map(c => c.box).filter(Boolean) : []),
+      topFaces: []
+    };
+
+    this.activeSessions.set(chairId, newSession);
+    this.activeSessions.set(block.trackId, newSession);
+    if (this.stats) this.stats.sessionsOpened++;
+
+    this.logVerbal(`💺 Nueva sesión iniciada en ${chairName} para bloque confirmado #${block.trackId} (${deduped.photos.length} fotos).`, "process");
+
+    if (this.customerService) {
+      const provisionalCustomer = {
+        id: tempClientId,
+        name: "Cliente (Por verificar)",
+        status: "to_verify",
+        isStaff: false,
+        role: "client",
+        firstSeen: new Date(startedAt).toISOString(),
+        lastSeen: new Date(block.lastSeenEpoch || now).toISOString(),
+        visitCount: 1,
+        appointmentCount: 1,
+        bestFaceScore: newSession.bestFaceScore,
+        thumbnailBase64: newSession.thumbnailBase64,
+        thumbnailPath: null,
+        photos: newSession.photos,
+        embeddings: newSession.embeddings,
+        embedding: newSession.embeddings[0] || null
+      };
+      try {
+        await this.customerService.saveOrUpdateCustomer(provisionalCustomer, {
+          db: this.db,
+          bucket: this.bucket,
+          isNew: true,
+          forceSync: true,
+          backgroundSync: true
+        });
+      } catch (err) {
+        console.warn(`[Appointment] Aviso al crear cliente to_verify inicial:`, err.message);
+      }
+    }
+
+    return newSession;
+  }
+
+  /**
    * Revisa todas las sesiones en sillas y activa el contador de 30s si la silla se libera,
    * o cierra la atención automáticamente si la silla permanece vacía por >= 30s.
    * @param {number} [now=Date.now()]
@@ -282,10 +580,16 @@ export class VisitSessionService {
 
     const now = this.getNow(options.endedAtEpoch);
 
-    return executeSessionClosurePipeline({
+    const closureOptions = {
+      quadrants: this.quadrants,
+      chairZone: this.chairZone,
+      ...options
+    };
+
+    const result = await executeSessionClosurePipeline({
       session,
       trackId,
-      options,
+      options: closureOptions,
       now,
       minAppointmentMinutes: this.minAppointmentMinutes,
       completedAppointments: this.completedAppointments,
@@ -301,6 +605,16 @@ export class VisitSessionService {
       matchSessionAgainstClients: (embs) => this.matchSessionAgainstClients(embs),
       logVerbal: (txt, type) => this.logVerbal(txt, type)
     });
+
+    if (typeof this.onSessionClosed === "function") {
+      try {
+        this.onSessionClosed({ session, trackId, options: closureOptions, result, endedAtEpoch: now });
+      } catch (e) {
+        console.warn("[VisitSessionService] Error en callback onSessionClosed:", e.message);
+      }
+    }
+
+    return result;
   }
 
   /**

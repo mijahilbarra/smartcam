@@ -18,6 +18,8 @@
     "test:e2": "docker compose -f docker-compose.e2-sim.yml run --rm e2-simulator npm test",
     "test:fast": "docker compose -f docker-compose.fast-sim.yml run --rm fast-simulator npm test",
     "step2": "node scripts/step2_causal_replay.js",
+    "clean": "node tools/clean.js",
+    "clean:all": "node tools/clean.js --all",
     "migrate:sqlite": "node scripts/migrate-to-sqlite.js",
     "migrate:test-to-prod": "node scripts/migrate-test-to-prod.js",
     "purge": "bash scripts/purge-connections.sh",

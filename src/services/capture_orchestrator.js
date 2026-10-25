@@ -2,9 +2,9 @@ import { killCaptureContainer } from "../infrastructure/camera/neolink_client.js
 import { daemonReporter } from "../daemon_reporter.js";
 import { PersonTracker } from "../core/person_tracker.js";
 import { VisitSessionService } from "./visit_session_service.js";
-import { runProcessCycle } from "./processes.js";
-
+import { runProcessCycle, flushProcessPipeline, TrackBlockManager } from "./processes.js";
 import { PIPELINE_CONFIG } from "../core/pipeline_config.js";
+import { getCachedQuadrants } from "./pipeline/closure_rules.js";
 
 /**
  * Controlador de Ciclo de Captura y Procesamiento
@@ -12,13 +12,14 @@ import { PIPELINE_CONFIG } from "../core/pipeline_config.js";
  * y delega la ejecución paso a paso al pipeline funcional `runProcessCycle`.
  */
 export class CaptureOrchestrator {
-  constructor({ db, bucket, tomlPath, streamServer } = {}) {
+  constructor({ db, bucket, tomlPath, streamServer, quadrants } = {}) {
     this.db = db;
     this.bucket = bucket;
     this.tomlPath = tomlPath;
     this.streamServer = streamServer;
     this.isCapturing = false;
     this.tracker = new PersonTracker();
+
     const minAppointmentMinutes = process.env.MIN_APPOINTMENT_MINUTES
       ? parseInt(process.env.MIN_APPOINTMENT_MINUTES, 10)
       : (PIPELINE_CONFIG.sessions?.minAppointmentMinutes ?? 8);
@@ -30,12 +31,33 @@ export class CaptureOrchestrator {
       : null;
     this.visitService = new VisitSessionService({ db, bucket, minAppointmentMinutes, emptyChairTimeoutMs, clockFn });
 
+    // Dimensiones y parámetros espaciales de video
+    const videoWidth = Number(process.env.VIDEO_WIDTH) || 1280;
+    const videoHeight = Number(process.env.VIDEO_HEIGHT) || 720;
+    const resolvedQuadrants = quadrants || getCachedQuadrants();
+    const staffThreshold = PIPELINE_CONFIG.staffFilter?.staffExclusionThreshold ?? 0.46;
+
+    // Cargar perfiles de staff desde customerService
+    const comparisonProfiles = this.visitService?.customerService?.getComparisonProfiles?.() || [];
+    const staffProfiles = comparisonProfiles.filter(p => p.isStaff);
+
+    this.trackBlockManager = new TrackBlockManager({
+      staffProfiles,
+      staffThreshold,
+      quadrants: resolvedQuadrants,
+      width: videoWidth,
+      height: videoHeight
+    });
+    this.visitService.trackBlockManager = this.trackBlockManager;
+
     if (streamServer && !streamServer.onMockVideoEnd) {
       streamServer.onMockVideoEnd = async (virtualNow) => {
-        const active = this.visitService.getActiveSessions();
-        for (const s of active) {
-          await this.visitService.closeSession(s.trackId, { endedAtEpoch: virtualNow });
-        }
+        await flushProcessPipeline({
+          lastTimestamp: virtualNow,
+          trackBlockManager: this.trackBlockManager,
+          visitService: this.visitService,
+          options: { emptyChairTimeoutMs }
+        });
       };
     }
   }
@@ -54,6 +76,15 @@ export class CaptureOrchestrator {
     this.isCapturing = true;
 
     try {
+      // Sincronizar perfiles de staff si se inicializaron posteriormente
+      if (this.trackBlockManager && (!this.trackBlockManager.staffProfiles || this.trackBlockManager.staffProfiles.length === 0)) {
+        const comparisonProfiles = this.visitService?.customerService?.getComparisonProfiles?.() || [];
+        const staff = comparisonProfiles.filter(p => p.isStaff);
+        if (staff.length > 0) {
+          this.trackBlockManager.staffProfiles = staff;
+        }
+      }
+
       const cycleOptions = {
         triggerSource,
         asyncClear: triggerSource === "realtime",
@@ -66,7 +97,8 @@ export class CaptureOrchestrator {
         tomlPath: this.tomlPath,
         streamServer: this.streamServer,
         tracker: this.tracker,
-        visitService: this.visitService
+        visitService: this.visitService,
+        trackBlockManager: this.trackBlockManager
       }, cycleOptions);
     } catch (err) {
       console.error(`[Capture Error] Falló el proceso de captura:`, err.message);

@@ -9,8 +9,9 @@ import { useDaemonState } from '@/entities/daemon/model/useDaemonState';
 import { useQuadrants } from '@/entities/quadrant/model/useQuadrants';
 import { hexToRgba, toPointObject, ensureNorm01, boxNormToPolygonNorm } from '@/shared/lib/geometry';
 import { IS_LOCAL_ENV } from '@/shared/api/firebase';
+import TodayScheduleWidget from '@/widgets/today-schedule/ui/TodayScheduleWidget.vue';
 
-const emit = defineEmits(['open-settings', 'open-calibrator']);
+const emit = defineEmits(['open-settings', 'open-calibrator', 'switch-tab']);
 
 const {
   daemonState,
@@ -592,7 +593,7 @@ onUnmounted(() => {
         </div>
         <div>
           <div class="flex items-center gap-2.5">
-            <h2 class="text-lg sm:text-xl font-bold text-white">Sesión en Vivo en Tiempo Real</h2>
+            <h2 class="text-lg sm:text-xl font-bold text-white">Análisis</h2>
             <div class="inline-flex items-center gap-2 px-2.5 py-1 rounded-full text-[11px] font-bold tracking-wide uppercase bg-red-950/70 text-red-400 border border-red-500/40 shadow-sm shadow-red-500/20 select-none">
               <span class="live-dot-pulse-red"></span>
               <span>EN VIVO</span>
@@ -672,10 +673,10 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- Main Live Grid: Video Stream / Overlays & Real-Time Event Log Feed -->
+    <!-- Main Live Grid: Video Stream / Overlays (Left) & Real-Time Today Calendar (Right) -->
     <div class="grid grid-cols-1 lg:grid-cols-12 gap-5 w-full items-start">
-      <!-- Left: Real-Time Stream & Canvas Overlay Area -->
-      <div class="lg:col-span-8 flex flex-col gap-3">
+      <!-- Left Column: Video Stream, Overlays & Logs underneath -->
+      <div class="lg:col-span-7 xl:col-span-8 flex flex-col gap-3.5">
         <!-- Viewport Toolbar -->
         <div class="flex flex-wrap items-center justify-between gap-3 bg-slate-950/80 border border-slate-800 rounded-xl px-3 py-2 text-xs">
           <div class="flex items-center gap-2 text-slate-300">
@@ -812,50 +813,65 @@ onUnmounted(() => {
             :value-class="canvasImageData.peopleIdentified?.length ? 'text-amber-400 font-bold' : 'text-slate-400'"
           />
         </div>
+
+        <!-- Logs debajo del Video (Bitácora de Visitas y Seguimiento) -->
+        <div class="flex flex-col bg-slate-950/70 border border-slate-800 rounded-xl overflow-hidden h-[290px] shadow-xs mt-1">
+          <div class="flex items-center justify-between p-3 border-b border-slate-800 bg-slate-900/80">
+            <div class="flex items-center gap-2 text-sm font-semibold text-slate-200">
+              <AppIcon name="timeline" :size="18" class="text-blue-400" />
+              <h4>Bitácora de Visitas y Seguimiento en Vivo</h4>
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-950/70 text-emerald-400 border border-emerald-500/30">
+                <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                En directo
+              </span>
+              <AppBadge variant="default" class="text-[11px] font-mono">
+                {{ logs.length }} eventos
+              </AppBadge>
+            </div>
+          </div>
+
+          <div class="flex-1 p-3 overflow-y-auto flex flex-col gap-2 font-mono text-xs">
+            <div
+              v-for="log in logs"
+              :key="log.id"
+              class="p-2.5 rounded-lg border border-slate-800/90 bg-slate-900/90 flex flex-col gap-1 transition hover:border-slate-700"
+            >
+              <div class="flex items-center justify-between text-[11px] text-slate-400">
+                <div class="flex items-center gap-1.5 font-bold text-slate-200">
+                  <AppIcon :name="log.icon || 'sensors'" :size="15" class="text-blue-400" />
+                  <span>{{ log.title }}</span>
+                </div>
+                <span class="font-mono text-slate-500">{{ log.time }}</span>
+              </div>
+
+              <p class="text-slate-300 font-sans text-xs leading-relaxed">{{ log.desc }}</p>
+
+              <div v-if="log.badge" class="self-start mt-0.5">
+                <span :class="['px-2 py-0.5 rounded-md text-[10px] font-semibold font-sans uppercase tracking-wider', log.badgeClass || 'text-slate-400 bg-slate-800']">
+                  {{ log.badge }}
+                </span>
+              </div>
+            </div>
+
+            <div
+              v-if="logs.length === 0"
+              class="h-full flex items-center justify-center text-slate-500 text-xs text-center p-4 font-sans"
+            >
+              Esperando eventos de seguimiento y visitas en tiempo real...
+            </div>
+          </div>
+        </div>
       </div>
 
-      <!-- Right: Real-Time Event Log Area (Bitácora de Visitas y Seguimiento) -->
-      <div class="lg:col-span-4 flex flex-col bg-slate-950/70 border border-slate-800 rounded-xl overflow-hidden h-[480px]">
-        <div class="flex items-center justify-between p-3 border-b border-slate-800 bg-slate-900/80">
-          <div class="flex items-center gap-2 text-sm font-semibold text-slate-200">
-            <AppIcon name="timeline" :size="18" class="text-blue-400" />
-            <h4>Bitácora de Visitas y Seguimiento</h4>
-          </div>
-          <AppBadge variant="default" class="text-[11px] font-mono">
-            {{ logs.length }} eventos
-          </AppBadge>
-        </div>
-
-        <div class="flex-1 p-3 overflow-y-auto flex flex-col gap-2 font-mono text-xs">
-          <div
-            v-for="log in logs"
-            :key="log.id"
-            class="p-2.5 rounded-lg border border-slate-800/90 bg-slate-900/90 flex flex-col gap-1 transition hover:border-slate-700"
-          >
-            <div class="flex items-center justify-between text-[11px] text-slate-400">
-              <div class="flex items-center gap-1.5 font-bold text-slate-200">
-                <AppIcon :name="log.icon || 'sensors'" :size="15" class="text-blue-400" />
-                <span>{{ log.title }}</span>
-              </div>
-              <span class="font-mono text-slate-500">{{ log.time }}</span>
-            </div>
-
-            <p class="text-slate-300 font-sans text-xs leading-relaxed">{{ log.desc }}</p>
-
-            <div v-if="log.badge" class="self-start mt-0.5">
-              <span :class="['px-2 py-0.5 rounded-md text-[10px] font-semibold font-sans uppercase tracking-wider', log.badgeClass || 'text-slate-400 bg-slate-800']">
-                {{ log.badge }}
-              </span>
-            </div>
-          </div>
-
-          <div
-            v-if="logs.length === 0"
-            class="h-full flex items-center justify-center text-slate-500 text-xs text-center p-4 font-sans"
-          >
-            Esperando eventos de seguimiento y visitas en tiempo real...
-          </div>
-        </div>
+      <!-- Right Column: Lateral - Calendario de Atención del Día -->
+      <div class="lg:col-span-5 xl:col-span-4 flex flex-col">
+        <TodayScheduleWidget
+          :clients-in-cut="clientsInCut"
+          :active-barbers="activeBarbers"
+          @switch-tab="emit('switch-tab', $event)"
+        />
       </div>
     </div>
   </section>

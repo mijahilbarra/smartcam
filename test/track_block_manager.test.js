@@ -105,4 +105,100 @@ test("TrackBlockManager - Bloques de TrackId", async (t) => {
     assert.equal(result.block.anatomicalFacesCount, 10);
     assert.equal(result.block.durationMinutes, 9);
   });
+
+  await t.test("Aprueba cliente sentado aunque el barbero se asome en fotos esporádicas y purga las fotos del barbero", () => {
+    const staffVector = new Array(512).fill(0);
+    staffVector[0] = 1.0;
+    const clientVector = new Array(512).fill(0);
+    clientVector[1] = 1.0;
+
+    const manager = new TrackBlockManager({
+      staffThreshold: 0.46,
+      staffProfiles: [{ name: "Barbero 1", vector: staffVector }]
+    });
+
+    const start = 100000;
+    // 10 muestras del cliente sentado
+    for (let i = 0; i < 10; i++) {
+      manager.ingestTrackSample({
+        trackId: 505,
+        chairId: "chair_1",
+        timestampEpoch: start + i * 60000,
+        videoSecond: 100 + i * 60,
+        box: [200, 260, 400, 520], // Sentado
+        faceData: {
+          vector: clientVector,
+          sharpnessScore: 70,
+          pose: "frontal",
+          hasTwoEyes: true,
+          thumbnailBase64: "data:image/jpeg;base64,client_thumb"
+        }
+      });
+    }
+
+    // 2 muestras donde el barbero se inclina sobre el cliente
+    for (let i = 0; i < 2; i++) {
+      manager.ingestTrackSample({
+        trackId: 505,
+        chairId: "chair_1",
+        timestampEpoch: start + 600000 + i * 1000,
+        videoSecond: 700 + i,
+        box: [200, 260, 400, 520],
+        faceData: {
+          vector: staffVector, // Barbero
+          sharpnessScore: 95, // Más nítido que el cliente
+          pose: "frontal",
+          hasTwoEyes: true
+        }
+      });
+    }
+
+    const result = manager.evaluateAndCloseBlock(505, start + 620000);
+    assert.equal(result.valid, true, "El bloque del cliente debe confirmarse por mayoría");
+    assert.equal(result.verdict, "CONFIRMED_CLIENT_BLOCK");
+    assert.equal(result.block.trackId, 505);
+    // Verificar que las fotos del barbero fueron purgadas de crops y photos
+    assert.equal(result.block.crops.length, 10, "Deben quedar solo las 10 fotos del cliente");
+    assert.equal(result.block.crops.every(c => !c.isStaffMatch), true, "Ningún crop debe ser del staff");
+    assert.equal(result.block.photos.length, 10);
+  });
+
+  await t.test("No acumula ni confirma muestras del acompañante en sofá de espera (track_id: 3325)", () => {
+    const quadrantsFixture = [
+      {
+        id: "silla_barbero_puesto2",
+        name: "Silla de barbero (Frente)",
+        type: "barber_chair",
+        boxNorm: [0.48, 0.34, 1.0, 0.74]
+      }
+    ];
+
+    const manager = new TrackBlockManager({
+      quadrants: quadrantsFixture,
+      width: 1280,
+      height: 720
+    });
+
+    // Ingestar muestra del acompañante (caja en el sofá a la izquierda: [363, 217, 614, 499], insideRatio=38.7% < 50%)
+    manager.ingestTrackSample({
+      trackId: 3325,
+      chairId: "silla_barbero_puesto2",
+      timestampEpoch: 25810000,
+      videoSecond: 25810,
+      box: [363, 217, 614, 499],
+      faceData: {
+        vector: new Array(512).fill(0.2),
+        sharpnessScore: 70,
+        pose: "frontal",
+        hasTwoEyes: true
+      }
+    });
+
+    // La muestra con insideRatio < 0.50 no debe acumularse en activeBlocks
+    assert.equal(manager.activeBlocks.has(3325), false, "Muestra con insideRatio < 0.50 no debe acumularse");
+
+    const result = manager.evaluateAndCloseBlock(3325, 25820000);
+    assert.equal(result.valid, false);
+    assert.equal(result.verdict, "NOT_FOUND");
+  });
 });

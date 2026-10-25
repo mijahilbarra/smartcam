@@ -118,7 +118,7 @@ Para evitar que una sesión tome decisiones con fotos de mala calidad o muestras
 
 ## 7. Consolidación Biocéntrica Dinámica (Capa 13)
 
-La unificación de citas fragmentadas por pausas naturales (lavacabezas, cobro, enjuague) se resuelve en la **Capa 13** mediante matemáticas biométricas dinámicas (`src/services/pipeline/biometrics_math.js` y `scripts/step2_classify_sessions.js`):
+La unificación de citas fragmentadas por pausas naturales (lavacabezas, cobro, enjuague) se resuelve en la **Capa 13** mediante matemáticas biométricas dinámicas (`src/services/pipeline/biometrics_math.js` y `scripts/step2_causal_replay.js`):
 
 ```mermaid
 flowchart TD

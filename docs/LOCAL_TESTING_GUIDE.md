@@ -155,41 +155,34 @@ node scripts/step1_harvest_crops.js --video data/recordings/barberia_stream_10h.
 ```
 *Los datos cosechados permanecen intactos y persistidos en `data/experiments.db` para ser reutilizados indefinidamente en todas las pruebas de clasificación.*
 
-#### Paso 2: Clasificación y Formación de Citas (`scripts/step2_classify_sessions.js`)
-Lee los recortes cosechados y aplica la tubería oficial de producción o una variante experimental seleccionada dinámicamente mediante `--processes`:
-1. **Detección facial:** RFB-320 (`confidence >= 0.7`).
-2. **Textura y piel humana:** Validación colorimétrica YCbCr y calidez humana.
-3. **Nitidez y poses faciales válidas:** Validación anatómica (`VALID_CLIENT_FACE_POSES`), excluyendo nucas y orejas.
-4. **Exclusión de Barbero:** Umbral multi-métrica y geométrico (20 vectores de referencia).
-5. **Agrupación temporal en silla:** Agrupación cronológica continua con gracia de silla vacía y quórum de rotación.
-6. **Embudo de Cierre:** Consenso de barbero, filtro de evidencia mínima (`minPhotos >= 3`) y consolidación cronológica Set-to-Set contra el cliente anterior.
+#### Paso 2: Fast Causal Replay (`scripts/step2_causal_replay.js`)
+Reproduce causalmente los recortes cosechados en el Paso 1 con paridad arquitectónica 100% con streaming en producción:
+1. **Reloj virtual de alta fidelidad:** Avance milisegundo a milisegundo con heartbeat de vacancia de silla.
+2. **PeopleService Causal:** Reconocimiento biométrico facial y anti-anclaje en tiempo real.
+3. **ChairTracker & VisitSessionService:** Rotación causal y gestión de timeouts.
+4. **Validación contra Ground Truth:** Aserciones anti-quimera en < 10 segundos.
 
 ##### Argumentos CLI Disponibles en el Paso 2:
 
 | Argumento | Alias | Descripción | Valor por Defecto |
 |---|---|---|---|
-| `--processes <path>` | `-p` | **Ruta al módulo de procesos a ejecutar** (permite probar variantes de algoritmos en paralelo) | `src/services/processes.js` |
 | `--video <nombre>` | | Nombre del video cosechado a evaluar | Detecta el más reciente |
-| `--db <path>` | | Ruta a la base de datos de experimentos | `data/experiments.db` |
-| `--staff-threshold <num>` | | Umbral de similitud para excluir al barbero/personal | `0.46` (desde `pipeline_config.json`) |
-| `--min-photos <num>` | | Mínimo de fotos para cliente legítimo sin tiempo mínimo | `3` (desde `pipeline_config.json`) |
-| `--min-sharpness <num>` | | Nitidez mínima para aceptar un rostro | `20.0` (desde `pipeline_config.json`) |
-| `--recompute-faces` | | Re-evalúa calidad facial y embeddings desde los recortes en disco | `false` |
+| `--from <segundos>` | | Filtra eventos a partir del segundo especificado | Inicio del video |
+| `--last <minutos>` | | Filtra únicamente los últimos N minutos | Ninguno |
 
-##### Ejemplos de Ejecución y Comparación A/B en Paralelo:
+##### Ejemplos de Ejecución:
 
 ```bash
-# A. Ejecutar con el motor por defecto de producción:
-node scripts/step2_classify_sessions.js
+# A. Ejecutar replay causal completo (< 10 segundos):
+npm run step2
+# o directamente:
+node scripts/step2_causal_replay.js
 
-# B. Ejecutar con el motor baseline de referencia (10 citas canónicas):
-node scripts/step2_classify_sessions.js -p src/services/processes_baseline.js
+# B. Evaluar un video cosechado específico:
+node scripts/step2_causal_replay.js --video barberia_stream_7h.mp4
 
-# C. Ejecutar con una variante experimental en paralelo (A/B testing):
-node scripts/step2_classify_sessions.js -p src/services/processes_adaptive.js
-
-# D. Ajustar umbral de barbero y fotos mínimas al vuelo:
-node scripts/step2_classify_sessions.js -p src/services/processes_v2.js --staff-threshold 0.48 --min-photos 4
+# C. Evaluar los últimos 30 minutos:
+node scripts/step2_causal_replay.js --last 30
 ```
 
 **Salidas generadas automáticamente:**
@@ -345,9 +338,8 @@ cp src/services/processes.js src/services/processes_experimento.js
 # 2. Modificar tu variante experimental según la hipótesis a probar:
 # (ej. ajustar consolidación adaptativa, filtrado de teléfono, umbrales de nitidez, etc.)
 
-# 3. Ejecutar el motor de referencia baseline y la variante en paralelo:
-node scripts/step2_classify_sessions.js -p src/services/processes_baseline.js
-node scripts/step2_classify_sessions.js -p src/services/processes_experimento.js
+# 3. Ejecutar el replay causal de alta fidelidad:
+node scripts/step2_causal_replay.js
 
 # 4. Inspeccionar y comparar los reportes del embudo y hojas de contacto generados:
 # (Comprueba si el número de clientes se acerca al Ground Truth oficial de exactamente 6)

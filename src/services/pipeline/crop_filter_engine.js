@@ -2,7 +2,7 @@
  * Motor Unificado de Filtrado de Recortes y Biometría (Las 7 Etapas Canónicas)
  * 
  * Fuente Única de la Verdad para:
- * 1. Modo 2 Pasos (Benchmark de Cosecha / step2_classify_sessions.js)
+ * 1. Modo 2 Pasos (Benchmark de Cosecha / step2_causal_replay.js)
  * 2. Modo Streaming (Simulador Local / processes.js)
  * 3. Modo Producción (Cámara en Vivo Neolink / processes.js)
  */
@@ -21,7 +21,7 @@ const DEFAULT_VALID_POSES = PIPELINE_CONFIG.faceDetection?.validFacePoses ?? [
 
 /**
  * Normaliza los datos de entrada ya sea que provengan de un recorte en vivo (processes.js)
- * o de un registro cosechado en SQLite (step2_classify_sessions.js).
+ * o de un registro cosechado en SQLite (step2_causal_replay.js).
  */
 function normalizeCropInput(cropInput) {
   let box = null;

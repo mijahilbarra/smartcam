@@ -25,7 +25,8 @@
     "minChairFrames": 6,
     "leaveDebounceFrames": 6,
     "minChairDurationMs": 2000,
-    "leaveDebounceDurationMs": 2000
+    "leaveDebounceDurationMs": 2000,
+    "blockInactivityTimeoutMs": 20000
   },
   "sessions": {
     "emptyChairTimeoutMs": 45000,
@@ -43,6 +44,7 @@
   },
   "biometrics": {
     "samePoseThreshold": 0.60,
-    "crossPoseThreshold": 0.48
+    "crossPoseThreshold": 0.48,
+    "chimeraThreshold": 0.38
   }
 }

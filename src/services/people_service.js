@@ -9,6 +9,7 @@ import { extractFaceEmbedding, identifyFace, computeCosineSimilarity, arePosesCo
 import { evaluateFaceQuality } from "./face_quality_service.js";
 import { isChairZone, isTransitZone } from "../core/barbershop_rules.js";
 import { customerService } from "./customer_service.js";
+import { PIPELINE_CONFIG } from "../core/pipeline_config.js";
 
 /**
  * Añade una foto a la galería de fotos del cliente garantizando compatibilidad hacia atrás y tope de 20 fotos.
@@ -419,7 +420,8 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
       }
 
       // Filtro de Cara Frontal y Nitidez (Rechaza nucas, espaldas, orejas y codos con umbral por defecto 0.80)
-      const quality = await evaluateFaceQuality(crop.buffer, { minSharpness: 28 });
+      const minSharpnessThreshold = PIPELINE_CONFIG.faceDetection?.minSharpness ?? 20;
+      const quality = await evaluateFaceQuality(crop.buffer, { minSharpness: minSharpnessThreshold });
       if (!quality.isValid) {
         console.log(`[FaceRecognition] Recorte ${crop.id || i + 1} omitido: ${quality.reason} (No es rostro frontal nítido).`);
         return null;

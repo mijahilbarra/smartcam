@@ -160,12 +160,12 @@ El repositorio utiliza GitHub Actions con filtros por ruta (`paths:`):
 >        ```bash
 >        node scripts/step1_harvest_crops.js --video data/recordings/barberia_stream_7h.mp4
 >        ```
->      - **Paso 2 (Clasificación instantánea en ~5 segundos usando `processes.js` o variante con `--processes`)**:
+>      - **Paso 2 (Fast Causal Replay en ~5-10 segundos con reloj virtual de alta fidelidad)**:
 >        ```bash
->        # Motor de producción:
->        node scripts/step2_classify_sessions.js --video barberia_stream_7h
->        # O evaluar variantes de algoritmos en paralelo (A/B testing):
->        node scripts/step2_classify_sessions.js -p src/services/processes_baseline.js
+>        # Simulación causal de alta fidelidad:
+>        node scripts/step2_causal_replay.js --video barberia_stream_7h
+>        # O filtrar ventana de tiempo:
+>        node scripts/step2_causal_replay.js --last 30
 >        ```
 > 
 > 3. **Prohibición Estricta de Scripts Ad-Hoc / Huérfanos**: Queda terminantemente prohibido crear scripts paralelos de monitoreo, generadores de reportes específicos de versión o scripts descartables (como `auto-report-on-finish.js`, `generate-vX-...js`, `test-runner-...js`, etc.).

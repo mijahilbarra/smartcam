@@ -13,7 +13,7 @@ Durante la evolución del sistema de captura e inteligencia biométrica de la ba
 
 1. **Canal 1: Producción en Vivo**: Daemon Node.js 24/7 en Compute Engine (`e2-micro`), ingiriendo flujos RTSP/P2P de la cámara a ~3.5 FPS con marcas temporales reales del sistema (`Date.now()`).
 2. **Canal 2: Simulación Rápida con Video Grabado**: Contenedor Docker (`fast-sim` o `e2-sim`) y runner unificado ([`scripts/run-and-monitor.js`](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/scripts/run-and-monitor.js)), reproduciendo archivos de video (ej. 7 o 10 horas) a alta velocidad (hasta 60 FPS) para pruebas de integración de extremo a extremo.
-3. **Canal 3: Testing en Dos Pasos (Cosecha + Clasificación)**: Metodología desacoplada donde el Paso 1 extrae y almacena recortes de personas con YOLOv8 en SQLite ([`scripts/step1_harvest_crops.js`](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/scripts/step1_harvest_crops.js)), y el Paso 2 aplica biometría, filtrado y cierre de citas ([`scripts/step2_classify_sessions.js`](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/scripts/step2_classify_sessions.js)) en ~5 segundos.
+3. **Canal 3: Testing en Dos Pasos (Cosecha + Causal Replay)**: Metodología desacoplada donde el Paso 1 extrae y almacena recortes de personas con YOLOv8 en SQLite ([`scripts/step1_harvest_crops.js`](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/scripts/step1_harvest_crops.js)), y el Paso 2 ejecuta la simulación causal de alta fidelidad ([`scripts/step2_causal_replay.js`](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/scripts/step2_causal_replay.js)) en ~5-10 segundos.
 
 Esta coexistencia histórica generó tres problemas estructurales graves:
 
