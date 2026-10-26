@@ -725,9 +725,11 @@ const getClientAppointments = (personId) => {
                       selectedAppointment?.id === apt.id
                         ? 'ring-2 ring-blue-400 bg-slate-850 shadow-blue-900/40 z-20'
                         : '',
-                      apt.chairId === 'Silla 1' || (apt.chairId || '').includes('1')
-                        ? 'bg-slate-900/95 border-l-4 border-l-blue-500 border-slate-700/80 hover:border-blue-400 hover:bg-slate-850'
-                        : 'bg-slate-900/95 border-l-4 border-l-emerald-500 border-slate-700/80 hover:border-emerald-400 hover:bg-slate-850'
+                      getClientBadgeInitial(apt) === 'F'
+                        ? 'bg-slate-900/95 border-l-4 border-l-amber-500 border-slate-700/80 hover:border-amber-400 hover:bg-slate-850'
+                        : (getClientBadgeInitial(apt) === 'N'
+                          ? 'bg-slate-900/95 border-l-4 border-l-emerald-500 border-slate-700/80 hover:border-emerald-400 hover:bg-slate-850'
+                          : 'bg-slate-900/95 border-l-4 border-l-blue-500 border-slate-700/80 hover:border-blue-400 hover:bg-slate-850')
                     ]"
                   >
                     <!-- Un solo row: foto de cliente orientada arriba con tamaño máx, N o F (primera letra), y chip de tiempo -->
