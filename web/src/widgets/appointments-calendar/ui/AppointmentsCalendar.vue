@@ -216,20 +216,26 @@ function layoutDayAppointments(dayAppointments, gridStartMinutes, hourHeight) {
 
   const parsed = sorted.map((apt) => {
     const dStart = new Date(apt.startTime);
-    const dEnd = new Date(apt.endTime);
-    let startMin = dStart.getHours() * 60 + dStart.getMinutes();
-    let endMin = dEnd.getHours() * 60 + dEnd.getMinutes();
+    const dEnd = new Date(apt.endTime || apt.startTime);
+
+    // Minutos exactos incluyendo segundos para evitar desfaces y falsos solapamientos
+    let startMin = dStart.getHours() * 60 + dStart.getMinutes() + (dStart.getSeconds() / 60);
+    let endMin = dEnd.getHours() * 60 + dEnd.getMinutes() + (dEnd.getSeconds() / 60);
+
     if (isNaN(startMin)) startMin = gridStartMinutes;
-    if (isNaN(endMin) || endMin <= startMin) endMin = startMin + (apt.durationMinutes || 45);
-    const duration = Math.max(15, apt.durationMinutes || (endMin - startMin) || 45);
+    if (isNaN(endMin) || endMin <= startMin) {
+      endMin = startMin + (apt.durationMinutes || 45);
+    }
+    const durationMin = Math.max(1, endMin - startMin);
 
     const top = Math.max(0, ((startMin - gridStartMinutes) / 60) * hourHeight);
-    const height = Math.max(36, (duration / 60) * hourHeight);
+    const height = Math.max(18, (durationMin / 60) * hourHeight);
 
     return {
       apt,
       startMin,
-      endMin: startMin + duration,
+      endMin,
+      durationMin,
       top,
       height,
       col: 0,
@@ -237,35 +243,58 @@ function layoutDayAppointments(dayAppointments, gridStartMinutes, hourHeight) {
     };
   });
 
-  // Agrupar eventos que se traslapan en tiempo
-  const clusters = [];
-  let currentCluster = [];
-  let clusterEnd = -1;
-
-  for (const item of parsed) {
-    if (currentCluster.length === 0) {
-      currentCluster.push(item);
-      clusterEnd = item.endMin;
-    } else {
-      if (item.startMin < clusterEnd) {
-        currentCluster.push(item);
-        clusterEnd = Math.max(clusterEnd, item.endMin);
-      } else {
-        clusters.push(currentCluster);
-        currentCluster = [item];
-        clusterEnd = item.endMin;
+  // Detección estricta de solapamiento temporal real entre citas
+  for (let i = 0; i < parsed.length; i++) {
+    const overlapping = [];
+    for (let j = 0; j < parsed.length; j++) {
+      if (i === j) continue;
+      // Dos citas solo se solapan si una empieza antes de que la otra termine (con tolerancia de 6s)
+      const isOverlap = Math.max(parsed[i].startMin, parsed[j].startMin) < Math.min(parsed[i].endMin, parsed[j].endMin) - 0.1;
+      if (isOverlap) {
+        overlapping.push(parsed[j]);
       }
     }
+    parsed[i]._overlapping = overlapping;
   }
-  if (currentCluster.length > 0) clusters.push(currentCluster);
 
-  // Asignar columnas paralelas (ej: Silla 1 vs Silla 2 al mismo tiempo)
-  for (const cluster of clusters) {
+  // Agrupar únicamente citas que realmente colisionan en columnas paralelas
+  const visited = new Set();
+  for (let i = 0; i < parsed.length; i++) {
+    if (visited.has(i)) continue;
+
+    // Si la cita es consecutiva o no colisiona con ninguna otra, usa el 100% del ancho
+    if (parsed[i]._overlapping.length === 0) {
+      parsed[i].col = 0;
+      parsed[i].totalCols = 1;
+      visited.add(i);
+      continue;
+    }
+
+    // Componente conectado de citas simultáneas
+    const component = [];
+    const queue = [parsed[i]];
+    visited.add(i);
+
+    while (queue.length > 0) {
+      const current = queue.shift();
+      component.push(current);
+
+      for (const neighbor of current._overlapping) {
+        const neighborIdx = parsed.indexOf(neighbor);
+        if (neighborIdx !== -1 && !visited.has(neighborIdx)) {
+          visited.add(neighborIdx);
+          queue.push(neighbor);
+        }
+      }
+    }
+
+    component.sort((a, b) => a.startMin - b.startMin || (b.endMin - b.startMin) - (a.endMin - a.startMin));
+
     const columnEnds = [];
-    for (const item of cluster) {
+    for (const item of component) {
       let placed = false;
       for (let c = 0; c < columnEnds.length; c++) {
-        if (columnEnds[c] <= item.startMin) {
+        if (columnEnds[c] <= item.startMin + 0.1) {
           item.col = c;
           columnEnds[c] = item.endMin;
           placed = true;
@@ -277,8 +306,9 @@ function layoutDayAppointments(dayAppointments, gridStartMinutes, hourHeight) {
         columnEnds.push(item.endMin);
       }
     }
+
     const totalCols = Math.max(1, columnEnds.length);
-    for (const item of cluster) {
+    for (const item of component) {
       item.totalCols = totalCols;
     }
   }
@@ -289,11 +319,10 @@ function layoutDayAppointments(dayAppointments, gridStartMinutes, hourHeight) {
     return {
       ...item.apt,
       _layout: {
-        top: `${item.top}px`,
-        height: `${item.height}px`,
-        left: `calc(${leftPct}% + 1px)`,
-        width: `calc(${colWidthPct}% - 2px)`,
-        isCompact: item.height < 52
+        top: item.top,
+        height: item.height,
+        left: item.totalCols === 1 ? '1px' : `calc(${leftPct}% + 1px)`,
+        width: item.totalCols === 1 ? 'calc(100% - 2px)' : `calc(${colWidthPct}% - 2px)`
       }
     };
   });
@@ -680,18 +709,18 @@ const getClientAppointments = (personId) => {
                     <span class="w-2.5 h-2.5 rounded-full bg-red-500 -ml-1 shadow-sm shadow-red-500"></span>
                   </div>
 
-                  <!-- Tarjetas de Atenciones (Un solo row: Foto de cliente, N o F, y chip de tiempo) -->
+                  <!-- Tarjetas de Atenciones (Un solo row: Foto de cliente responde al alto, N o F, y chip de tiempo) -->
                   <div
                     v-for="apt in (positionedAppointmentsByDay[day.isoDate] || [])"
                     :key="apt.id"
                     @click="selectAppointment(apt)"
                     :style="{
-                      top: apt._layout.top,
-                      height: apt._layout.height,
+                      top: `${apt._layout.top}px`,
+                      height: `${apt._layout.height}px`,
                       left: apt._layout.left,
                       width: apt._layout.width
                     }"
-                    class="group absolute rounded-lg border transition-all duration-150 cursor-pointer shadow-md hover:shadow-xl hover:z-20 overflow-hidden flex items-center p-1.5 box-border"
+                    class="group absolute rounded-lg border transition-all duration-150 cursor-pointer shadow-sm hover:shadow-xl hover:z-20 overflow-hidden flex items-center px-1.5 py-0.5 box-border"
                     :class="[
                       selectedAppointment?.id === apt.id
                         ? 'ring-2 ring-blue-400 bg-slate-850 shadow-blue-900/40 z-20'
@@ -701,10 +730,10 @@ const getClientAppointments = (personId) => {
                         : 'bg-slate-900/95 border-l-4 border-l-emerald-500 border-slate-700/80 hover:border-emerald-400 hover:bg-slate-850'
                     ]"
                   >
-                    <!-- Un solo row: foto de cliente, N o F (primera letra), y chip de tiempo -->
-                    <div class="flex items-center gap-1.5 w-full min-w-0">
-                      <!-- 1. Foto de cliente (Avatar con bestFaceScore) -->
-                      <div class="relative w-6 h-6 sm:w-7 sm:h-7 rounded-md bg-slate-800 overflow-hidden shrink-0 border border-slate-700 shadow-inner">
+                    <!-- Un solo row: foto de cliente (responde dinámicamente al alto), N o F (primera letra), y chip de tiempo -->
+                    <div class="flex items-center gap-1.5 h-full w-full min-w-0 overflow-hidden">
+                      <!-- 1. Foto de cliente: responde dinámicamente al alto de la tarjeta -->
+                      <div class="h-full aspect-square max-h-[56px] rounded overflow-hidden shrink-0 bg-slate-800 border border-slate-700 shadow-inner flex items-center justify-center">
                         <img
                           v-if="getClientDisplayAvatar(apt)"
                           :src="getClientDisplayAvatar(apt)"
@@ -713,13 +742,13 @@ const getClientAppointments = (personId) => {
                           @error="apt.avatarUrl = ''"
                         />
                         <div v-else class="w-full h-full flex items-center justify-center text-slate-400 bg-slate-800">
-                          <AppIcon name="person" :size="14" />
+                          <AppIcon name="person" :size="12" />
                         </div>
                       </div>
 
                       <!-- 2. N o F (primera letra) -->
                       <span
-                        class="w-4 h-4 rounded-full inline-flex items-center justify-center text-[10px] font-extrabold font-mono shrink-0 border leading-none"
+                        class="h-[calc(100%-4px)] max-h-[20px] min-h-[14px] aspect-square rounded-full inline-flex items-center justify-center text-[9px] font-extrabold font-mono shrink-0 border leading-none"
                         :class="getClientBadgeInitial(apt) === 'F'
                           ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
                           : (getClientBadgeInitial(apt) === 'N'
@@ -731,8 +760,8 @@ const getClientAppointments = (personId) => {
                       </span>
 
                       <!-- 3. Chip de tiempo -->
-                      <span class="inline-flex items-center gap-0.5 text-[9px] font-mono font-bold bg-slate-800/90 text-blue-300 px-1.5 py-0.5 rounded border border-slate-700/70 shrink-0">
-                        <AppIcon name="timer" :size="10" class="text-blue-400" />
+                      <span class="inline-flex items-center gap-0.5 text-[9px] font-mono font-bold bg-slate-800/90 text-blue-300 px-1 py-0.5 rounded border border-slate-700/70 shrink-0 whitespace-nowrap leading-none">
+                        <AppIcon name="timer" :size="9" class="text-blue-400" />
                         {{ apt.durationMinutes || 45 }}m
                       </span>
                     </div>
