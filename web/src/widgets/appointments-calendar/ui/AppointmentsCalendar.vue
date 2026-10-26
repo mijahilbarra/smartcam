@@ -693,7 +693,7 @@ const getClientAppointments = (personId) => {
                         : 'bg-slate-900/95 border-l-4 border-l-emerald-500 border-slate-700/80 hover:border-emerald-400 hover:bg-slate-850'
                     ]"
                   >
-                    <!-- Barra Superior: Solo Chip de Tiempo (Duración) y Distintivo de Silla -->
+                    <!-- Barra Superior: Solo Chip de Tiempo (Duración) e Insignia -->
                     <div class="flex items-center justify-between gap-1 leading-none">
                       <!-- Chip de tiempo exclusivo -->
                       <span class="inline-flex items-center gap-1 text-[9px] font-mono font-bold bg-slate-800/90 text-blue-300 px-1.5 py-0.5 rounded border border-slate-700/70 shrink-0">
@@ -701,18 +701,16 @@ const getClientAppointments = (personId) => {
                         {{ apt.durationMinutes || 45 }}m
                       </span>
 
-                      <!-- Nombre de la Silla -->
+                      <!-- Insignia del cliente -->
                       <span
-                        class="text-[9px] font-bold px-1.5 py-0.2 rounded border truncate"
-                        :class="apt.chairId === 'Silla 1' || (apt.chairId || '').includes('1')
-                          ? 'bg-blue-500/15 text-blue-300 border-blue-500/30'
-                          : 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'"
+                        v-if="!apt._layout.isCompact"
+                        class="text-[9px] px-1.5 py-0.2 rounded font-medium bg-slate-800/90 text-slate-300 border border-slate-700/50 truncate"
                       >
-                        {{ apt.chairName || apt.chairId }}
+                        {{ getClientDisplayBadge(apt) }}
                       </span>
                     </div>
 
-                    <!-- Contenido Central: Avatar (bestFaceScore) + Insignia -->
+                    <!-- Contenido Central: Avatar (bestFaceScore) -->
                     <div class="flex items-center gap-1.5 mt-1 min-w-0 flex-1">
                       <!-- Avatar con la foto de mejor nitidez facial -->
                       <div class="relative w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-slate-800 overflow-hidden shrink-0 border border-slate-700 shadow-inner">
@@ -728,12 +726,8 @@ const getClientAppointments = (personId) => {
                         </div>
                       </div>
 
-                      <!-- Insignia del cliente -->
-                      <div class="min-w-0 flex-1 flex flex-col justify-center">
-                        <span
-                          v-if="!apt._layout.isCompact"
-                          class="text-[9px] px-1.5 py-0.2 rounded font-medium bg-slate-800/90 text-slate-300 border border-slate-700/50 block truncate"
-                        >
+                      <div v-if="apt._layout.isCompact" class="min-w-0 flex-1 flex flex-col justify-center">
+                        <span class="text-[9px] px-1 py-0.2 rounded font-medium bg-slate-800/90 text-slate-300 border border-slate-700/50 block truncate">
                           {{ getClientDisplayBadge(apt) }}
                         </span>
                       </div>
