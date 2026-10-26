@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { TrackBlockManager } from "../src/services/pipeline/track_block_manager.js";
+import { TrackBlockManager, extractPoseCategory } from "../src/services/pipeline/track_block_manager.js";
 
 test("TrackBlockManager - Bloques de TrackId", async (t) => {
   await t.test("Descarta bloque de barbero de pie con alta similitud de staff", () => {
@@ -200,5 +200,95 @@ test("TrackBlockManager - Bloques de TrackId", async (t) => {
     const result = manager.evaluateAndCloseBlock(3325, 25820000);
     assert.equal(result.valid, false);
     assert.equal(result.verdict, "NOT_FOUND");
+  });
+
+  await t.test("Multi-Pose Representative Bank acumula los mejores representantes por posición", () => {
+    // 1. Validar extractPoseCategory
+    assert.equal(extractPoseCategory("frontal"), "frontal");
+    assert.equal(extractPoseCategory("semi_left"), "left");
+    assert.equal(extractPoseCategory("profile_left"), "left");
+    assert.equal(extractPoseCategory("tilted_down_left"), "tilted");
+    assert.equal(extractPoseCategory("semi_right"), "right");
+    assert.equal(extractPoseCategory("profile_right"), "right");
+    assert.equal(extractPoseCategory("tilted_down_right"), "tilted");
+    assert.equal(extractPoseCategory("tilted_down"), "tilted");
+    assert.equal(extractPoseCategory("tilted_up"), "tilted");
+
+    const manager = new TrackBlockManager();
+    const trackId = 505;
+
+    // Ingestar muestra frontal baja nitidez
+    manager.ingestTrackSample({
+      trackId,
+      chairId: "chair_1",
+      timestampEpoch: 1000,
+      videoSecond: 1,
+      box: [200, 260, 400, 520],
+      faceData: {
+        vector: new Array(512).fill(0.1),
+        sharpnessScore: 60,
+        pose: "frontal",
+        hasTwoEyes: true
+      }
+    });
+
+    // Ingestar muestra frontal mayor nitidez -> debe reemplazar slot frontal
+    manager.ingestTrackSample({
+      trackId,
+      chairId: "chair_1",
+      timestampEpoch: 2000,
+      videoSecond: 2,
+      box: [200, 260, 400, 520],
+      faceData: {
+        vector: new Array(512).fill(0.2),
+        sharpnessScore: 85,
+        pose: "frontal",
+        hasTwoEyes: true
+      }
+    });
+
+    // Ingestar perfil izquierdo
+    manager.ingestTrackSample({
+      trackId,
+      chairId: "chair_1",
+      timestampEpoch: 3000,
+      videoSecond: 3,
+      box: [200, 260, 400, 520],
+      faceData: {
+        vector: new Array(512).fill(0.3),
+        sharpnessScore: 78,
+        pose: "profile_left",
+        hasTwoEyes: true
+      }
+    });
+
+    // Ingestar perfil derecho
+    manager.ingestTrackSample({
+      trackId,
+      chairId: "chair_1",
+      timestampEpoch: 4000,
+      videoSecond: 4,
+      box: [200, 260, 400, 520],
+      faceData: {
+        vector: new Array(512).fill(0.4),
+        sharpnessScore: 82,
+        pose: "semi_right",
+        hasTwoEyes: true
+      }
+    });
+
+    const block = manager.activeBlocks.get(trackId);
+    assert.ok(block.representatives, "block.representatives debe existir");
+    assert.equal(block.representatives.frontal.score, 85);
+    assert.equal(block.representatives.frontal.vector[0], 0.2);
+    assert.equal(block.representatives.left.score, 78);
+    assert.equal(block.representatives.left.vector[0], 0.3);
+    assert.equal(block.representatives.right.score, 82);
+    assert.equal(block.representatives.right.vector[0], 0.4);
+    assert.equal(block.representatives.tilted, null);
+
+    // Retrocompatibilidad
+    assert.equal(block.bestFaceScore, 85);
+    assert.equal(block.bestFaceVector[0], 0.2);
   });
 });

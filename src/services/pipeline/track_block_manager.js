@@ -16,6 +16,22 @@ import { isStandingPosture } from "../../core/geometry.js";
 import { resolveChairZone, validateSpatialChairAnchor } from "./closure_rules.js";
 import { computeBoxInsideChairRatio } from "../../core/barbershop_rules.js";
 
+/**
+ * Categoriza una etiqueta de pose facial en uno de los 4 nichos geométricos principales:
+ * 'frontal', 'left', 'right', 'tilted'.
+ * @param {string} pose
+ * @returns {'frontal'|'left'|'right'|'tilted'|null}
+ */
+export function extractPoseCategory(pose) {
+  if (!pose || typeof pose !== 'string') return null;
+  const p = pose.toLowerCase();
+  if (p === 'frontal') return 'frontal';
+  if (p.includes('tilt') || p.includes('up') || p.includes('down')) return 'tilted';
+  if (p.includes('left')) return 'left';
+  if (p.includes('right')) return 'right';
+  return null;
+}
+
 export class TrackBlockManager {
   constructor(options = {}) {
     this.staffProfiles = options.staffProfiles || [];
@@ -85,9 +101,16 @@ export class TrackBlockManager {
         photos: [],
         embeddings: [],
         boxes: [],
+        representatives: {
+          frontal: null,
+          left: null,
+          right: null,
+          tilted: null
+        },
         anatomicalFacesCount: 0,
         bestFaceScore: 0,
         bestFaceThumbnail: null,
+        bestFaceVector: null,
         bestAnatomicalFace: null,
         maxStaffSim: 0,
         staffFacesCount: 0,
@@ -95,6 +118,10 @@ export class TrackBlockManager {
         isStaffConfirmed: isStaff
       };
       this.activeBlocks.set(trackId, block);
+    }
+
+    if (!block.representatives) {
+      block.representatives = { frontal: null, left: null, right: null, tilted: null };
     }
 
     block.lastSeenEpoch = timestampEpoch;
@@ -169,9 +196,42 @@ export class TrackBlockManager {
           }
         }
 
-        if ((faceData.sharpnessScore || 0) > block.bestFaceScore) {
-          block.bestFaceScore = faceData.sharpnessScore || 0;
+        const sharpness = Number(faceData.sharpnessScore || 0);
+
+        if (sharpness > block.bestFaceScore) {
+          block.bestFaceScore = sharpness;
           block.bestFaceThumbnail = faceData.thumbnailBase64 || null;
+          block.bestFaceVector = faceData.vector || null;
+        } else if (!block.bestFaceVector && faceData.vector) {
+          block.bestFaceVector = faceData.vector;
+        }
+
+        // Banco de Representantes por Posición (Multi-Pose Representative Bank)
+        const category = extractPoseCategory(faceData.pose);
+        if (category && block.representatives) {
+          const currentRep = block.representatives[category];
+          const currentSharpness = currentRep ? Number(currentRep.score ?? currentRep.sharpnessScore ?? 0) : -1;
+
+          const shouldReplace = !currentRep ||
+            (isAnatomical && !currentRep.isAnatomical) ||
+            (sharpness > currentSharpness && (!currentRep.isAnatomical || isAnatomical));
+
+          if (shouldReplace) {
+            block.representatives[category] = {
+              vector: faceData.vector,
+              score: sharpness,
+              sharpnessScore: sharpness,
+              pose: faceData.pose,
+              poseCategory: category,
+              thumbnailBase64: faceData.thumbnailBase64 || null,
+              hasTwoEyes: Boolean(hasTwoEyes),
+              isAnatomical: Boolean(isAnatomical),
+              landmarks: faceData.landmarks || null,
+              box: box || faceData.box || null,
+              timestampEpoch,
+              videoSecond
+            };
+          }
         }
       }
 
