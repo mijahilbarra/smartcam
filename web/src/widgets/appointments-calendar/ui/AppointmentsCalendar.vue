@@ -732,8 +732,8 @@ const getClientAppointments = (personId) => {
                           : 'bg-slate-900/95 border-l-4 border-l-blue-500 border-slate-700/80 hover:border-blue-400 hover:bg-slate-850')
                     ]"
                   >
-                    <!-- Un solo row: foto de cliente orientada arriba con tamaño máx, N o F (primera letra), y chip de tiempo -->
-                    <div class="flex items-center gap-1.5 w-full min-w-0">
+                    <!-- Un solo row: foto de cliente a la izquierda y chip de tiempo a la derecha -->
+                    <div class="flex items-center justify-between gap-1.5 w-full min-w-0">
                       <!-- 1. Foto de cliente: orientada a la parte superior con tamaño máximo -->
                       <div class="w-7 h-7 sm:w-8 sm:h-8 max-h-[32px] max-w-[32px] aspect-square rounded-md overflow-hidden shrink-0 bg-slate-800 border border-slate-700 shadow-inner flex items-center justify-center">
                         <img
@@ -748,21 +748,8 @@ const getClientAppointments = (personId) => {
                         </div>
                       </div>
 
-                      <!-- 2. N o F (primera letra) -->
-                      <span
-                        class="w-4 h-4 rounded-full inline-flex items-center justify-center text-[9px] font-extrabold font-mono shrink-0 border leading-none"
-                        :class="getClientBadgeInitial(apt) === 'F'
-                          ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
-                          : (getClientBadgeInitial(apt) === 'N'
-                            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-                            : 'bg-blue-500/20 text-blue-300 border-blue-500/40')"
-                        :title="getClientDisplayBadge(apt)"
-                      >
-                        {{ getClientBadgeInitial(apt) }}
-                      </span>
-
-                      <!-- 3. Chip de tiempo -->
-                      <span class="inline-flex items-center gap-0.5 text-[9px] font-mono font-bold bg-slate-800/90 text-blue-300 px-1 py-0.5 rounded border border-slate-700/70 shrink-0 whitespace-nowrap leading-none">
+                      <!-- 2. Chip de tiempo a la derecha -->
+                      <span class="inline-flex items-center gap-0.5 text-[9px] font-mono font-bold bg-slate-800/90 text-blue-300 px-1 py-0.5 rounded border border-slate-700/70 shrink-0 whitespace-nowrap leading-none ml-auto">
                         <AppIcon name="timer" :size="9" class="text-blue-400" />
                         {{ apt.durationMinutes || 45 }}m
                       </span>
