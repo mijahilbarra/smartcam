@@ -468,6 +468,14 @@ const getClientDisplayBadge = (apt) => {
   return apt?.clientBadge || 'Cliente';
 };
 
+const getClientBadgeInitial = (apt) => {
+  const badge = getClientDisplayBadge(apt);
+  if (badge === 'Frecuente' || badge === 'Cliente Frecuente') return 'F';
+  if (badge === 'Nuevo' || badge === 'Nuevo Cliente') return 'N';
+  if (badge === 'Barbero') return 'B';
+  return (badge.charAt(0) || 'C').toUpperCase();
+};
+
 const getClientAppointments = (personId) => {
   if (!personId || !Array.isArray(appointments.value)) return [];
   return appointments.value.filter((a) => a.clientId === personId || a.personId === personId);
@@ -672,7 +680,7 @@ const getClientAppointments = (personId) => {
                     <span class="w-2.5 h-2.5 rounded-full bg-red-500 -ml-1 shadow-sm shadow-red-500"></span>
                   </div>
 
-                  <!-- Tarjetas de Atenciones (Con altura proporcional, solo chip de tiempo, sin hora fin/inicio y sin botón borrar) -->
+                  <!-- Tarjetas de Atenciones (Un solo row: Foto de cliente, N o F, y chip de tiempo) -->
                   <div
                     v-for="apt in (positionedAppointmentsByDay[day.isoDate] || [])"
                     :key="apt.id"
@@ -683,7 +691,7 @@ const getClientAppointments = (personId) => {
                       left: apt._layout.left,
                       width: apt._layout.width
                     }"
-                    class="group absolute rounded-lg border transition-all duration-150 cursor-pointer shadow-md hover:shadow-xl hover:z-20 overflow-hidden flex flex-col p-1.5 box-border"
+                    class="group absolute rounded-lg border transition-all duration-150 cursor-pointer shadow-md hover:shadow-xl hover:z-20 overflow-hidden flex items-center p-1.5 box-border"
                     :class="[
                       selectedAppointment?.id === apt.id
                         ? 'ring-2 ring-blue-400 bg-slate-850 shadow-blue-900/40 z-20'
@@ -693,27 +701,10 @@ const getClientAppointments = (personId) => {
                         : 'bg-slate-900/95 border-l-4 border-l-emerald-500 border-slate-700/80 hover:border-emerald-400 hover:bg-slate-850'
                     ]"
                   >
-                    <!-- Barra Superior: Solo Chip de Tiempo (Duración) e Insignia -->
-                    <div class="flex items-center justify-between gap-1 leading-none">
-                      <!-- Chip de tiempo exclusivo -->
-                      <span class="inline-flex items-center gap-1 text-[9px] font-mono font-bold bg-slate-800/90 text-blue-300 px-1.5 py-0.5 rounded border border-slate-700/70 shrink-0">
-                        <AppIcon name="timer" :size="10" class="text-blue-400" />
-                        {{ apt.durationMinutes || 45 }}m
-                      </span>
-
-                      <!-- Insignia del cliente -->
-                      <span
-                        v-if="!apt._layout.isCompact"
-                        class="text-[9px] px-1.5 py-0.2 rounded font-medium bg-slate-800/90 text-slate-300 border border-slate-700/50 truncate"
-                      >
-                        {{ getClientDisplayBadge(apt) }}
-                      </span>
-                    </div>
-
-                    <!-- Contenido Central: Avatar (bestFaceScore) -->
-                    <div class="flex items-center gap-1.5 mt-1 min-w-0 flex-1">
-                      <!-- Avatar con la foto de mejor nitidez facial -->
-                      <div class="relative w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-slate-800 overflow-hidden shrink-0 border border-slate-700 shadow-inner">
+                    <!-- Un solo row: foto de cliente, N o F (primera letra), y chip de tiempo -->
+                    <div class="flex items-center gap-1.5 w-full min-w-0">
+                      <!-- 1. Foto de cliente (Avatar con bestFaceScore) -->
+                      <div class="relative w-6 h-6 sm:w-7 sm:h-7 rounded-md bg-slate-800 overflow-hidden shrink-0 border border-slate-700 shadow-inner">
                         <img
                           v-if="getClientDisplayAvatar(apt)"
                           :src="getClientDisplayAvatar(apt)"
@@ -722,15 +713,28 @@ const getClientAppointments = (personId) => {
                           @error="apt.avatarUrl = ''"
                         />
                         <div v-else class="w-full h-full flex items-center justify-center text-slate-400 bg-slate-800">
-                          <AppIcon name="person" :size="16" />
+                          <AppIcon name="person" :size="14" />
                         </div>
                       </div>
 
-                      <div v-if="apt._layout.isCompact" class="min-w-0 flex-1 flex flex-col justify-center">
-                        <span class="text-[9px] px-1 py-0.2 rounded font-medium bg-slate-800/90 text-slate-300 border border-slate-700/50 block truncate">
-                          {{ getClientDisplayBadge(apt) }}
-                        </span>
-                      </div>
+                      <!-- 2. N o F (primera letra) -->
+                      <span
+                        class="w-4 h-4 rounded-full inline-flex items-center justify-center text-[10px] font-extrabold font-mono shrink-0 border leading-none"
+                        :class="getClientBadgeInitial(apt) === 'F'
+                          ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                          : (getClientBadgeInitial(apt) === 'N'
+                            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                            : 'bg-blue-500/20 text-blue-300 border-blue-500/40')"
+                        :title="getClientDisplayBadge(apt)"
+                      >
+                        {{ getClientBadgeInitial(apt) }}
+                      </span>
+
+                      <!-- 3. Chip de tiempo -->
+                      <span class="inline-flex items-center gap-0.5 text-[9px] font-mono font-bold bg-slate-800/90 text-blue-300 px-1.5 py-0.5 rounded border border-slate-700/70 shrink-0">
+                        <AppIcon name="timer" :size="10" class="text-blue-400" />
+                        {{ apt.durationMinutes || 45 }}m
+                      </span>
                     </div>
                   </div>
                 </div>
