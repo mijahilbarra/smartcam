@@ -229,7 +229,7 @@ function layoutDayAppointments(dayAppointments, gridStartMinutes, hourHeight) {
     const durationMin = Math.max(1, endMin - startMin);
 
     const top = Math.max(0, ((startMin - gridStartMinutes) / 60) * hourHeight);
-    const height = Math.max(18, (durationMin / 60) * hourHeight);
+    const height = Math.max(28, (durationMin / 60) * hourHeight);
 
     return {
       apt,
@@ -709,7 +709,7 @@ const getClientAppointments = (personId) => {
                     <span class="w-2.5 h-2.5 rounded-full bg-red-500 -ml-1 shadow-sm shadow-red-500"></span>
                   </div>
 
-                  <!-- Tarjetas de Atenciones (Un solo row: Foto de cliente responde al alto, N o F, y chip de tiempo) -->
+                  <!-- Tarjetas de Atenciones (Un solo row orientado arriba: Foto con tamaño máx, N o F, y chip de tiempo) -->
                   <div
                     v-for="apt in (positionedAppointmentsByDay[day.isoDate] || [])"
                     :key="apt.id"
@@ -720,7 +720,7 @@ const getClientAppointments = (personId) => {
                       left: apt._layout.left,
                       width: apt._layout.width
                     }"
-                    class="group absolute rounded-lg border transition-all duration-150 cursor-pointer shadow-sm hover:shadow-xl hover:z-20 overflow-hidden flex items-center px-1.5 py-0.5 box-border"
+                    class="group absolute rounded-lg border transition-all duration-150 cursor-pointer shadow-sm hover:shadow-xl hover:z-20 overflow-hidden flex items-start px-1.5 py-1 box-border"
                     :class="[
                       selectedAppointment?.id === apt.id
                         ? 'ring-2 ring-blue-400 bg-slate-850 shadow-blue-900/40 z-20'
@@ -730,10 +730,10 @@ const getClientAppointments = (personId) => {
                         : 'bg-slate-900/95 border-l-4 border-l-emerald-500 border-slate-700/80 hover:border-emerald-400 hover:bg-slate-850'
                     ]"
                   >
-                    <!-- Un solo row: foto de cliente (responde dinámicamente al alto), N o F (primera letra), y chip de tiempo -->
-                    <div class="flex items-center gap-1.5 h-full w-full min-w-0 overflow-hidden">
-                      <!-- 1. Foto de cliente: responde dinámicamente al alto de la tarjeta -->
-                      <div class="h-full aspect-square max-h-[56px] rounded overflow-hidden shrink-0 bg-slate-800 border border-slate-700 shadow-inner flex items-center justify-center">
+                    <!-- Un solo row: foto de cliente orientada arriba con tamaño máx, N o F (primera letra), y chip de tiempo -->
+                    <div class="flex items-center gap-1.5 w-full min-w-0">
+                      <!-- 1. Foto de cliente: orientada a la parte superior con tamaño máximo -->
+                      <div class="w-7 h-7 sm:w-8 sm:h-8 max-h-[32px] max-w-[32px] aspect-square rounded-md overflow-hidden shrink-0 bg-slate-800 border border-slate-700 shadow-inner flex items-center justify-center">
                         <img
                           v-if="getClientDisplayAvatar(apt)"
                           :src="getClientDisplayAvatar(apt)"
@@ -748,7 +748,7 @@ const getClientAppointments = (personId) => {
 
                       <!-- 2. N o F (primera letra) -->
                       <span
-                        class="h-[calc(100%-4px)] max-h-[20px] min-h-[14px] aspect-square rounded-full inline-flex items-center justify-center text-[9px] font-extrabold font-mono shrink-0 border leading-none"
+                        class="w-4 h-4 rounded-full inline-flex items-center justify-center text-[9px] font-extrabold font-mono shrink-0 border leading-none"
                         :class="getClientBadgeInitial(apt) === 'F'
                           ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
                           : (getClientBadgeInitial(apt) === 'N'
