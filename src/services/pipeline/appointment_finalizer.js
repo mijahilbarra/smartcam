@@ -13,6 +13,7 @@ import { computeCosineSimilarity } from "../../face_recognizer.js";
 import { computeSetToSetMetrics } from "./biometrics_math.js";
 import { mergePhotosAndEmbeddings, deduplicateSessionPhotos, purgeChimeraPairs } from "./gallery_curator.js";
 import { computeFrontalityScore, hasTwoEyesVisible, isValidFaceGeometry } from "../face_quality_service.js";
+import { extractPoseCategory } from "./track_block_manager.js";
 import {
   findChimeraSplit,
   splitChimeraSession,
@@ -215,6 +216,72 @@ export function getRepresentativeFace(photos = [], embeddings = []) {
   };
 }
 
+/**
+ * Genera el Banco de Representantes por Posición (Multi-Pose Representative Bank)
+ * estratificado por nichos anatómicos ('frontal', 'left', 'right', 'tilted').
+ * Selecciona el mejor representante para cada nicho según calidad anatómica y nitidez.
+ *
+ * @param {Array<Object>} photos
+ * @param {Array<Array<number>|Object>} embeddings
+ * @returns {{ frontal: Object|null, left: Object|null, right: Object|null, tilted: Object|null }}
+ */
+export function getMultiPoseRepresentativeBank(photos = [], embeddings = []) {
+  const bank = {
+    frontal: null,
+    left: null,
+    right: null,
+    tilted: null
+  };
+  if (!Array.isArray(photos) || photos.length === 0) {
+    return bank;
+  }
+  for (let i = 0; i < photos.length; i++) {
+    const photo = photos[i];
+    if (!photo) continue;
+    const embEntry = embeddings?.[i];
+    let vector = isVector(embEntry)
+      ? embEntry
+      : (embEntry?.vector || photo?.embedding || photo?.vector || null);
+    if (!vector && embeddings && embeddings.length === 1) {
+      const single = embeddings[0];
+      vector = isVector(single) ? single : (single?.vector || null);
+    }
+    if (!vector) continue;
+
+    const cat = extractPoseCategory(photo.pose || photo.poseLabel);
+    if (!cat) continue;
+
+    const score = Number(photo.sharpnessScore ?? photo.score ?? 0);
+    const hasValidLandmarks = Array.isArray(photo.landmarks) && photo.landmarks.length === 5 && isValidFaceGeometry(photo.landmarks, photo.boxNorm);
+    const hasTwoEyes = photo.hasTwoEyes !== undefined
+      ? Boolean(photo.hasTwoEyes)
+      : (hasValidLandmarks ? hasTwoEyesVisible(photo.landmarks, photo.boxNorm, photo.pose) : false);
+    const isAnatomical = Boolean(photo.isAnatomical || hasTwoEyes);
+
+    const curr = bank[cat];
+    const currScore = curr ? Number(curr.score ?? curr.sharpnessScore ?? 0) : -1;
+    const shouldReplace = !curr ||
+      (isAnatomical && !curr.isAnatomical) ||
+      (score > currScore && (!curr.isAnatomical || isAnatomical));
+
+    if (shouldReplace) {
+      bank[cat] = {
+        vector,
+        score,
+        sharpnessScore: score,
+        pose: photo.pose || photo.poseLabel,
+        poseCategory: cat,
+        thumbnailBase64: photo.thumbnailBase64 || null,
+        hasTwoEyes,
+        isAnatomical,
+        landmarks: photo.landmarks || null,
+        box: photo.box || null
+      };
+    }
+  }
+  return bank;
+}
+
 
 
 /**
@@ -387,6 +454,7 @@ export async function finalizeCustomerAndAppointment({
   }
   const repApptThumbnail = repAppt?.photo?.thumbnailBase64 || null;
   const repApptScore = repAppt?.score ?? (session.bestFaceScore || 0);
+  const sessionBank = session.representatives || getMultiPoseRepresentativeBank(session.photos || [], session.embeddings || []);
 
   const appointmentRecord = {
     id: session.appointmentId || session.visitId,
@@ -412,6 +480,7 @@ export async function finalizeCustomerAndAppointment({
     thumbnailBase64: repApptThumbnail || session.thumbnailBase64 || session.photos[0]?.thumbnailBase64 || null,
     photos: session.photos,
     embeddings: session.embeddings || [],
+    representatives: sessionBank,
     createdAt: new Date(now).toISOString()
   };
 

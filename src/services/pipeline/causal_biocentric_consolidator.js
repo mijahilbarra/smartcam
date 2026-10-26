@@ -17,7 +17,7 @@ import { PIPELINE_CONFIG } from "../../core/pipeline_config.js";
 import { computeCosineSimilarity } from "../../face_recognizer.js";
 import { computeSetToSetMetrics, computeCohortSNorm, isOppositeSide } from "./biometrics_math.js";
 import { mergePhotosAndEmbeddings, deduplicateSessionPhotos, purgeChimeraPairs } from "./gallery_curator.js";
-import { getRepresentativeFace, isVector } from "./appointment_finalizer.js";
+import { getRepresentativeFace, getMultiPoseRepresentativeBank, isVector } from "./appointment_finalizer.js";
 import { isCapeBarrierSeparating } from "./closure_rules.js";
 import { hasTwoEyesVisible } from "../face_quality_service.js";
 
@@ -152,6 +152,29 @@ export function evaluateCausalConsolidation({
   const repA = getRepresentativeFace(prevPhotos, prevVecs);
   const repB = getRepresentativeFace(sessionPhotos, sessionVecs);
 
+  // Banco de Representantes por Posición (Multi-Pose Representative Bank)
+  const bankA = prevSameChairAppt.representatives || getMultiPoseRepresentativeBank(prevPhotos, prevVecs);
+  const bankB = session.representatives || getMultiPoseRepresentativeBank(sessionPhotos, sessionVecs);
+
+  let maxHomologousSim = -1;
+  let matchedHomologousCategory = null;
+  const homologousSims = {};
+
+  for (const cat of ['frontal', 'left', 'right', 'tilted']) {
+    const repAItem = bankA?.[cat];
+    const repBItem = bankB?.[cat];
+    const vecA = repAItem ? (isVector(repAItem) ? repAItem : repAItem.vector) : null;
+    const vecB = repBItem ? (isVector(repBItem) ? repBItem : repBItem.vector) : null;
+    if (vecA && vecB) {
+      const sim = computeCosineSimilarity(vecA, vecB);
+      homologousSims[cat] = sim;
+      if (sim > maxHomologousSim) {
+        maxHomologousSim = sim;
+        matchedHomologousCategory = cat;
+      }
+    }
+  }
+
   const repSim = (repA?.vector && repB?.vector)
     ? computeCosineSimilarity(repA.vector, repB.vector)
     : null;
@@ -216,9 +239,9 @@ export function evaluateCausalConsolidation({
   const isSamePoseRep = Boolean(poseA && poseB && poseA === poseB);
 
   // Proteger los vetos por representante de foto única: si la galería acumulada ya tiene
-  // coincidencia o no hay contradicción biológica evidente (centroidSim >= 0.38 o maxGallerySim >= 0.42),
+  // coincidencia o no hay contradicción biológica evidente (centroidSim >= 0.38 o maxGallerySim >= 0.42 o maxHomologousSim >= 0.50),
   // NO vetar por un solo fotograma de discrepancia.
-  const hasStrongGalleryMatch = maxBiometric >= 0.52 || robustSim >= 0.48 || centroidSim >= 0.38 || maxGallerySim >= 0.42;
+  const hasStrongGalleryMatch = maxBiometric >= 0.52 || robustSim >= 0.48 || centroidSim >= 0.38 || maxGallerySim >= 0.42 || maxHomologousSim >= 0.50;
 
   if (isOpposite) {
     logVerbal(`[CausalConsolidator] 🛡️ Veto omitido: poses opuestas detectadas (${poseA} vs ${poseB}). Evaluación atemporal basada en evidencia acumulada.`);
@@ -303,16 +326,16 @@ export function evaluateCausalConsolidation({
   let mergeReason = '';
 
   // Regla de Fusión Atemporal (Timeless) y Adaptativa:
-  // Si dos sesiones previas en la misma silla tienen concordancia biométrica probada
-  // (robustSim >= 0.50, maxGallerySim >= 0.52 o sNorm >= 1.8 con metrics.top3AvgSim >= 0.48),
-  // se fusionan SIN importar si pasaron 2, 7, 15 o 60 minutos.
-  const hasProvenBiometrics = (
-    robustSim >= 0.50 ||
-    maxGallerySim >= 0.52 ||
-    (sNorm >= 1.8 && (metrics.top3AvgSim || 0) >= 0.48)
-  );
-
-  if (hasProvenBiometrics) {
+  // Si comparten al menos una pose homóloga con similitud >= 0.52 (o robustSim >= 0.50),
+  // consolidar con motivo: homologousPoseMatch (sim=${maxHomologousSim.toFixed(3)})
+  if (maxHomologousSim >= 0.52) {
+    isSamePerson = true;
+    mergeReason = `homologousPoseMatch (sim=${maxHomologousSim.toFixed(3)})`;
+  } else if (robustSim >= 0.50) {
+    const simVal = maxHomologousSim >= 0 ? maxHomologousSim : robustSim;
+    isSamePerson = true;
+    mergeReason = `homologousPoseMatch (sim=${simVal.toFixed(3)})`;
+  } else if (maxGallerySim >= 0.52 || (sNorm >= 1.8 && (metrics.top3AvgSim || 0) >= 0.48)) {
     isSamePerson = true;
     mergeReason = `concordantBiometricsSameClient (robust=${robustSim.toFixed(3)}, centroid=${centroidSim.toFixed(3)}, top3Avg=${(metrics.top3AvgSim || 0).toFixed(3)}, maxGallery=${maxGallerySim.toFixed(3)}, sNorm=${sNorm.toFixed(2)})`;
   } else if (!isHomologousDifferentPerson) {
@@ -463,6 +486,23 @@ export async function consolidateChairAppointment({
   if ((session.bestFaceScore || 0) > (prevSameChairAppt.bestFaceScore || 0)) {
     prevSameChairAppt.bestFaceScore = session.bestFaceScore;
     prevSameChairAppt.thumbnailBase64 = session.thumbnailBase64 || prevSameChairAppt.thumbnailBase64;
+  }
+
+  // Actualizar banco acumulado de representantes por categoría
+  if (!prevSameChairAppt.representatives) {
+    prevSameChairAppt.representatives = { frontal: null, left: null, right: null, tilted: null };
+  }
+  const sessionBank = session.representatives || getMultiPoseRepresentativeBank(session.photos || [], session.embeddings || []);
+  for (const cat of ['frontal', 'left', 'right', 'tilted']) {
+    const sRep = sessionBank[cat];
+    const pRep = prevSameChairAppt.representatives[cat];
+    if (sRep) {
+      const sScore = Number(sRep.score ?? sRep.sharpnessScore ?? 0);
+      const pScore = pRep ? Number(pRep.score ?? pRep.sharpnessScore ?? 0) : -1;
+      if (!pRep || sScore > pScore || (sRep.isAnatomical && !pRep.isAnatomical)) {
+        prevSameChairAppt.representatives[cat] = { ...sRep };
+      }
+    }
   }
 
   // Actualizar perfil del cliente en memoria y persistencia

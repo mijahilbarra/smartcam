@@ -37,8 +37,10 @@ import {
   finalizeCustomerAndAppointment,
   executeSessionClosurePipeline,
   getRepresentativeFace,
+  getMultiPoseRepresentativeBank,
   isVector
 } from "./pipeline/appointment_finalizer.js";
+import { extractPoseCategory } from "./pipeline/track_block_manager.js";
 import { computeCleanCentroid } from "./pipeline/causal_biocentric_consolidator.js";
 import { ingestFaceSample } from "./pipeline/sample_collector.js";
 import {
@@ -231,106 +233,116 @@ export class VisitSessionService {
     let isRotatedFromMismatch = false;
 
     if (session) {
+      // Banco de Representantes por Posición (Multi-Pose Representative Bank)
+      if (!session.representatives) {
+        session.representatives = { frontal: null, left: null, right: null, tilted: null };
+      }
+      if (!Object.values(session.representatives).some(Boolean) && session.photos && session.photos.length > 0) {
+        session.representatives = getMultiPoseRepresentativeBank(session.photos, session.embeddings);
+      }
+      if (!block.representatives) {
+        block.representatives = { frontal: null, left: null, right: null, tilted: null };
+      }
+      if (!Object.values(block.representatives).some(Boolean) && block.photos && block.photos.length > 0) {
+        block.representatives = getMultiPoseRepresentativeBank(block.photos, block.embeddings);
+      }
+
       const repPrev = getRepresentativeFace(session.photos || [], session.embeddings || []);
       const repBlock = getRepresentativeFace(block.photos || [], block.embeddings || []);
 
-      let isRadicalMismatch = false;
-      if (repPrev?.vector && repBlock?.vector) {
-        const repSim = computeCosineSimilarity(repPrev.vector, repBlock.vector);
-        const posePrev = repPrev?.photo?.pose;
-        const poseBlock = repBlock?.photo?.pose;
-        const isSamePose = Boolean(posePrev && poseBlock && posePrev === poseBlock);
-        const UPRIGHT_POSES = ['frontal', 'semi_left', 'semi_right'];
-        const isBothUpright = Boolean(
-          posePrev && poseBlock &&
-          UPRIGHT_POSES.includes(posePrev) &&
-          UPRIGHT_POSES.includes(poseBlock)
-        );
+      // Precalcular similitudes de galería acumulada y centroides limpios
+      let maxGallerySim = 0;
+      const prevVecs = (session.embeddings || []).map(e => isVector(e) ? e : e?.vector).filter(Boolean);
+      const blockVecs = (block.embeddings || []).map(e => isVector(e) ? e : e?.vector).filter(Boolean);
+      if (prevVecs.length === 0 && repPrev?.vector) prevVecs.push(repPrev.vector);
+      if (blockVecs.length === 0 && repBlock?.vector) blockVecs.push(repBlock.vector);
 
-        // Argon 4: Veto Homólogo Incondicional y Manejo Dinámico de Poses Opuestas
-        const scorePrev = Number(repPrev?.score ?? repPrev?.photo?.sharpnessScore ?? 0);
-        const scoreBlock = Number(repBlock?.score ?? repBlock?.photo?.sharpnessScore ?? 0);
-        const hasGoodSharpness = scorePrev >= 55 && scoreBlock >= 55;
+      for (const va of prevVecs) {
+        for (const vb of blockVecs) {
+          const sim = computeCosineSimilarity(va, vb);
+          if (sim > maxGallerySim) maxGallerySim = sim;
+        }
+      }
 
-        // Detección invariante de Poses Opuestas (izquierda vs derecha)
-        const oppositeSide = isOppositeSide(posePrev, poseBlock);
+      const staffProfiles = this.customerService?.getComparisonProfiles?.()?.filter(p => p.isStaff) || [];
+      const cleanCentroidPrev = computeCleanCentroid(prevVecs, staffProfiles, this.staffThreshold) || repPrev?.vector;
+      const cleanCentroidBlock = computeCleanCentroid(blockVecs, staffProfiles, this.staffThreshold) || repBlock?.vector;
+      const centroidSim = (cleanCentroidPrev && cleanCentroidBlock)
+        ? computeCosineSimilarity(cleanCentroidPrev, cleanCentroidBlock)
+        : 0;
 
-        // Precalcular similitudes de galería acumulada y centroides limpios
-        let maxGallerySim = 0;
-        const prevVecs = (session.embeddings || []).map(e => isVector(e) ? e : e?.vector).filter(Boolean);
-        const blockVecs = (block.embeddings || []).map(e => isVector(e) ? e : e?.vector).filter(Boolean);
-        if (prevVecs.length === 0 && repPrev?.vector) prevVecs.push(repPrev.vector);
-        if (blockVecs.length === 0 && repBlock?.vector) blockVecs.push(repBlock.vector);
+      const vacancyMs = session.emptySinceEpoch
+        ? (now - session.emptySinceEpoch)
+        : (session.lastClientSeenEpoch && block.startedAtEpoch ? Math.max(0, block.startedAtEpoch - session.lastClientSeenEpoch) : 0);
+      const isPhysicalContinuity = vacancyMs < 10000;
 
-        for (const va of prevVecs) {
-          for (const vb of blockVecs) {
-            const sim = computeCosineSimilarity(va, vb);
-            if (sim > maxGallerySim) maxGallerySim = sim;
+      // Comparación Homóloga Grupo-a-Grupo entre session.representatives y block.representatives
+      const homologousSims = {};
+      let maxHomologousSim = -1;
+      let matchedHomologousCategory = null;
+      let hasHomologousComparison = false;
+
+      for (const cat of ['frontal', 'left', 'right', 'tilted']) {
+        const repS = session.representatives[cat];
+        const repB = block.representatives[cat];
+        const vecS = repS ? (isVector(repS) ? repS : repS.vector) : null;
+        const vecB = repB ? (isVector(repB) ? repB : repB.vector) : null;
+        if (vecS && vecB) {
+          const sim = computeCosineSimilarity(vecS, vecB);
+          homologousSims[cat] = sim;
+          hasHomologousComparison = true;
+          if (sim > maxHomologousSim) {
+            maxHomologousSim = sim;
+            matchedHomologousCategory = cat;
           }
         }
+      }
 
-        const staffProfiles = this.customerService?.getComparisonProfiles?.()?.filter(p => p.isStaff) || [];
-        const cleanCentroidPrev = computeCleanCentroid(prevVecs, staffProfiles, this.staffThreshold) || repPrev.vector;
-        const cleanCentroidBlock = computeCleanCentroid(blockVecs, staffProfiles, this.staffThreshold) || repBlock.vector;
-        const centroidSim = (cleanCentroidPrev && cleanCentroidBlock)
-          ? computeCosineSimilarity(cleanCentroidPrev, cleanCentroidBlock)
-          : 0;
+      let isRadicalMismatch = false;
+      let isVeto = false;
+      let vetoReason = "";
 
-        const vacancyMs = session.emptySinceEpoch
-          ? (now - session.emptySinceEpoch)
-          : (session.lastClientSeenEpoch && block.startedAtEpoch ? Math.max(0, block.startedAtEpoch - session.lastClientSeenEpoch) : 0);
-        const isPhysicalContinuity = vacancyMs < 10000;
-
-        let isVeto = false;
-        let vetoReason = "";
-
-        if (oppositeSide) {
-          // Poses opuestas: NUNCA disparar veto homólogo por un representante scalar de pose opuesta (repSim).
-          // La similitud facial cae naturalmente a 0.05 - 0.20 en la misma persona entre lados opuestos.
-          // Verificar si la galería acumulada tiene coincidencia (maxGallerySim >= 0.48 o centroidSim >= 0.40).
-          // Si hay continuidad física (gap cero o < 10s en silla), preservar la sesión activa.
-          const hasGalleryMatch = maxGallerySim >= 0.48 || centroidSim >= 0.40;
-          if (hasGalleryMatch || isPhysicalContinuity) {
+      if (hasHomologousComparison) {
+        // Hay al menos una pareja homóloga disponible (frontal-frontal, left-left, right-right o tilted-tilted)
+        if (maxHomologousSim >= 0.50) {
+          // Identidad confirmada por correspondencia homóloga
+          isVeto = false;
+          this.logVerbal(`🛡️ Identidad confirmada en ${chairName} (maxHomologousSim=${maxHomologousSim.toFixed(3)} [${matchedHomologousCategory}], maxGallerySim=${maxGallerySim.toFixed(3)}, centroidSim=${centroidSim.toFixed(3)}): NO hay veto, extendiendo sesión de forma continua.`, "process");
+        } else if (maxHomologousSim < 0.35) {
+          // Discrepancia real en la misma pose
+          if (isPhysicalContinuity && centroidSim >= 0.25) {
             isVeto = false;
-            this.logVerbal(`🛡️ Invarianza de poses opuestas en ${chairName} (${posePrev} vs ${poseBlock}): repSim omitido. Sesión activa preservada (galleryMatch=${hasGalleryMatch}, maxGallerySim=${maxGallerySim.toFixed(3)}, centroidSim=${centroidSim.toFixed(3)}, physicalContinuity=${isPhysicalContinuity}, vacancia=${(vacancyMs / 1000).toFixed(1)}s).`, "process");
+            this.logVerbal(`🛡️ Inercia de Silla en ${chairName} (vacancia=${(vacancyMs / 1000).toFixed(1)}s < 10s): Se descarta rotación por continuidad física activa (homologousSim=${maxHomologousSim.toFixed(3)}, centroidSim=${centroidSim.toFixed(3)}).`, "process");
           } else {
             isVeto = true;
-            vetoReason = `poses opuestas (${posePrev} vs ${poseBlock}) sin coincidencia en galería (maxGallerySim=${maxGallerySim.toFixed(3)} < 0.48, centroidSim=${centroidSim.toFixed(3)} < 0.40) ni continuidad física (vacancia=${(vacancyMs / 1000).toFixed(1)}s >= 10s)`;
+            vetoReason = `discrepancia en pose homóloga (${matchedHomologousCategory}: sim=${maxHomologousSim.toFixed(3)} < 0.35, centroidSim=${centroidSim.toFixed(3)})`;
           }
         } else {
-          // Veto Homólogo Estándar (poses compatibles o idénticas)
-          if (isBothUpright && hasGoodSharpness && repSim < 0.35) {
+          // maxHomologousSim está en zona intermedia [0.35, 0.50)
+          if (maxGallerySim >= 0.50 || centroidSim >= 0.45 || isPhysicalContinuity) {
+            isVeto = false;
+            this.logVerbal(`🛡️ Identidad confirmada por evidencia acumulada en ${chairName} (maxHomologousSim=${maxHomologousSim.toFixed(3)} [${matchedHomologousCategory}], maxGallerySim=${maxGallerySim.toFixed(3)}, centroidSim=${centroidSim.toFixed(3)}): extendiendo sesión.`, "process");
+          } else {
             isVeto = true;
-            vetoReason = `repSim=${repSim.toFixed(3)} < 0.35 entre erguidos`;
-          } else if (isSamePose && repSim < 0.33) {
-            isVeto = true;
-            vetoReason = `repSim=${repSim.toFixed(3)} < 0.33 misma pose`;
-          } else if ((isSamePose || isBothUpright) && repSim < 0.33) {
-            isVeto = true;
-            vetoReason = `repSim=${repSim.toFixed(3)} < 0.33`;
-          }
-
-          if (isVeto) {
-            // Válvula de escape: coincidencia contundente en la galería acumulada (maxGallerySim >= 0.52 o centroidSim >= 0.48)
-            if (maxGallerySim >= 0.52 || centroidSim >= 0.48) {
-              isVeto = false;
-              this.logVerbal(`🛡️ Veto evitado en ${chairName}: coincidencia en galería acumulada (maxGallerySim=${maxGallerySim.toFixed(3)} >= 0.52, centroidSim=${centroidSim.toFixed(3)}). Protegiendo representante discrepante.`, "process");
-            } else if (isPhysicalContinuity) {
-              const isClusterDivergence = centroidSim < 0.18 && maxGallerySim < 0.30;
-              if (!isClusterDivergence) {
-                isVeto = false;
-                this.logVerbal(`🛡️ Inercia de Silla en ${chairName} (vacancia=${(vacancyMs / 1000).toFixed(1)}s < 10s): Se descarta rotación por foto única (${vetoReason}). Continuidad física activa (centroidSim=${centroidSim.toFixed(3)}, maxGallerySim=${maxGallerySim.toFixed(3)}).`, "process");
-              } else {
-                vetoReason += ` + divergencia de centroide (centroidSim=${centroidSim.toFixed(3)} < 0.18, maxGallerySim=${maxGallerySim.toFixed(3)} < 0.30)`;
-              }
-            }
+            vetoReason = `evidencia homóloga insuficiente tras vacancia (${(vacancyMs / 1000).toFixed(1)}s >= 10s, maxHomologousSim=${maxHomologousSim.toFixed(3)} < 0.50, centroidSim=${centroidSim.toFixed(3)})`;
           }
         }
-
-        if (isVeto) {
-          isRadicalMismatch = true;
-          this.logVerbal(`🛑 Veto Homólogo directo en ${chairName} (${vetoReason}, poses: ${posePrev} vs ${poseBlock}). Cerrando sesión previa por rotación.`, "process");
+      } else {
+        // NO hay poses homólogas compartidas (ej. session tiene left, block tiene right).
+        // Prohibido terminantemente que una discrepancia entre poses opuestas dispare un veto si no hay discrepancia en poses homólogas.
+        const isAlternateMatch = maxGallerySim >= 0.50 || centroidSim >= 0.45;
+        if (isAlternateMatch || isPhysicalContinuity || centroidSim >= 0.30 || maxGallerySim >= 0.40) {
+          isVeto = false;
+          this.logVerbal(`🛡️ Invarianza de poses opuestas en ${chairName}: No hay discrepancia en poses homólogas, veto omitido y nuevo nicho absorbido (alternateMatch=${isAlternateMatch}, vacancia=${(vacancyMs / 1000).toFixed(1)}s, centroidSim=${centroidSim.toFixed(3)}, maxGallerySim=${maxGallerySim.toFixed(3)}).`, "process");
+        } else {
+          isVeto = true;
+          vetoReason = `vacancia prolongada (${(vacancyMs / 1000).toFixed(1)}s >= 10s) sin poses homólogas ni coincidencia de galería (maxGallerySim=${maxGallerySim.toFixed(3)} < 0.40, centroidSim=${centroidSim.toFixed(3)} < 0.30)`;
         }
+      }
+
+      if (isVeto) {
+        isRadicalMismatch = true;
+        this.logVerbal(`🛑 Veto Homólogo directo en ${chairName} (${vetoReason}). Cerrando sesión previa por rotación.`, "process");
       }
 
       if (isRadicalMismatch) {
@@ -383,6 +395,24 @@ export class VisitSessionService {
           session.bestFaceScore = block.bestFaceScore;
           if (block.bestFaceThumbnail) {
             session.thumbnailBase64 = block.bestFaceThumbnail;
+          }
+        }
+
+        // Extender banco acumulado de representantes por categoría
+        if (block.representatives) {
+          if (!session.representatives) {
+            session.representatives = { frontal: null, left: null, right: null, tilted: null };
+          }
+          for (const cat of ['frontal', 'left', 'right', 'tilted']) {
+            const bRep = block.representatives[cat];
+            const sRep = session.representatives[cat];
+            if (bRep) {
+              const bScore = Number(bRep.score ?? bRep.sharpnessScore ?? 0);
+              const sScore = sRep ? Number(sRep.score ?? sRep.sharpnessScore ?? 0) : -1;
+              if (!sRep || bScore > sScore || (bRep.isAnatomical && !sRep.isAnatomical)) {
+                session.representatives[cat] = { ...bRep };
+              }
+            }
           }
         }
 
@@ -458,6 +488,12 @@ export class VisitSessionService {
       lastSyncAt: now,
       photos: deduped.photos,
       embeddings: deduped.embeddings,
+      representatives: {
+        frontal: block.representatives?.frontal ? { ...block.representatives.frontal } : null,
+        left:    block.representatives?.left ? { ...block.representatives.left } : null,
+        right:   block.representatives?.right ? { ...block.representatives.right } : null,
+        tilted:  block.representatives?.tilted ? { ...block.representatives.tilted } : null
+      },
       boxes: block.boxes ? [...block.boxes] : (block.crops ? block.crops.map(c => c.box).filter(Boolean) : []),
       topFaces: []
     };

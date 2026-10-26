@@ -264,6 +264,12 @@ export async function initChairSession({
     lastSyncAt: now,
     photos: [],
     embeddings: [],
+    representatives: {
+      frontal: null,
+      left: null,
+      right: null,
+      tilted: null
+    },
     topFaces: []
   };
 
