@@ -217,12 +217,13 @@ export function evaluateCausalConsolidation({
   // Detección de Ventana de Transición de Acabado (Finishing Phase en la misma silla)
   const prevDurationMinutes = prevSameChairAppt.durationMinutes || (prevSameChairAppt.duration ? Math.round(prevSameChairAppt.duration / 60) : 0);
   const sessionDurationMinutes = session.durationMinutes || (session.startedAtEpoch && session.endedAtEpoch ? Math.round((session.endedAtEpoch - session.startedAtEpoch) / 60000) : 0);
-  const isFinishingPhase = (rawGapMs <= 180000 && rawGapMs >= minMergeGap) &&
-    (sessionDurationMinutes <= 15) &&
+  logVerbal(`[DEBUG-CONSOLIDATOR] sessionDurationMinutes=${sessionDurationMinutes}, prevDurationMinutes=${prevDurationMinutes}, rawGapMs=${rawGapMs}, centroidSim=${centroidSim.toFixed(3)}, maxGallerySim=${maxGallerySim.toFixed(3)}`);
+  const isFinishingPhase = (rawGapMs <= 60000 && rawGapMs >= minMergeGap) &&
+    (sessionDurationMinutes <= 4) &&
     (prevDurationMinutes >= 20);
 
   const isBiometricallyIncompatible = isFinishingPhase
-    ? (centroidSim < 0.32 && maxGallerySim < 0.38)
+    ? (centroidSim < 0.35 && maxGallerySim < 0.42)
     : (centroidSim < 0.35 && maxGallerySim < 0.40);
 
   if (isBiometricallyIncompatible) {
@@ -338,9 +339,8 @@ export function evaluateCausalConsolidation({
 
   // Regla de Ventana de Transición de Acabado (Finishing Phase)
   if (isFinishingPhase && (
-    (centroidSim >= 0.35 && maxGallerySim >= 0.40) ||
-    maxHomologousSim >= 0.40 ||
-    maxGallerySim >= 0.45
+    (centroidSim >= 0.48 && maxGallerySim >= 0.55) ||
+    maxHomologousSim >= 0.52
   )) {
     isSamePerson = true;
     mergeReason = `finishingPhaseTransition (gap=${Math.round(rawGapMs / 1000)}s, maxGallery=${maxGallerySim.toFixed(3)}, centroid=${centroidSim.toFixed(3)})`;
@@ -351,15 +351,27 @@ export function evaluateCausalConsolidation({
     const simVal = maxHomologousSim >= 0 ? maxHomologousSim : robustSim;
     isSamePerson = true;
     mergeReason = `homologousPoseMatch (sim=${simVal.toFixed(3)})`;
-  } else if (maxGallerySim >= 0.52 || (sNorm >= 1.8 && (metrics.top3AvgSim || 0) >= 0.48)) {
+  } else if ((maxGallerySim >= 0.65 && centroidSim >= 0.52) || (sNorm >= 1.8 && (metrics.top3AvgSim || 0) >= 0.48)) {
     isSamePerson = true;
     mergeReason = `concordantBiometricsSameClient (robust=${robustSim.toFixed(3)}, centroid=${centroidSim.toFixed(3)}, top3Avg=${(metrics.top3AvgSim || 0).toFixed(3)}, maxGallery=${maxGallerySim.toFixed(3)}, sNorm=${sNorm.toFixed(2)})`;
   } else if (!isHomologousDifferentPerson) {
     // Reglas adicionales adaptativas / biometría estándar sin límites de tiempo rígidos:
-    const hasSolidBiometricContinuity = (centroidSim >= 0.48 && robustSim >= 0.42) ||
-      (centroidSim >= 0.42 && maxGallerySim >= 0.45) ||
-      (robustSim >= 0.52 && (repSim === null || repSim >= 0.30)) ||
-      (sNorm >= 1.8 && contrastRatio >= 1.20);
+    // Veto por discrepancia homóloga en banco multi-pose
+  if (maxHomologousSim >= 0 && maxHomologousSim < 0.35) {
+    logVerbal(`[CausalConsolidator] 🛑 VETO HOMÓLOGO DIRECTO: discrepancia severa en poses homólogas (maxHomologousSim=${maxHomologousSim.toFixed(3)} < 0.35). Bloqueando fusión.`);
+    return {
+      shouldMerge: false,
+      reason: "VETO_HOMOLOGO_DIRECTO",
+      metrics: { repSim, robustSim, centroidSim, sNorm, contrastRatio, gapMs, maxGallerySim, maxHomologousSim },
+      repA,
+      repB
+    };
+  }
+
+  const hasSolidBiometricContinuity = (centroidSim >= 0.48 && robustSim >= 0.42) ||
+    (centroidSim >= 0.42 && maxGallerySim >= 0.45) ||
+    (robustSim >= 0.52 && (repSim === null || repSim >= 0.30)) ||
+    (sNorm >= 1.8 && contrastRatio >= 1.20);
 
     const isDirectContinuity = maxBiometric >= 0.65;
 
@@ -436,7 +448,7 @@ export async function consolidateChairAppointment({
   });
 
   const evalResult = evaluateCausalConsolidation({
-    session,
+    session: { ...session, durationMinutes: durationMinutes ?? session.durationMinutes },
     prevSameChairAppt,
     pastAppointments,
     staffProfiles,

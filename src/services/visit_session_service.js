@@ -319,7 +319,9 @@ export class VisitSessionService {
           }
         } else {
           // maxHomologousSim está en zona intermedia [0.35, 0.50)
-          if (maxGallerySim >= 0.50 || centroidSim >= 0.45 || isPhysicalContinuity) {
+          const isValidIntermediate = (maxGallerySim >= 0.50 || centroidSim >= 0.40) ||
+            (isPhysicalContinuity && centroidSim >= 0.30);
+          if (isValidIntermediate) {
             isVeto = false;
             this.logVerbal(`🛡️ Identidad confirmada por evidencia acumulada en ${chairName} (maxHomologousSim=${maxHomologousSim.toFixed(3)} [${matchedHomologousCategory}], maxGallerySim=${maxGallerySim.toFixed(3)}, centroidSim=${centroidSim.toFixed(3)}): extendiendo sesión.`, "process");
           } else {
