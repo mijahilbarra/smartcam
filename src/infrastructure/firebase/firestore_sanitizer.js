@@ -32,7 +32,7 @@ export function sanitizeForFirestore(val) {
 
   const cleanObj = {};
   for (const [k, v] of Object.entries(val)) {
-    if (v === undefined) continue;
+    if (v === undefined || k.startsWith("_")) continue;
     cleanObj[k] = sanitizeForFirestore(v);
   }
   return cleanObj;

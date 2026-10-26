@@ -20,6 +20,7 @@ import { mergePhotosAndEmbeddings, deduplicateSessionPhotos, purgeChimeraPairs }
 import { getRepresentativeFace, getMultiPoseRepresentativeBank, isVector } from "./appointment_finalizer.js";
 import { isCapeBarrierSeparating } from "./closure_rules.js";
 import { hasTwoEyesVisible } from "../face_quality_service.js";
+import { sanitizeForFirestore } from "../../infrastructure/firebase/firestore_sanitizer.js";
 
 /**
  * Calcula el percentil p de un array numérico
@@ -551,7 +552,7 @@ export async function consolidateChairAppointment({
   }
   // Persistir actualización en Firestore
   if (db) {
-    try { await db.doc(`camera_catcher_appointments/${prevSameChairAppt.id}`).set(prevSameChairAppt); } catch (_) {}
+    try { await db.doc(`camera_catcher_appointments/${prevSameChairAppt.id}`).set(sanitizeForFirestore(prevSameChairAppt)); } catch (_) {}
   }
 
   // Exportar auditoría fotográfica

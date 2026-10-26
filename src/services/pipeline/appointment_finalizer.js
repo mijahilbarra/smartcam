@@ -14,6 +14,7 @@ import { computeSetToSetMetrics } from "./biometrics_math.js";
 import { mergePhotosAndEmbeddings, deduplicateSessionPhotos, purgeChimeraPairs } from "./gallery_curator.js";
 import { computeFrontalityScore, hasTwoEyesVisible, isValidFaceGeometry } from "../face_quality_service.js";
 import { extractPoseCategory } from "./track_block_manager.js";
+import { sanitizeForFirestore } from "../../infrastructure/firebase/firestore_sanitizer.js";
 import {
   findChimeraSplit,
   splitChimeraSession,
@@ -502,7 +503,7 @@ export async function finalizeCustomerAndAppointment({
   // Persistir en Firestore en camera_catcher_appointments
   if (db) {
     try {
-      await db.doc(`camera_catcher_appointments/${appointmentRecord.id}`).set(appointmentRecord);
+      await db.doc(`camera_catcher_appointments/${appointmentRecord.id}`).set(sanitizeForFirestore(appointmentRecord));
       logVerbal(`✅ Atención registrada exitosamente en camera_catcher_appointments/${appointmentRecord.id} (${appointmentRecord.clientName}, ${durationMinutes} min, ${session.photos.length} fotos).`, "success");
     } catch (dbErr) {
       console.error(`[Appointment] Error guardando atención en Firestore:`, dbErr.message);
