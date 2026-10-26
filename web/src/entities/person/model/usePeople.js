@@ -2,6 +2,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { collection, doc, onSnapshot, updateDoc, deleteDoc, writeBatch, query, where, getDocs } from 'firebase/firestore';
 import { db } from '@/shared/api/firebase';
 import { computeMergedPersonData, extractPersonPhotos, toFirestoreEmbeddings } from './person-merge';
+import { getBestFaceThumbnail } from '@/shared/lib/photo-utils';
 
 export function usePeople() {
   const people = ref([]);
@@ -30,7 +31,7 @@ export function usePeople() {
           status,
           visitCount: data.visitCount ?? data.visitsCount ?? 1,
           bestFaceScore: data.bestFaceScore ?? 0,
-          thumbnailBase64: photos[0]?.thumbnailBase64 || data.thumbnailBase64 || null,
+          thumbnailBase64: getBestFaceThumbnail(photos, data.thumbnailBase64, data.bestFaceScore) || null,
           thumbnailPath: data.thumbnailPath || data.lastThumbnailPath || null,
           photos,
           embeddings: Array.isArray(data.embeddings)
@@ -232,9 +233,7 @@ export function usePeople() {
       ? Math.max(...updatedPhotos.map(p => p.sharpnessScore || 0))
       : 0;
 
-    const thumbnailBase64 = updatedPhotos.length > 0
-      ? updatedPhotos[0].thumbnailBase64
-      : null;
+    const thumbnailBase64 = getBestFaceThumbnail(updatedPhotos, null, bestFaceScore) || null;
 
     try {
       const docRef = doc(db, 'camera_catcher_people', personId);

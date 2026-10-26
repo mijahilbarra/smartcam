@@ -9,6 +9,7 @@ import DeleteAppointmentModal from './DeleteAppointmentModal.vue';
 import ClientPhotosModal from '@/widgets/people-directory/ui/ClientPhotosModal.vue';
 import { useAppointments } from '@/entities/appointment/model/useAppointments';
 import { usePeople } from '@/entities/person/model/usePeople';
+import { getBestFaceThumbnail, isValidImageUrl, getPhotoUrl } from '@/shared/lib/photo-utils';
 
 const emit = defineEmits(['open-person', 'open-photo']);
 
@@ -217,31 +218,18 @@ const formatTimeOnly = (isoString) => {
   }
 };
 
-const isValidImageUrl = (url) => {
-  if (!url || typeof url !== 'string') return false;
-  return url.startsWith('data:image/') || url.startsWith('http://') || url.startsWith('https://') || url.startsWith('blob:');
-};
-
 const getAppointmentAvatar = (apt) => {
   if (!apt) return '';
-  if (isValidImageUrl(apt.avatarUrl)) return apt.avatarUrl;
-  if (Array.isArray(apt.photos)) {
-    for (const p of apt.photos) {
-      if (!p) continue;
-      const candidate = p.thumbnailBase64 || p.base64 || (typeof p === 'string' ? p : '') || p.url;
-      if (isValidImageUrl(candidate)) return candidate;
-    }
+  if (Array.isArray(apt.photos) && apt.photos.length > 0) {
+    const best = getBestFaceThumbnail(apt.photos, apt.avatarUrl, apt.bestFaceScore);
+    if (best) return best;
   }
+  if (isValidImageUrl(apt.avatarUrl)) return apt.avatarUrl;
   return '';
 };
 
 const getPhotoSrc = (photo) => {
-  if (!photo) return '';
-  if (photo.hasError) return '';
-  if (typeof photo === 'string' && isValidImageUrl(photo)) return photo;
-  const candidate = photo.thumbnailBase64 || photo.base64 || photo.url;
-  if (isValidImageUrl(candidate)) return candidate;
-  return '';
+  return getPhotoUrl(photo);
 };
 
 // Resuelve reactivamente el cliente desde el directorio 'people'
@@ -265,7 +253,14 @@ const getClientDisplayName = (apt) => {
 
 const getClientDisplayAvatar = (apt) => {
   const client = getAppointmentClient(apt);
-  return client?.thumbnailBase64 || getAppointmentAvatar(apt);
+  if (client) {
+    if (Array.isArray(client.photos) && client.photos.length > 0) {
+      const best = getBestFaceThumbnail(client.photos, client.thumbnailBase64, client.bestFaceScore);
+      if (best) return best;
+    }
+    if (isValidImageUrl(client.thumbnailBase64)) return client.thumbnailBase64;
+  }
+  return getAppointmentAvatar(apt);
 };
 
 const getClientDisplayBadge = (apt) => {

@@ -457,6 +457,18 @@ export async function finalizeCustomerAndAppointment({
   const repApptScore = repAppt?.score ?? (session.bestFaceScore || 0);
   const sessionBank = session.representatives || getMultiPoseRepresentativeBank(session.photos || [], session.embeddings || []);
 
+  let bestSessionPhotoThumb = repApptThumbnail || session.thumbnailBase64 || null;
+  if (Array.isArray(session.photos) && session.photos.length > 0) {
+    let maxSharp = -1;
+    for (const ph of session.photos) {
+      const s = Number(ph?.sharpnessScore || 0);
+      if (ph?.thumbnailBase64 && s > maxSharp) {
+        maxSharp = s;
+        bestSessionPhotoThumb = ph.thumbnailBase64;
+      }
+    }
+  }
+
   const appointmentRecord = {
     id: session.appointmentId || session.visitId,
     trackId: session.trackId,
@@ -478,7 +490,7 @@ export async function finalizeCustomerAndAppointment({
     bestFaceStoragePath: session.bestFaceStoragePath,
     bestFaceScore: repApptScore || session.bestFaceScore || 0,
     thumbnailPath: session.bestFaceStoragePath || null,
-    thumbnailBase64: repApptThumbnail || session.thumbnailBase64 || session.photos[0]?.thumbnailBase64 || null,
+    thumbnailBase64: bestSessionPhotoThumb || session.photos[0]?.thumbnailBase64 || null,
     photos: session.photos,
     embeddings: session.embeddings || [],
     representatives: sessionBank,

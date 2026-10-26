@@ -1,6 +1,7 @@
 import { ref, onMounted, onUnmounted } from 'vue';
 import { collection, doc, deleteDoc, onSnapshot } from 'firebase/firestore';
 import { db, resolveStorageUrl } from '@/shared/api/firebase';
+import { getBestFaceThumbnail, isValidImageUrl } from '@/shared/lib/photo-utils';
 
 export function useAppointments() {
   const appointments = ref([]);
@@ -20,27 +21,11 @@ export function useAppointments() {
   const mapAppointmentRecord = (data, id) => {
     const docId = id || data.id || `appt_${Date.now()}`;
     const photos = Array.isArray(data.photos) ? data.photos : [];
+    const targetScore = data.bestFaceScore ?? data.best_face_score ?? 0;
+    const fallbackThumb = data.thumbnailBase64 || data.avatarUrl || null;
 
-    // Buscar primera foto que contenga datos válidos en base64 o URL completa
-    let firstPhotoThumb = '';
-    for (const p of photos) {
-      if (!p) continue;
-      const candidate = p.thumbnailBase64 || p.base64 || (typeof p === 'string' ? p : '') || p.url;
-      if (isValidUrlOrBase64(candidate)) {
-        firstPhotoThumb = candidate;
-        break;
-      }
-    }
-
-    // Solo asignar avatarUrl si es base64 o URL válida
-    let avatarUrl = '';
-    if (isValidUrlOrBase64(data.thumbnailBase64)) {
-      avatarUrl = data.thumbnailBase64;
-    } else if (isValidUrlOrBase64(data.avatarUrl)) {
-      avatarUrl = data.avatarUrl;
-    } else if (firstPhotoThumb) {
-      avatarUrl = firstPhotoThumb;
-    }
+    // Seleccionar la foto con mayor nitidez (bestFaceScore) de la atención
+    const avatarUrl = getBestFaceThumbnail(photos, fallbackThumb, targetScore);
 
     const rawThumbnailPath = data.thumbnailPath || data.thumbnail_path || (photos[0]?.thumbnailPath) || null;
     const startTime = data.startedAt || data.startTime || new Date().toISOString();
