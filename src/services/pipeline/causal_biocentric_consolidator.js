@@ -15,7 +15,7 @@
 
 import { PIPELINE_CONFIG } from "../../core/pipeline_config.js";
 import { computeCosineSimilarity } from "../../face_recognizer.js";
-import { computeSetToSetMetrics, computeCohortSNorm } from "./biometrics_math.js";
+import { computeSetToSetMetrics, computeCohortSNorm, isOppositeSide } from "./biometrics_math.js";
 import { mergePhotosAndEmbeddings, deduplicateSessionPhotos, purgeChimeraPairs } from "./gallery_curator.js";
 import { getRepresentativeFace, isVector } from "./appointment_finalizer.js";
 import { isCapeBarrierSeparating } from "./closure_rules.js";
@@ -122,9 +122,9 @@ export function evaluateCausalConsolidation({
   const isOverlap = rawGapMs < 0;
 
   const minMergeGap = PIPELINE_CONFIG.consolidation?.minMergeGapMs ?? -300000;
-  const maxMergeGap = 45 * 60 * 1000; // a) Brecha de ausencia causal <= 45 minutos
 
-  if (rawGapMs < minMergeGap || gapMs > maxMergeGap) {
+  // Se eliminan límites rígidos de tiempo arbitrarios (45m, 60m): la consolidación es atemporal (timeless) y guiada por biometría
+  if (rawGapMs < minMergeGap) {
     return { shouldMerge: false, reason: `gap_out_of_bounds_${Math.round(rawGapMs / 1000)}s`, metrics: { gapMs }, repA: null, repB: null };
   }
 
@@ -187,7 +187,20 @@ export function evaluateCausalConsolidation({
     maxGallerySim = maxBiometric;
   }
 
+  let sNorm = 0;
+  let contrastRatio = 1.0;
+
   const isBiometricallyIncompatible = centroidSim < 0.35 && maxGallerySim < 0.40;
+  if (isBiometricallyIncompatible) {
+    logVerbal(`[CausalConsolidator] 🛑 Incompatibilidad biométrica evidente (centroidSim=${centroidSim.toFixed(3)} < 0.35 && maxGallerySim=${maxGallerySim.toFixed(3)} < 0.40). No se consolida.`);
+    return {
+      shouldMerge: false,
+      reason: "incompatibilidad_biometrica_evidente",
+      metrics: { repSim, robustSim, centroidSim, sNorm, contrastRatio, gapMs, maxGallerySim },
+      repA,
+      repB
+    };
+  }
 
   // 3. VETO HOMÓLOGO INCONDICIONAL (Hard Biometric Veto - Argon 4)
   const poseA = repA?.pose || repA?.photo?.pose;
@@ -195,24 +208,25 @@ export function evaluateCausalConsolidation({
   const scoreA = Number(repA?.score ?? repA?.photo?.sharpnessScore ?? repA?.photo?.score ?? 0);
   const scoreB = Number(repB?.score ?? repB?.photo?.sharpnessScore ?? repB?.photo?.score ?? 0);
 
+  const isOpposite = isOppositeSide(poseA, poseB);
+
   const UPRIGHT_POSES_VETO = ['frontal', 'semi_left', 'semi_right'];
-  const isBothUprightRep = Boolean(poseA && poseB && UPRIGHT_POSES_VETO.includes(poseA) && UPRIGHT_POSES_VETO.includes(poseB));
+  const isBothUprightRep = Boolean(!isOpposite && poseA && poseB && UPRIGHT_POSES_VETO.includes(poseA) && UPRIGHT_POSES_VETO.includes(poseB));
   const hasGoodSharpness = scoreA >= 55 && scoreB >= 55;
   const isSamePoseRep = Boolean(poseA && poseB && poseA === poseB);
 
-  const isOppositeProfiles = (poseA === 'semi_left' && poseB === 'semi_right') ||
-                             (poseA === 'semi_right' && poseB === 'semi_left');
-  const uprightVetoThreshold = isOppositeProfiles ? 0.22 : 0.35;
-
   // Proteger los vetos por representante de foto única: si la galería acumulada ya tiene
-  // coincidencia contundente (maxBiometric >= 0.52 o robustSim >= 0.48), NO vetar por un solo fotograma de discrepancia.
-  const hasStrongGalleryMatch = maxBiometric >= 0.52 || robustSim >= 0.48;
+  // coincidencia o no hay contradicción biológica evidente (centroidSim >= 0.38 o maxGallerySim >= 0.42),
+  // NO vetar por un solo fotograma de discrepancia.
+  const hasStrongGalleryMatch = maxBiometric >= 0.52 || robustSim >= 0.48 || centroidSim >= 0.38 || maxGallerySim >= 0.42;
 
-  if (!hasStrongGalleryMatch) {
+  if (isOpposite) {
+    logVerbal(`[CausalConsolidator] 🛡️ Veto omitido: poses opuestas detectadas (${poseA} vs ${poseB}). Evaluación atemporal basada en evidencia acumulada.`);
+  } else if (!hasStrongGalleryMatch) {
     const isClusterDivergent = centroidSim < 0.45 && robustSim < 0.45;
     if (isClusterDivergent) {
       if (
-        (isBothUprightRep && hasGoodSharpness && repSim !== null && repSim < uprightVetoThreshold) ||
+        (isBothUprightRep && hasGoodSharpness && repSim !== null && repSim < 0.35) ||
         (isSamePoseRep && repSim !== null && repSim < 0.45 && centroidSim < 0.42)
       ) {
         logVerbal(`[CausalConsolidator] 🛑 VETO HOMÓLOGO ABSOLUTO (repSim=${repSim?.toFixed(3)}, centroid=${centroidSim.toFixed(3)}, robustSim=${robustSim.toFixed(3)})`);
@@ -224,8 +238,8 @@ export function evaluateCausalConsolidation({
         return { shouldMerge: false, reason: "VETO_BIOMETRICO_ORTOGONAL", metrics: { repSim, centroidSim, robustSim, maxBiometric }, repA, repB };
       }
 
-      if (isBothUprightRep && repSim !== null && repSim < uprightVetoThreshold) {
-        logVerbal(`[CausalConsolidator] 🛑 VETO BIOMÉTRICO ERGUIDO (repSim=${repSim?.toFixed(4)} < ${uprightVetoThreshold} entre caras erguidas)`);
+      if (isBothUprightRep && repSim !== null && repSim < 0.35) {
+        logVerbal(`[CausalConsolidator] 🛑 VETO BIOMÉTRICO ERGUIDO (repSim=${repSim?.toFixed(4)} < 0.35 entre caras erguidas)`);
         return { shouldMerge: false, reason: "VETO_BIOMETRICO_ERGUIDO", metrics: { repSim, centroidSim, robustSim, maxBiometric }, repA, repB };
       }
     }
@@ -234,8 +248,6 @@ export function evaluateCausalConsolidation({
   }
 
   // 4. S-NORM CAUSAL (Calculado ÚNICAMENTE con sesiones previas finalizadas en el pasado)
-  let sNorm = 0;
-  let contrastRatio = 1.0;
 
   // Filtrar estrictamente citas previas del pasado (t_ended <= sessionStartMs)
   const strictlyPastAppts = pastAppointments.filter(a => {
@@ -290,84 +302,61 @@ export function evaluateCausalConsolidation({
   let isSamePerson = false;
   let mergeReason = '';
 
-  const isSameClientBiometrics = robustSim >= 0.50 &&
-    (centroidSim >= 0.48 || (metrics.top3AvgSim || 0) >= 0.50) &&
-    maxGallerySim >= 0.52;
+  // Regla de Fusión Atemporal (Timeless) y Adaptativa:
+  // Si dos sesiones previas en la misma silla tienen concordancia biométrica probada
+  // (robustSim >= 0.50, maxGallerySim >= 0.52 o sNorm >= 1.8 con metrics.top3AvgSim >= 0.48),
+  // se fusionan SIN importar si pasaron 2, 7, 15 o 60 minutos.
+  const hasProvenBiometrics = (
+    robustSim >= 0.50 ||
+    maxGallerySim >= 0.52 ||
+    (sNorm >= 1.8 && (metrics.top3AvgSim || 0) >= 0.48)
+  );
 
-  if (isSameClientBiometrics) {
+  if (hasProvenBiometrics) {
     isSamePerson = true;
-    mergeReason = `concordantBiometricsSameClient (robust=${robustSim.toFixed(3)}, centroid=${centroidSim.toFixed(3)}, top3Avg=${(metrics.top3AvgSim || 0).toFixed(3)}, maxGallery=${maxGallerySim.toFixed(3)})`;
-  } else if (!isHomologousDifferentPerson && !isBiometricallyIncompatible) {
-    // 5. CONTINUIDAD CAUSAL EN SILLA (gap <= 6 min)
-    if (gapMs <= 6 * 60 * 1000) {
-      const hasSolidBiometricContinuity = (centroidSim >= 0.52 && robustSim >= 0.55) ||
-        (robustSim >= 0.62 && (repSim === null || repSim >= 0.40)) ||
-        (sNorm >= 2.2 && contrastRatio >= 1.30 && robustSim >= 0.50);
+    mergeReason = `concordantBiometricsSameClient (robust=${robustSim.toFixed(3)}, centroid=${centroidSim.toFixed(3)}, top3Avg=${(metrics.top3AvgSim || 0).toFixed(3)}, maxGallery=${maxGallerySim.toFixed(3)}, sNorm=${sNorm.toFixed(2)})`;
+  } else if (!isHomologousDifferentPerson) {
+    // Reglas adicionales adaptativas / biometría estándar sin límites de tiempo rígidos:
+    const hasSolidBiometricContinuity = (centroidSim >= 0.48 && robustSim >= 0.42) ||
+      (centroidSim >= 0.42 && maxGallerySim >= 0.45) ||
+      (robustSim >= 0.52 && (repSim === null || repSim >= 0.30)) ||
+      (sNorm >= 1.8 && contrastRatio >= 1.20);
 
-      const isUltraShortMicroPause = gapMs <= 45 * 1000 && (repSim === null || repSim >= 0.38) && centroidSim >= 0.45 && robustSim >= 0.50;
+    const isDirectContinuity = maxBiometric >= 0.65;
 
-      const isDirectContinuity = maxBiometric >= 0.68;
+    const isBiometricallyCertain = (centroidSim >= 0.55 && robustSim >= 0.55) ||
+      (robustSim >= 0.60 && centroidSim >= 0.50) ||
+      (centroidSim >= 0.65 && ((metrics.top3AvgSim || 0) >= 0.55 || robustSim >= 0.48));
 
-      if (isDirectContinuity || hasSolidBiometricContinuity || isUltraShortMicroPause) {
-        isSamePerson = true;
-        mergeReason = isDirectContinuity
-          ? `chairContinuityDirect (maxBiometric=${maxBiometric.toFixed(3)}, gap=${(gapMs/1000).toFixed(0)}s)`
-          : `chairContinuityRobust (robust=${robustSim.toFixed(3)}, centroid=${centroidSim.toFixed(3)}, gap=${(gapMs/1000).toFixed(0)}s)`;
-      }
+    const isDirectRepMatch = repSim !== null && repSim >= dynamicThreshold;
+    const isRepWithSetMatch = repSim !== null && repSim >= (dynamicThreshold - 0.04) && (metrics.top3AvgSim || 0) >= dynamicThreshold;
+    const isSetToSetMatch = (
+      (metrics.maxCompatiblePoseSim >= dynamicThreshold && (metrics.top3AvgSim || 0) >= (dynamicThreshold - 0.02) && compatiblePeersCount >= 2) ||
+      ((metrics.top3AvgSim || 0) >= dynamicThreshold && (metrics.maxSim || 0) >= dynamicThreshold && compatiblePeersCount >= 3)
+    );
+    const isWashbasinReturn = Boolean(
+      (contrastRatio >= 1.0) &&
+      (
+        (repSim !== null && repSim >= (dynamicThreshold - 0.05) && ((metrics.top3AvgSim || 0) >= (dynamicThreshold - 0.05) || centroidSim >= 0.50)) ||
+        (metrics.maxCompatiblePoseSim >= dynamicThreshold && (metrics.top3AvgSim || 0) >= (dynamicThreshold - 0.05) && compatiblePeersCount >= 2)
+      )
+    );
+
+    if (isDirectContinuity || hasSolidBiometricContinuity) {
+      isSamePerson = true;
+      mergeReason = isDirectContinuity
+        ? `chairContinuityDirect (maxBiometric=${maxBiometric.toFixed(3)})`
+        : `chairContinuityRobust (robust=${robustSim.toFixed(3)}, centroid=${centroidSim.toFixed(3)})`;
+    } else if (isBiometricallyCertain) {
+      isSamePerson = true;
+      mergeReason = `highBiometricCertainty (robust=${robustSim.toFixed(3)}, centroid=${centroidSim.toFixed(3)}, sNorm=${sNorm.toFixed(2)})`;
+    } else if (strictlyPastAppts.length >= 2 && sNorm >= 2.2 && contrastRatio >= 1.5 && (metrics.top3AvgSim || 0) >= 0.45) {
+      isSamePerson = true;
+      mergeReason = `sNormAndContrast (sNorm=${sNorm.toFixed(2)}, contrast=${contrastRatio.toFixed(2)})`;
+    } else if (isDirectRepMatch || isRepWithSetMatch || isSetToSetMatch || isWashbasinReturn) {
+      isSamePerson = true;
+      mergeReason = `standardBiometrics (dynamicThreshold=${dynamicThreshold})`;
     }
-
-    // 6. ALTA CONCORDANCIA BIOMÉTRICA ENTRE SESIONES (Gaps mayores hasta 45 min)
-    if (!isSamePerson) {
-      const isBiometricallyCertain = (centroidSim >= 0.58 && robustSim >= 0.65 && (sNorm >= 1.8 || strictlyPastAppts.length < 2)) ||
-        (robustSim >= 0.70 && centroidSim >= 0.54) ||
-        (centroidSim >= 0.70 && (metrics.top3AvgSim >= 0.60 || robustSim >= 0.52) && (repSim === null || repSim >= 0.35));
-
-      if (isBiometricallyCertain) {
-        isSamePerson = true;
-        mergeReason = `highBiometricCertainty (robust=${robustSim.toFixed(3)}, centroid=${centroidSim.toFixed(3)}, sNorm=${sNorm.toFixed(2)})`;
-      }
-    }
-
-    // 7. S-Norm y Contraste
-    if (!isSamePerson) {
-      if (strictlyPastAppts.length >= 2) {
-        if (sNorm >= 2.5 && contrastRatio >= 1.7 && metrics.top3AvgSim >= 0.48) {
-          isSamePerson = true;
-          mergeReason = `sNormAndContrast (sNorm=${sNorm.toFixed(2)}, contrast=${contrastRatio.toFixed(2)})`;
-        }
-      }
-    }
-
-    // 8. Biometría estándar para retornos de lavacabezas / micro-transiciones
-    if (!isSamePerson) {
-      const isDirectRepMatch = repSim !== null && repSim >= dynamicThreshold;
-      const isRepWithSetMatch = repSim !== null && repSim >= (dynamicThreshold - 0.04) && metrics.top3AvgSim >= dynamicThreshold;
-      const isSetToSetMatch = (
-        (metrics.maxCompatiblePoseSim >= dynamicThreshold && metrics.top3AvgSim >= (dynamicThreshold - 0.01) && compatiblePeersCount >= 2 && (repSim === null || repSim >= 0.38) && (gapMs <= 6 * 60 * 1000 || sNorm >= 2.0)) ||
-        (metrics.top3AvgSim >= dynamicThreshold && metrics.maxSim >= dynamicThreshold && compatiblePeersCount >= 5 && (repSim === null || repSim >= 0.38) && (gapMs <= 6 * 60 * 1000 || sNorm >= 2.0))
-      );
-      const isTransitionalChair = (gapMs <= 30000 && (isDirectRepMatch || isSetToSetMatch));
-      const weightedSim = Math.max(
-        metrics.top3AvgSim || 0,
-        metrics.maxCompatiblePoseSim || 0,
-        metrics.maxSim || 0,
-        repSim || 0
-      );
-      const isWashbasinReturn = Boolean(
-        (contrastRatio >= 1.0) &&
-        (
-          (repSim !== null && repSim >= dynamicThreshold && (metrics.top3AvgSim >= (dynamicThreshold - 0.03) || centroidSim >= 0.55)) ||
-          (metrics.maxCompatiblePoseSim >= dynamicThreshold && metrics.top3AvgSim >= dynamicThreshold && compatiblePeersCount >= 3)
-        )
-      );
-
-      if (isDirectRepMatch || isRepWithSetMatch || isSetToSetMatch || isTransitionalChair || isWashbasinReturn) {
-        isSamePerson = true;
-        mergeReason = `standardBiometrics (dynamicThreshold=${dynamicThreshold})`;
-      }
-    }
-  } else if (isBiometricallyIncompatible) {
-    logVerbal(`[CausalConsolidator] 🛑 Incompatibilidad biométrica (centroidSim=${centroidSim.toFixed(3)} < 0.35 && maxGallerySim=${maxGallerySim.toFixed(3)} < 0.40). No se consolida.`);
   }
 
   return {
@@ -436,8 +425,11 @@ export async function consolidateChairAppointment({
       : hasTwoEyesVisible(ph?.landmarks, ph?.boxNorm, ph?.pose);
     if (!hasTwo) continue;
     if (repRef?.vector && v) {
-      const sim = computeCosineSimilarity(v, repRef.vector);
-      if (sim < 0.40) continue;
+      const isOpp = isOppositeSide(ph?.pose, repRef?.photo?.pose || repRef?.pose);
+      if (!isOpp) {
+        const sim = computeCosineSimilarity(v, repRef.vector);
+        if (sim < 0.40) continue;
+      }
     }
     filteredNewPhotos.push(ph);
     filteredNewEmbeddings.push(emb);

@@ -48,6 +48,26 @@ import {
 } from "./pipeline/chair_tracker.js";
 import { computeCosineSimilarity } from "../face_recognizer.js";
 
+/**
+ * Detecta si dos poses corresponden a orientaciones opuestas (izquierda vs derecha)
+ * donde la similitud facial esperada cae naturalmente a 0.05 - 0.20 en una misma persona.
+ * @param {string} poseA
+ * @param {string} poseB
+ * @returns {boolean}
+ */
+export function isOppositeSide(poseA, poseB) {
+  if (!poseA || !poseB || typeof poseA !== 'string' || typeof poseB !== 'string') return false;
+  const a = poseA.toLowerCase();
+  const b = poseB.toLowerCase();
+
+  const isLeftA = a.endsWith('_left') || a.includes('left');
+  const isRightA = a.endsWith('_right') || a.includes('right');
+  const isLeftB = b.endsWith('_left') || b.includes('left');
+  const isRightB = b.endsWith('_right') || b.includes('right');
+
+  return (isLeftA && isRightB) || (isRightA && isLeftB);
+}
+
 export {
   arePosesCompatibleEnhanced,
   computePoseAwareSimilarity,
@@ -227,74 +247,75 @@ export class VisitSessionService {
           UPRIGHT_POSES.includes(poseBlock)
         );
 
-        // Argon 4: Veto Homólogo Incondicional
+        // Argon 4: Veto Homólogo Incondicional y Manejo Dinámico de Poses Opuestas
         const scorePrev = Number(repPrev?.score ?? repPrev?.photo?.sharpnessScore ?? 0);
         const scoreBlock = Number(repBlock?.score ?? repBlock?.photo?.sharpnessScore ?? 0);
         const hasGoodSharpness = scorePrev >= 55 && scoreBlock >= 55;
 
-        // Excepción de Perfiles Opuestos (isOppositeProfiles):
-        // Si un representante es semi_left y el otro semi_right, relajar el umbral de veto a 0.22 (en lugar de 0.35)
-        const isOppositeProfiles = (posePrev === 'semi_left' && poseBlock === 'semi_right') ||
-                                   (posePrev === 'semi_right' && poseBlock === 'semi_left');
-        const uprightVetoThreshold = isOppositeProfiles ? 0.22 : 0.35;
+        // Detección invariante de Poses Opuestas (izquierda vs derecha)
+        const oppositeSide = isOppositeSide(posePrev, poseBlock);
+
+        // Precalcular similitudes de galería acumulada y centroides limpios
+        let maxGallerySim = 0;
+        const prevVecs = (session.embeddings || []).map(e => isVector(e) ? e : e?.vector).filter(Boolean);
+        const blockVecs = (block.embeddings || []).map(e => isVector(e) ? e : e?.vector).filter(Boolean);
+        if (prevVecs.length === 0 && repPrev?.vector) prevVecs.push(repPrev.vector);
+        if (blockVecs.length === 0 && repBlock?.vector) blockVecs.push(repBlock.vector);
+
+        for (const va of prevVecs) {
+          for (const vb of blockVecs) {
+            const sim = computeCosineSimilarity(va, vb);
+            if (sim > maxGallerySim) maxGallerySim = sim;
+          }
+        }
+
+        const staffProfiles = this.customerService?.getComparisonProfiles?.()?.filter(p => p.isStaff) || [];
+        const cleanCentroidPrev = computeCleanCentroid(prevVecs, staffProfiles, this.staffThreshold) || repPrev.vector;
+        const cleanCentroidBlock = computeCleanCentroid(blockVecs, staffProfiles, this.staffThreshold) || repBlock.vector;
+        const centroidSim = (cleanCentroidPrev && cleanCentroidBlock)
+          ? computeCosineSimilarity(cleanCentroidPrev, cleanCentroidBlock)
+          : 0;
+
+        const vacancyMs = session.emptySinceEpoch
+          ? (now - session.emptySinceEpoch)
+          : (session.lastClientSeenEpoch && block.startedAtEpoch ? Math.max(0, block.startedAtEpoch - session.lastClientSeenEpoch) : 0);
+        const isPhysicalContinuity = vacancyMs < 10000;
 
         let isVeto = false;
         let vetoReason = "";
 
-        if (isBothUpright && hasGoodSharpness && repSim < uprightVetoThreshold) {
-          isVeto = true;
-          vetoReason = isOppositeProfiles
-            ? `repSim=${repSim.toFixed(3)} < 0.22 entre perfiles opuestos`
-            : `repSim=${repSim.toFixed(3)} < 0.35 entre erguidos`;
-        } else if (isSamePose && repSim < 0.33) {
-          isVeto = true;
-          vetoReason = `repSim=${repSim.toFixed(3)} < 0.33 misma pose`;
-        } else if ((isSamePose || isBothUpright) && repSim < (isOppositeProfiles ? 0.22 : 0.33)) {
-          isVeto = true;
-          vetoReason = `repSim=${repSim.toFixed(3)} < ${isOppositeProfiles ? '0.22' : '0.33'}`;
-        }
-
-        // Proteger los vetos por representante de foto única: si la galería acumulada ya tiene
-        // coincidencia contundente (maxGallerySim >= 0.52), NO vetar por un solo fotograma de discrepancia.
-        if (isVeto) {
-          let maxGallerySim = 0;
-          const prevVecs = (session.embeddings || []).map(e => isVector(e) ? e : e?.vector).filter(Boolean);
-          const blockVecs = (block.embeddings || []).map(e => isVector(e) ? e : e?.vector).filter(Boolean);
-          if (prevVecs.length === 0 && repPrev?.vector) prevVecs.push(repPrev.vector);
-          if (blockVecs.length === 0 && repBlock?.vector) blockVecs.push(repBlock.vector);
-
-          for (const va of prevVecs) {
-            for (const vb of blockVecs) {
-              const sim = computeCosineSimilarity(va, vb);
-              if (sim > maxGallerySim) maxGallerySim = sim;
-            }
-          }
-
-          const staffProfiles = this.customerService?.getComparisonProfiles?.()?.filter(p => p.isStaff) || [];
-          const cleanCentroidPrev = computeCleanCentroid(prevVecs, staffProfiles, this.staffThreshold) || repPrev.vector;
-          const cleanCentroidBlock = computeCleanCentroid(blockVecs, staffProfiles, this.staffThreshold) || repBlock.vector;
-          const centroidSim = (cleanCentroidPrev && cleanCentroidBlock)
-            ? computeCosineSimilarity(cleanCentroidPrev, cleanCentroidBlock)
-            : 0;
-
-          // Válvula de escape: coincidencia contundente en la galería acumulada (maxGallerySim >= 0.52)
-          if (maxGallerySim >= 0.52) {
+        if (oppositeSide) {
+          // Poses opuestas: NUNCA disparar veto homólogo por un representante scalar de pose opuesta (repSim).
+          // La similitud facial cae naturalmente a 0.05 - 0.20 en la misma persona entre lados opuestos.
+          // Verificar si la galería acumulada tiene coincidencia (maxGallerySim >= 0.48 o centroidSim >= 0.40).
+          // Si hay continuidad física (gap cero o < 10s en silla), preservar la sesión activa.
+          const hasGalleryMatch = maxGallerySim >= 0.48 || centroidSim >= 0.40;
+          if (hasGalleryMatch || isPhysicalContinuity) {
             isVeto = false;
-            this.logVerbal(`🛡️ Veto evitado en ${chairName}: la galería acumulada tiene coincidencia contundente (maxGallerySim=${maxGallerySim.toFixed(3)} >= 0.52). Protegiendo representante discrepante.`, "process");
+            this.logVerbal(`🛡️ Invarianza de poses opuestas en ${chairName} (${posePrev} vs ${poseBlock}): repSim omitido. Sesión activa preservada (galleryMatch=${hasGalleryMatch}, maxGallerySim=${maxGallerySim.toFixed(3)}, centroidSim=${centroidSim.toFixed(3)}, physicalContinuity=${isPhysicalContinuity}, vacancia=${(vacancyMs / 1000).toFixed(1)}s).`, "process");
+          } else {
+            isVeto = true;
+            vetoReason = `poses opuestas (${posePrev} vs ${poseBlock}) sin coincidencia en galería (maxGallerySim=${maxGallerySim.toFixed(3)} < 0.48, centroidSim=${centroidSim.toFixed(3)} < 0.40) ni continuidad física (vacancia=${(vacancyMs / 1000).toFixed(1)}s >= 10s)`;
+          }
+        } else {
+          // Veto Homólogo Estándar (poses compatibles o idénticas)
+          if (isBothUpright && hasGoodSharpness && repSim < 0.35) {
+            isVeto = true;
+            vetoReason = `repSim=${repSim.toFixed(3)} < 0.35 entre erguidos`;
+          } else if (isSamePose && repSim < 0.33) {
+            isVeto = true;
+            vetoReason = `repSim=${repSim.toFixed(3)} < 0.33 misma pose`;
+          } else if ((isSamePose || isBothUpright) && repSim < 0.33) {
+            isVeto = true;
+            vetoReason = `repSim=${repSim.toFixed(3)} < 0.33`;
           }
 
-          // Inercia de Silla: vacancia < 10 segundos
-          // Si la persona no ha dejado la silla por al menos 10 segundos (vacancia < 10s),
-          // SOLO puede descartar una discrepancia de pose de foto única si la galería acumulada
-          // tiene coincidencia biométrica real (maxGallerySim >= 0.42 || centroidSim >= 0.38).
-          // Si maxGallerySim < 0.38 || repSim < 0.22 || centroidSim < 0.32, es una divergencia probada
-          // y el veto NO se anula; se cierra la sesión anterior por rotación.
           if (isVeto) {
-            const vacancyMs = session.emptySinceEpoch
-              ? (now - session.emptySinceEpoch)
-              : (session.lastClientSeenEpoch && block.startedAtEpoch ? Math.max(0, block.startedAtEpoch - session.lastClientSeenEpoch) : 0);
-            const isPhysicalContinuity = vacancyMs < 10000;
-            if (isPhysicalContinuity) {
+            // Válvula de escape: coincidencia contundente en la galería acumulada (maxGallerySim >= 0.52 o centroidSim >= 0.48)
+            if (maxGallerySim >= 0.52 || centroidSim >= 0.48) {
+              isVeto = false;
+              this.logVerbal(`🛡️ Veto evitado en ${chairName}: coincidencia en galería acumulada (maxGallerySim=${maxGallerySim.toFixed(3)} >= 0.52, centroidSim=${centroidSim.toFixed(3)}). Protegiendo representante discrepante.`, "process");
+            } else if (isPhysicalContinuity) {
               const isClusterDivergence = centroidSim < 0.18 && maxGallerySim < 0.30;
               if (!isClusterDivergence) {
                 isVeto = false;
@@ -335,8 +356,11 @@ export class VisitSessionService {
             const emb = block.embeddings?.[k] || null;
             const v = isVector(emb) ? emb : (emb?.vector || null);
             if (repRef?.vector && v) {
-              const sim = computeCosineSimilarity(v, repRef.vector);
-              if (sim < 0.40) continue;
+              const isOpp = isOppositeSide(ph?.pose, repRef?.photo?.pose || repRef?.pose);
+              if (!isOpp) {
+                const sim = computeCosineSimilarity(v, repRef.vector);
+                if (sim < 0.40) continue;
+              }
             }
             filteredBlockPhotos.push(ph);
             filteredBlockEmbeddings.push(emb);
