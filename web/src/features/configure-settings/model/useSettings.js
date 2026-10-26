@@ -1,5 +1,5 @@
-import { ref, onMounted } from 'vue';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { ref, onMounted, onUnmounted } from 'vue';
+import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore';
 import { db, setCustomBackendUrl, normalizeUrl } from '@/shared/api/firebase';
 
 export function useSettings() {
@@ -11,28 +11,36 @@ export function useSettings() {
   const statusMessage = ref('');
   const statusType = ref('');
 
-  const loadSettings = async () => {
+  let unsubscribe = null;
+
+  const loadSettings = () => {
     loading.value = true;
     try {
       const docRef = doc(db, 'camera_catcher', 'prompt');
-      const snap = await getDoc(docRef);
-      if (snap.exists()) {
-        const data = snap.data();
-        if (data.prompt) prompt.value = data.prompt;
-        if (data.workingHours) {
-          workingHours.value = {
-            start: data.workingHours.start || '11:00',
-            end: data.workingHours.end || '23:00'
-          };
+      unsubscribe = onSnapshot(docRef, (snap) => {
+        if (snap.exists()) {
+          const data = snap.data();
+          if (data.prompt) prompt.value = data.prompt;
+          if (data.workingHours) {
+            workingHours.value = {
+              start: data.workingHours.start || '11:00',
+              end: data.workingHours.end || '23:00'
+            };
+          }
+          if (data.streamUrl) {
+            streamUrl.value = data.streamUrl;
+          } else {
+            const local = typeof localStorage !== 'undefined' ? localStorage.getItem('CAMERA_CATCHER_API_URL') || '' : '';
+            if (local) streamUrl.value = local;
+          }
         }
-        streamUrl.value = data.streamUrl || (typeof localStorage !== 'undefined' ? localStorage.getItem('CAMERA_CATCHER_API_URL') || '' : '');
-      } else {
-        const local = typeof localStorage !== 'undefined' ? localStorage.getItem('CAMERA_CATCHER_API_URL') || '' : '';
-        if (local) streamUrl.value = local;
-      }
+        loading.value = false;
+      }, (err) => {
+        console.warn('[Settings] Error en listener de configuración:', err);
+        loading.value = false;
+      });
     } catch (err) {
-      console.warn('[Settings] Error cargando configuración:', err);
-    } finally {
+      console.warn('[Settings] Error iniciando configuración:', err);
       loading.value = false;
     }
   };
@@ -90,6 +98,10 @@ export function useSettings() {
 
   onMounted(() => {
     loadSettings();
+  });
+
+  onUnmounted(() => {
+    if (unsubscribe) unsubscribe();
   });
 
   return {
