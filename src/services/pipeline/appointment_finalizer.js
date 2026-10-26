@@ -14,6 +14,7 @@ import { computeSetToSetMetrics } from "./biometrics_math.js";
 import { mergePhotosAndEmbeddings, deduplicateSessionPhotos, purgeChimeraPairs } from "./gallery_curator.js";
 import { computeFrontalityScore, hasTwoEyesVisible, isValidFaceGeometry } from "../face_quality_service.js";
 import { extractPoseCategory } from "./track_block_manager.js";
+import { sanitizeForFirestore } from "../../infrastructure/firebase/firestore_sanitizer.js";
 import {
   findChimeraSplit,
   splitChimeraSession,
@@ -456,6 +457,18 @@ export async function finalizeCustomerAndAppointment({
   const repApptScore = repAppt?.score ?? (session.bestFaceScore || 0);
   const sessionBank = session.representatives || getMultiPoseRepresentativeBank(session.photos || [], session.embeddings || []);
 
+  let bestSessionPhotoThumb = repApptThumbnail || session.thumbnailBase64 || null;
+  if (Array.isArray(session.photos) && session.photos.length > 0) {
+    let maxSharp = -1;
+    for (const ph of session.photos) {
+      const s = Number(ph?.sharpnessScore || 0);
+      if (ph?.thumbnailBase64 && s > maxSharp) {
+        maxSharp = s;
+        bestSessionPhotoThumb = ph.thumbnailBase64;
+      }
+    }
+  }
+
   const appointmentRecord = {
     id: session.appointmentId || session.visitId,
     trackId: session.trackId,
@@ -477,7 +490,7 @@ export async function finalizeCustomerAndAppointment({
     bestFaceStoragePath: session.bestFaceStoragePath,
     bestFaceScore: repApptScore || session.bestFaceScore || 0,
     thumbnailPath: session.bestFaceStoragePath || null,
-    thumbnailBase64: repApptThumbnail || session.thumbnailBase64 || session.photos[0]?.thumbnailBase64 || null,
+    thumbnailBase64: bestSessionPhotoThumb || session.photos[0]?.thumbnailBase64 || null,
     photos: session.photos,
     embeddings: session.embeddings || [],
     representatives: sessionBank,
@@ -502,7 +515,7 @@ export async function finalizeCustomerAndAppointment({
   // Persistir en Firestore en camera_catcher_appointments
   if (db) {
     try {
-      await db.doc(`camera_catcher_appointments/${appointmentRecord.id}`).set(appointmentRecord);
+      await db.doc(`camera_catcher_appointments/${appointmentRecord.id}`).set(sanitizeForFirestore(appointmentRecord));
       logVerbal(`✅ Atención registrada exitosamente en camera_catcher_appointments/${appointmentRecord.id} (${appointmentRecord.clientName}, ${durationMinutes} min, ${session.photos.length} fotos).`, "success");
     } catch (dbErr) {
       console.error(`[Appointment] Error guardando atención en Firestore:`, dbErr.message);

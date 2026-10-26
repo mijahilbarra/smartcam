@@ -49,6 +49,8 @@ const fromSecArg = getArg("--from");
 const lastMinArg = getArg("--last");
 const fromSecond = fromSecArg !== null ? parseFloat(fromSecArg) : null;
 const lastMinutes = lastMinArg !== null ? parseFloat(lastMinArg) : null;
+const syncFirebase = args.includes("--sync-firebase");
+const targetDateArg = getArg("--target-date") || getArg("--date");
 
 const dbPath = path.join(PROJECT_ROOT, "data", "experiments.db");
 if (!fs.existsSync(dbPath)) {
@@ -168,7 +170,20 @@ try {
 const videoWidth = Number(process.env.VIDEO_WIDTH) || 1280;
 const videoHeight = Number(process.env.VIDEO_HEIGHT) || 720;
 
-process.env.IS_LOCAL_SIMULATOR = "true";
+let firestoreDb = null;
+let firestoreBucket = null;
+
+if (syncFirebase) {
+  process.env.USE_FIREBASE = "true";
+  process.env.IS_LOCAL_SIMULATOR = "false";
+  const { initFirebaseAdmin } = await import("../src/infrastructure/firebase/firebase_admin.js");
+  const fb = initFirebaseAdmin({ databaseId: "test" });
+  firestoreDb = fb.db;
+  firestoreBucket = fb.bucket;
+  console.log(`[Firestore] 🌐 Sincronización con Firebase activada [Database: test, Bucket: skip-bigotes-test]`);
+} else {
+  process.env.IS_LOCAL_SIMULATOR = "true";
+}
 
 // Instanciar servicios canónicos
 const experimentCustomerService = new CustomerService({
@@ -180,6 +195,8 @@ await experimentCustomerService.loadProfilesIntoMemory();
 const trackedClosures = [];
 
 const visitService = new VisitSessionService({
+  db: firestoreDb,
+  bucket: firestoreBucket,
   sqliteClient: experimentSqliteClient,
   customerService: experimentCustomerService,
   minAppointmentMinutes: PIPELINE_CONFIG.sessions.minAppointmentMinutes,
@@ -257,6 +274,17 @@ query += " ORDER BY video_second ASC, id ASC";
 
 const rows = db.prepare(query).all(...params);
 
+if (targetDateArg && rows.length > 0) {
+  const targetEpoch = new Date(targetDateArg).getTime();
+  if (!isNaN(targetEpoch)) {
+    const shiftMs = targetEpoch - rows[0].timestamp_epoch;
+    for (const r of rows) {
+      r.timestamp_epoch += shiftMs;
+    }
+    console.log(`[DateShift] 📅 Fechas selladas a partir de: ${new Date(targetEpoch).toISOString()} (desplazamiento: ${(shiftMs / 3600000).toFixed(1)}h)`);
+  }
+}
+
 console.log(`\n===============================================================`);
 console.log(`   ⚡ PASO 2: FAST CAUSAL REPLAY (TRACKLET-CENTRIC / ZERO-BIAS)`);
 console.log(`===============================================================`);
@@ -331,6 +359,18 @@ if (experimentSqliteClient && completedAppts.length > 0) {
       experimentSqliteClient.saveAppointment(a);
     }
   } catch (_) {}
+}
+
+if (firestoreDb && completedAppts.length > 0) {
+  const { sanitizeForFirestore } = await import("../src/infrastructure/firebase/firestore_sanitizer.js");
+  for (const a of completedAppts) {
+    try {
+      await firestoreDb.doc(`camera_catcher_appointments/${a.id}`).set(sanitizeForFirestore(a), { merge: true });
+    } catch (e) {
+      console.warn(`[Firestore] Error actualizando cita ${a.id}:`, e.message);
+    }
+  }
+  console.log(`[Firestore] 🌐 ${completedAppts.length} citas sincronizadas en camera_catcher_appointments (test).`);
 }
 
 const elapsedSec = ((Date.now() - t0) / 1000).toFixed(2);

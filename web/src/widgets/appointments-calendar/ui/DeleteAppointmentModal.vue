@@ -4,6 +4,7 @@ import ModalTemplate from '@/shared/ui/templates/ModalTemplate.vue';
 import ModalHeader from '@/shared/ui/molecules/ModalHeader.vue';
 import AppButton from '@/shared/ui/atoms/AppButton.vue';
 import AppIcon from '@/shared/ui/atoms/AppIcon.vue';
+import { getBestFaceThumbnail, isValidImageUrl } from '@/shared/lib/photo-utils';
 
 const props = defineProps({
   show: {
@@ -38,21 +39,21 @@ const formatTimeOnly = (isoString) => {
   }
 };
 
-const isValidImageUrl = (url) => {
-  if (!url || typeof url !== 'string') return false;
-  return url.startsWith('data:image/') || url.startsWith('http://') || url.startsWith('https://') || url.startsWith('blob:');
-};
-
 const getAvatarUrl = computed(() => {
-  if (!props.appointment) return '';
-  if (isValidImageUrl(props.appointment.avatarUrl)) return props.appointment.avatarUrl;
-  if (isValidImageUrl(props.person?.thumbnailBase64)) return props.person.thumbnailBase64;
-  if (Array.isArray(props.appointment.photos)) {
-    for (const p of props.appointment.photos) {
-      if (!p) continue;
-      const candidate = p.thumbnailBase64 || p.base64 || (typeof p === 'string' ? p : '') || p.url;
-      if (isValidImageUrl(candidate)) return candidate;
+  if (!props.appointment && !props.person) return '';
+  if (props.person) {
+    if (Array.isArray(props.person.photos) && props.person.photos.length > 0) {
+      const best = getBestFaceThumbnail(props.person.photos, props.person.thumbnailBase64, props.person.bestFaceScore);
+      if (best) return best;
     }
+    if (isValidImageUrl(props.person.thumbnailBase64)) return props.person.thumbnailBase64;
+  }
+  if (props.appointment) {
+    if (Array.isArray(props.appointment.photos) && props.appointment.photos.length > 0) {
+      const best = getBestFaceThumbnail(props.appointment.photos, props.appointment.avatarUrl, props.appointment.bestFaceScore);
+      if (best) return best;
+    }
+    if (isValidImageUrl(props.appointment.avatarUrl)) return props.appointment.avatarUrl;
   }
   return '';
 });
