@@ -213,9 +213,19 @@ export function evaluateCausalConsolidation({
   let sNorm = 0;
   let contrastRatio = 1.0;
 
-  const isBiometricallyIncompatible = centroidSim < 0.35 && maxGallerySim < 0.40;
+  // Detección de Ventana de Transición de Acabado (Finishing Phase en la misma silla)
+  const prevDurationMinutes = prevSameChairAppt.durationMinutes || (prevSameChairAppt.duration ? Math.round(prevSameChairAppt.duration / 60) : 0);
+  const sessionDurationMinutes = session.durationMinutes || (session.startedAtEpoch && session.endedAtEpoch ? Math.round((session.endedAtEpoch - session.startedAtEpoch) / 60000) : 0);
+  const isFinishingPhase = (rawGapMs <= 180000 && rawGapMs >= minMergeGap) &&
+    (sessionDurationMinutes <= 15) &&
+    (prevDurationMinutes >= 20);
+
+  const isBiometricallyIncompatible = isFinishingPhase
+    ? (centroidSim < 0.32 && maxGallerySim < 0.38)
+    : (centroidSim < 0.35 && maxGallerySim < 0.40);
+
   if (isBiometricallyIncompatible) {
-    logVerbal(`[CausalConsolidator] 🛑 Incompatibilidad biométrica evidente (centroidSim=${centroidSim.toFixed(3)} < 0.35 && maxGallerySim=${maxGallerySim.toFixed(3)} < 0.40). No se consolida.`);
+    logVerbal(`[CausalConsolidator] 🛑 Incompatibilidad biométrica evidente (centroidSim=${centroidSim.toFixed(3)} < ${isFinishingPhase ? '0.32' : '0.35'} && maxGallerySim=${maxGallerySim.toFixed(3)} < ${isFinishingPhase ? '0.38' : '0.40'}). No se consolida.`);
     return {
       shouldMerge: false,
       reason: "incompatibilidad_biometrica_evidente",
@@ -241,7 +251,7 @@ export function evaluateCausalConsolidation({
   // Proteger los vetos por representante de foto única: si la galería acumulada ya tiene
   // coincidencia o no hay contradicción biológica evidente (centroidSim >= 0.38 o maxGallerySim >= 0.42 o maxHomologousSim >= 0.50),
   // NO vetar por un solo fotograma de discrepancia.
-  const hasStrongGalleryMatch = maxBiometric >= 0.52 || robustSim >= 0.48 || centroidSim >= 0.38 || maxGallerySim >= 0.42 || maxHomologousSim >= 0.50;
+  const hasStrongGalleryMatch = maxBiometric >= 0.52 || robustSim >= 0.48 || centroidSim >= 0.38 || maxGallerySim >= 0.42 || maxHomologousSim >= 0.50 || (isFinishingPhase && centroidSim >= 0.35 && maxGallerySim >= 0.40);
 
   if (isOpposite) {
     logVerbal(`[CausalConsolidator] 🛡️ Veto omitido: poses opuestas detectadas (${poseA} vs ${poseB}). Evaluación atemporal basada en evidencia acumulada.`);
@@ -325,10 +335,15 @@ export function evaluateCausalConsolidation({
   let isSamePerson = false;
   let mergeReason = '';
 
-  // Regla de Fusión Atemporal (Timeless) y Adaptativa:
-  // Si comparten al menos una pose homóloga con similitud >= 0.52 (o robustSim >= 0.50),
-  // consolidar con motivo: homologousPoseMatch (sim=${maxHomologousSim.toFixed(3)})
-  if (maxHomologousSim >= 0.52) {
+  // Regla de Ventana de Transición de Acabado (Finishing Phase)
+  if (isFinishingPhase && (
+    (centroidSim >= 0.35 && maxGallerySim >= 0.40) ||
+    maxHomologousSim >= 0.40 ||
+    maxGallerySim >= 0.45
+  )) {
+    isSamePerson = true;
+    mergeReason = `finishingPhaseTransition (gap=${Math.round(rawGapMs / 1000)}s, maxGallery=${maxGallerySim.toFixed(3)}, centroid=${centroidSim.toFixed(3)})`;
+  } else if (maxHomologousSim >= 0.52) {
     isSamePerson = true;
     mergeReason = `homologousPoseMatch (sim=${maxHomologousSim.toFixed(3)})`;
   } else if (robustSim >= 0.50) {
