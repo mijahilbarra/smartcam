@@ -24,6 +24,26 @@ export function arePosesCompatibleEnhanced(poseA, poseB) {
 }
 
 /**
+ * Detecta si dos poses corresponden a orientaciones opuestas (izquierda vs derecha)
+ * donde la similitud facial esperada cae naturalmente a 0.05 - 0.20 en una misma persona.
+ * @param {string} poseA
+ * @param {string} poseB
+ * @returns {boolean}
+ */
+export function isOppositeSide(poseA, poseB) {
+  if (!poseA || !poseB || typeof poseA !== 'string' || typeof poseB !== 'string') return false;
+  const a = poseA.toLowerCase();
+  const b = poseB.toLowerCase();
+
+  const isLeftA = a.endsWith('_left') || a.includes('left');
+  const isRightA = a.endsWith('_right') || a.includes('right');
+  const isLeftB = b.endsWith('_left') || b.includes('left');
+  const isRightB = b.endsWith('_right') || b.includes('right');
+
+  return (isLeftA && isRightB) || (isRightA && isLeftB);
+}
+
+/**
  * Compensación angular pose-consciente
  */
 export function computePoseAwareSimilarity(sim, poseA, poseB) {

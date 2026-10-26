@@ -82,7 +82,8 @@ export function resolveChairZone(chairIdOrZone, quadrants = null) {
  * @param {Object} [options] - Parámetros de validación
  * @param {number} [options.width=1280] - Ancho del fotograma para desnormalizar si aplica
  * @param {number} [options.height=720] - Alto del fotograma para desnormalizar si aplica
- * @param {number} [options.minOverlapRatio=0.60] - Proporción mínima requerida dentro de la silla
+ * @param {number} [options.minInsideRatio=0.50] - Proporción mínima requerida dentro de la silla (calibrado a 0.50)
+ * @param {number} [options.minOverlapRatio=0.50] - Proporción mínima requerida dentro de la silla
  * @param {number} [options.minY2=550] - Coordenada Y2 mínima para confirmar descenso al plano de la silla
  * @param {Array<Object>} [options.quadrants] - Cuadrantes alternativos si chairZone no se suministra
  * @param {boolean} [options.allowEmptyBoxes=true] - Si no hay cajas registradas (ej. mocks), no descartar
@@ -175,7 +176,7 @@ export function validateSpatialChairAnchor(sessionOrBlock, chairZone = null, opt
 
   const frameWidth = options.width || 1280;
   const frameHeight = options.height || 720;
-  const minOverlapRatio = options.minOverlapRatio ?? 0.60;
+  const minOverlapRatio = options.minInsideRatio ?? options.minOverlapRatio ?? 0.50;
   const minY2 = options.minY2 ?? 550;
 
   // 3. Evaluar solapamiento de cada caja con el encuadre de la silla
@@ -201,12 +202,12 @@ export function validateSpatialChairAnchor(sessionOrBlock, chairZone = null, opt
       : null;
 
     // Regla de Aprobación individual:
-    // 1. insideRatio >= 0.60
+    // 1. insideRatio >= 0.50 (minOverlapRatio)
     // 2. y2 >= 550 (o y2 / frameHeight >= 0.75)
-    // 3. Cabeza no en zona alta de fondo: (y1 >= 240 || (faceCenterY !== null ? faceCenterY >= 320 : y1 >= 200))
+    // 3. Cabeza: si el cuerpo está sentado en la silla (isY2Ok), NO descartar si la cabeza sobresale por arriba (y1 < 200, personas altas o erguidas).
     const isRatioOk = ratio >= minOverlapRatio;
     const isY2Ok = y2 >= minY2 || (y2 / frameHeight >= 0.75);
-    const isHeadOk = (y1 >= 240) || (fcy !== null ? fcy >= 320 : y1 >= 200);
+    const isHeadOk = isY2Ok || (y1 >= 240) || (fcy !== null ? fcy >= 320 : y1 >= 200);
 
     if (isRatioOk && isY2Ok && isHeadOk) {
       insideCount++;
@@ -218,7 +219,7 @@ export function validateSpatialChairAnchor(sessionOrBlock, chairZone = null, opt
   const avgInsideRatio = totalBoxes > 0 ? totalInsideRatio / totalBoxes : 0;
   const avgY2 = totalBoxes > 0 ? totalY2 / totalBoxes : 0;
 
-  // Si la sesión o bloque tiene un promedio de insideRatio < 0.60 o y2 < 550,
+  // Si la sesión o bloque tiene un promedio de insideRatio < 0.50 o y2 < 550,
   // se descarta formalmente con motivo fuera_de_caja_silla_firebase.
   if (insideCount === 0 || overlapRatio < minOverlapRatio || avgInsideRatio < minOverlapRatio || avgY2 < minY2) {
     return {
