@@ -11,6 +11,9 @@ export function useDaemonState() {
   const isConnected = ref(false);
   const isYoloStreaming = ref(false);
   const liveOccupancy = ref(null);
+  const activeChairSessions = ref([]);
+  // Decisiones explicables del análisis (cards temporales de ~15s)
+  const analysisDecisions = ref([]);
   const firestoreStreamUrl = ref('');
 
   // Latest image & telemetry resolved for canvas overlay
@@ -330,12 +333,29 @@ export function useDaemonState() {
               liveOccupancy.value = data.occupancy;
             }
 
+            if (Array.isArray(data.activeChairSessions)) {
+              activeChairSessions.value = data.activeChairSessions;
+            }
+
             if (data.memory) {
               setSystemMemory(data.memory);
             }
           }
         } catch (_) {}
       };
+
+      sseEventSource.addEventListener('analysis_decision', (e) => {
+        try {
+          const d = JSON.parse(e.data);
+          if (!d || !d.id) return;
+          const ttl = d.ttlMs || 15000;
+          const receivedAt = Date.now();
+          analysisDecisions.value = [
+            ...analysisDecisions.value.filter((x) => x.expiresAt > receivedAt && x.id !== d.id),
+            { ...d, receivedAt, expiresAt: receivedAt + ttl }
+          ].slice(-20);
+        } catch (_) {}
+      });
 
       sseEventSource.addEventListener('daemon_state', (e) => {
         try {
@@ -433,6 +453,8 @@ export function useDaemonState() {
     yoloStreamUrl,
     activeBackendUrl,
     canvasImageData,
+    activeChairSessions,
+    analysisDecisions,
     clientsInCut,
     clientsWaiting,
     activeBarbers,

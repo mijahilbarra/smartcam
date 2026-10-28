@@ -22,6 +22,8 @@ const {
   snapshotUrl,
   activeBackendUrl,
   canvasImageData,
+  activeChairSessions,
+  analysisDecisions,
   clientsInCut,
   clientsWaiting,
   activeBarbers,
@@ -40,6 +42,29 @@ const canvasRef = ref(null);
 const showQuadrants = ref(true);
 const showHumans = ref(true);
 const showBiometry = ref(true);
+
+// Reloj y estilos para las notificaciones flotantes (toasts) de decisiones del análisis (15s)
+const nowMs = ref(Date.now());
+const dismissedDecisionIds = ref(new Set());
+let decisionTicker = null;
+
+const decisionStyles = {
+  success: { border: 'border-emerald-500/60', bg: 'from-emerald-950/95 via-slate-900/95 to-slate-950/95', text: 'text-emerald-300', bar: 'bg-emerald-400', icon: 'check_circle' },
+  info: { border: 'border-sky-500/60', bg: 'from-sky-950/95 via-slate-900/95 to-slate-950/95', text: 'text-sky-300', bar: 'bg-sky-400', icon: 'merge' },
+  warning: { border: 'border-amber-500/60', bg: 'from-amber-950/95 via-slate-900/95 to-slate-950/95', text: 'text-amber-300', bar: 'bg-amber-400', icon: 'report' },
+  neutral: { border: 'border-slate-600/80', bg: 'from-slate-900/95 to-slate-950/95', text: 'text-slate-300', bar: 'bg-slate-400', icon: 'info' }
+};
+const getDecisionStyle = (d) => decisionStyles[d?.tone] || decisionStyles.neutral;
+
+const dismissDecision = (id) => {
+  dismissedDecisionIds.value = new Set([...dismissedDecisionIds.value, id]);
+};
+
+const activeDecisions = computed(() =>
+  (Array.isArray(analysisDecisions.value) ? analysisDecisions.value : []).filter(
+    (d) => d.expiresAt > nowMs.value && !dismissedDecisionIds.value.has(d.id)
+  )
+);
 
 // Stream & image loading state
 const streamKey = ref(Date.now());
@@ -575,11 +600,13 @@ watch(() => canvasImageData.value, (newData) => {
 onMounted(() => {
   startAnimationLoop();
   startSnapshotFallback();
+  decisionTicker = setInterval(() => { nowMs.value = Date.now(); }, 1000);
 });
 
 onUnmounted(() => {
   stopAnimationLoop();
   stopSnapshotFallback();
+  if (decisionTicker) clearInterval(decisionTicker);
 });
 </script>
 
@@ -870,9 +897,101 @@ onUnmounted(() => {
         <TodayScheduleWidget
           :clients-in-cut="clientsInCut"
           :active-barbers="activeBarbers"
+          :active-chair-sessions="activeChairSessions"
           @switch-tab="emit('switch-tab', $event)"
         />
       </div>
     </div>
+
+    <!-- Columna de Toasts Flotantes (Lado Derecho Inferior) -->
+    <Teleport to="body">
+      <div
+        v-if="activeDecisions.length > 0"
+        class="fixed bottom-4 right-4 z-50 flex flex-col gap-2.5 w-[340px] sm:w-[380px] max-w-[calc(100vw-2rem)] max-h-[80vh] overflow-y-auto pointer-events-none"
+        aria-live="polite"
+      >
+        <TransitionGroup name="toast-slide">
+          <div
+            v-for="decision in activeDecisions"
+            :key="decision.id"
+            :class="[
+              'pointer-events-auto rounded-xl bg-gradient-to-br border p-3.5 relative overflow-hidden shadow-2xl backdrop-blur-md transition-all',
+              getDecisionStyle(decision).bg,
+              getDecisionStyle(decision).border
+            ]"
+          >
+            <div class="flex items-start gap-2.5">
+              <AppIcon
+                :name="getDecisionStyle(decision).icon"
+                :size="18"
+                :class="['mt-0.5 flex-shrink-0', getDecisionStyle(decision).text]"
+              />
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center justify-between gap-2">
+                  <span :class="['text-xs font-bold leading-snug', getDecisionStyle(decision).text]">
+                    {{ decision.title }}
+                  </span>
+                  <div class="flex items-center gap-1.5 flex-shrink-0">
+                    <span class="text-[10px] font-mono text-slate-400">
+                      {{ Math.max(0, Math.ceil((decision.expiresAt - nowMs) / 1000)) }}s
+                    </span>
+                    <button
+                      type="button"
+                      @click="dismissDecision(decision.id)"
+                      class="text-slate-400 hover:text-white transition p-0.5 rounded cursor-pointer"
+                      title="Cerrar notificación"
+                    >
+                      <AppIcon name="close" :size="14" />
+                    </button>
+                  </div>
+                </div>
+                <div v-if="decision.trackId || decision.chairName" class="text-[10px] font-mono text-slate-400 mt-0.5">
+                  <span v-if="decision.trackId">Bloque #{{ decision.trackId }}</span>
+                  <span v-if="decision.trackId && decision.chairName"> · </span>
+                  <span v-if="decision.chairName">{{ decision.chairName }}</span>
+                </div>
+                <p class="text-[11px] text-slate-200 leading-relaxed mt-1 break-words">
+                  {{ decision.reason }}
+                </p>
+              </div>
+            </div>
+
+            <!-- Barra de cuenta regresiva de 15s -->
+            <div class="absolute bottom-0 left-0 right-0 h-0.5 bg-slate-800/80">
+              <div
+                :class="['h-full decision-countdown', getDecisionStyle(decision).bar]"
+                :style="{ animationDuration: (decision.expiresAt - decision.receivedAt) + 'ms' }"
+              ></div>
+            </div>
+          </div>
+        </TransitionGroup>
+      </div>
+    </Teleport>
   </section>
 </template>
+
+<style scoped>
+@keyframes decision-shrink {
+  from { width: 100%; }
+  to { width: 0%; }
+}
+.decision-countdown {
+  width: 100%;
+  animation-name: decision-shrink;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+}
+
+.toast-slide-enter-active,
+.toast-slide-leave-active {
+  transition: all 0.25s ease;
+}
+.toast-slide-enter-from {
+  opacity: 0;
+  transform: translateX(24px) scale(0.96);
+}
+.toast-slide-leave-to {
+  opacity: 0;
+  transform: translateX(24px) scale(0.96);
+}
+</style>

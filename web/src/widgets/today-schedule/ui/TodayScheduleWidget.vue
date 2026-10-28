@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed } from 'vue';
+import { ref, computed, watch, nextTick, onMounted } from 'vue';
 import AppIcon from '@/shared/ui/atoms/AppIcon.vue';
 import AppButton from '@/shared/ui/atoms/AppButton.vue';
 import AppBadge from '@/shared/ui/atoms/AppBadge.vue';
@@ -19,6 +19,10 @@ const props = defineProps({
   activeBarbers: {
     type: Number,
     default: 0
+  },
+  activeChairSessions: {
+    type: Array,
+    default: () => []
   }
 });
 
@@ -30,8 +34,39 @@ const { people } = usePeople();
 // Filtro de silla: 'all' | 'Silla 1' | 'Silla 2'
 const selectedChairFilter = ref('all');
 
-// Orden de lista: 'asc' (cronológico, 09:00 -> 21:00) | 'desc' (más recientes arriba)
-const sortOrder = ref('asc');
+// Sesiones activas en sillas filtradas según la selección
+const filteredActiveSessions = computed(() => {
+  const sessions = Array.isArray(props.activeChairSessions) ? props.activeChairSessions : [];
+  if (selectedChairFilter.value === 'all') {
+    return sessions;
+  }
+  const filterKey = selectedChairFilter.value.toLowerCase().replace(/[^a-z0-9]/g, '');
+  return sessions.filter((s) => {
+    const chairId = (s.chairId || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const chairName = (s.chairName || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    return chairId.includes(filterKey) || chairName.includes(filterKey);
+  });
+});
+
+const totalClientsInCut = computed(() => {
+  return Math.max(props.clientsInCut, (props.activeChairSessions || []).length);
+});
+
+const formatPoseLabel = (pose) => {
+  if (!pose) return 'Frontal';
+  const p = pose.toLowerCase();
+  if (p === 'frontal') return 'Frontal';
+  if (p.includes('semi_left') || p === 'left') return 'Semi-perfil Izq.';
+  if (p.includes('semi_right') || p === 'right') return 'Semi-perfil Der.';
+  if (p.includes('profile_left')) return 'Perfil Izq.';
+  if (p.includes('profile_right')) return 'Perfil Der.';
+  if (p.includes('tilted_down') || p.includes('down')) return 'Inclinado abajo';
+  if (p.includes('tilted_up') || p.includes('up')) return 'Inclinado arriba';
+  if (p.includes('tilted')) return 'Inclinado';
+  return pose;
+};
+
+// Orden de lista fijo: cronológico (más antiguo arriba, más nuevo abajo), estilo chat
 
 // Comparar si una fecha corresponde al día actual
 const isToday = (isoString) => {
@@ -84,12 +119,43 @@ const todayAppointments = computed(() => {
     return true;
   });
 
-  return list.sort((a, b) => {
-    const timeA = new Date(a.startTime).getTime();
-    const timeB = new Date(b.startTime).getTime();
-    return sortOrder.value === 'asc' ? timeA - timeB : timeB - timeA;
-  });
+  return list.sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime());
 });
+
+// Línea de tiempo unificada: citas completadas + sesiones en vivo (EN CORTE / ANALIZANDO),
+// ordenadas por hora de inicio. Las sesiones en vivo son las más recientes, por lo que quedan al final.
+const timelineItems = computed(() => {
+  const items = todayAppointments.value.map((apt) => ({
+    type: 'appointment',
+    key: `apt_${apt.id}`,
+    time: new Date(apt.startTime).getTime(),
+    data: apt
+  }));
+  for (const session of filteredActiveSessions.value) {
+    const t = new Date(session.startTime).getTime();
+    items.push({
+      type: 'live',
+      key: `live_${session.chairId}`,
+      time: Number.isNaN(t) ? Date.now() : t,
+      data: session
+    });
+  }
+  items.sort((a, b) => a.time - b.time);
+  return items;
+});
+
+// Auto-scroll al final (como un chat) cuando aparece un nuevo elemento
+const timelineScroll = ref(null);
+const scrollToBottom = async (smooth = true) => {
+  await nextTick();
+  const el = timelineScroll.value;
+  if (el) el.scrollTo({ top: el.scrollHeight, behavior: smooth ? 'smooth' : 'auto' });
+};
+watch(
+  () => timelineItems.value.map((i) => i.key).join('|'),
+  () => scrollToBottom(true)
+);
+onMounted(() => scrollToBottom(false));
 
 // Métricas del día actual
 const totalToday = computed(() => todayAppointments.value.length);
@@ -271,8 +337,8 @@ const handleConfirmDelete = async ({ appointmentId }) => {
         </div>
         <div class="bg-slate-950/70 border border-slate-800 rounded-lg px-2.5 py-1.5 flex items-center justify-between">
           <span class="text-slate-400">En Curso Ahora:</span>
-          <span :class="['font-bold font-mono', props.clientsInCut > 0 ? 'text-amber-400' : 'text-slate-400']">
-            {{ props.clientsInCut }} {{ props.clientsInCut === 1 ? 'cliente' : 'clientes' }}
+          <span :class="['font-bold font-mono', totalClientsInCut > 0 ? 'text-amber-400' : 'text-slate-400']">
+            {{ totalClientsInCut }} {{ totalClientsInCut === 1 ? 'cliente' : 'clientes' }}
           </span>
         </div>
       </div>
@@ -317,41 +383,13 @@ const handleConfirmDelete = async ({ appointmentId }) => {
             Silla 2
           </button>
         </div>
-
-        <button
-          type="button"
-          @click="sortOrder = sortOrder === 'asc' ? 'desc' : 'asc'"
-          class="flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer"
-          :title="sortOrder === 'asc' ? 'Orden: de mañana a noche (click para invertir)' : 'Orden: más recientes primero (click para invertir)'"
-        >
-          <AppIcon :name="sortOrder === 'asc' ? 'arrow_downward' : 'arrow_upward'" :size="13" />
-          <span>{{ sortOrder === 'asc' ? '09:00 → 21:00' : 'Recientes' }}</span>
-        </button>
       </div>
     </div>
 
-    <!-- Indicador de Atención en Curso (Si hay corte activo) -->
-    <div
-      v-if="props.clientsInCut > 0"
-      class="p-2.5 mx-3 mt-3 rounded-xl bg-gradient-to-r from-emerald-950/70 to-slate-900 border border-emerald-500/40 flex items-center justify-between shadow-xs animate-pulse"
-    >
-      <div class="flex items-center gap-2 min-w-0">
-        <span class="w-2.5 h-2.5 rounded-full bg-emerald-400"></span>
-        <div class="flex flex-col min-w-0">
-          <span class="text-xs font-bold text-emerald-300 truncate">Atención en Curso Ahora</span>
-          <span class="text-[10px] text-emerald-400/80">Silla activa con cliente en corte</span>
-        </div>
-      </div>
-      <span class="px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-900/80 text-emerald-200 border border-emerald-500/30">
-        EN PROGRESO
-      </span>
-    </div>
-
-    <!-- Lista de Atenciones del Día -->
-    <div class="flex-1 p-3 overflow-y-auto space-y-2.5">
+    <div ref="timelineScroll" class="flex-1 p-3 overflow-y-auto space-y-2.5">
       <!-- Estado vacío si aún no hay atenciones hoy -->
       <div
-        v-if="todayAppointments.length === 0"
+        v-if="timelineItems.length === 0 && totalClientsInCut === 0"
         class="h-full flex flex-col items-center justify-center text-center p-6 text-slate-400 gap-3"
       >
         <div class="w-12 h-12 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-500">
@@ -374,18 +412,273 @@ const handleConfirmDelete = async ({ appointmentId }) => {
         </button>
       </div>
 
-      <!-- Tarjetas de Atenciones de Hoy -->
+      <!-- Línea de tiempo estilo chat: más antiguo arriba, más nuevo abajo -->
+      <template v-for="item in timelineItems" :key="item.key">
+        <!-- Card en vivo: EN CORTE / ANALIZANDO -->
+        <div
+          v-if="item.type === 'live'"
+          class="rounded-xl bg-gradient-to-br from-slate-900/95 via-slate-900/90 to-slate-950/95 border border-emerald-500/40 p-3 shadow-lg shadow-emerald-950/20 backdrop-blur-md relative overflow-hidden transition-all duration-300"
+        >
+          <!-- Barra de acento superior luminosa -->
+          <div class="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-emerald-500 via-teal-400 to-blue-500"></div>
+
+          <!-- Encabezado de la Tarjeta: Badge pulsante y Silla -->
+          <div class="flex items-center justify-between gap-2 mb-2">
+            <div class="flex items-center gap-1.5 min-w-0">
+              <span class="relative flex h-2.5 w-2.5 flex-shrink-0">
+                <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+              </span>
+              <span class="text-[10px] font-extrabold tracking-wider uppercase px-2 py-0.5 rounded-full bg-emerald-950/80 text-emerald-300 border border-emerald-500/30 flex items-center gap-1">
+                <AppIcon :name="item.data.currentBlockInAnalysis ? 'sensors' : 'content_cut'" :size="12" class="text-emerald-400" />
+                {{ item.data.currentBlockInAnalysis ? 'EN CORTE / ANALIZANDO' : 'EN CORTE' }}
+              </span>
+            </div>
+
+            <!-- Identificador de Silla -->
+            <span class="px-2 py-0.5 rounded-md text-[10px] font-bold font-mono bg-blue-950/80 text-blue-300 border border-blue-500/30 flex items-center gap-1 flex-shrink-0">
+              <AppIcon name="chair" :size="12" class="text-blue-400" />
+              {{ item.data.chairName || item.data.chairId }}
+            </span>
+          </div>
+
+          <!-- Fila de Identificación del Cliente -->
+          <div class="flex items-center gap-2.5 p-2 rounded-lg bg-slate-950/70 border border-slate-800/80">
+            <!-- Miniatura / Avatar Biométrico -->
+            <div class="relative w-10 h-10 rounded-lg bg-slate-850 overflow-hidden flex-shrink-0 border border-emerald-500/30 shadow-inner flex items-center justify-center">
+              <img
+                v-if="item.data.representativePhoto || item.data.latestCropUrl"
+                :src="item.data.representativePhoto || item.data.latestCropUrl"
+                :alt="item.data.clientName"
+                class="w-full h-full object-cover"
+              />
+              <div v-else class="w-full h-full flex items-center justify-center text-slate-500 bg-slate-900">
+                <AppIcon name="face" :size="20" class="text-emerald-400/80" />
+              </div>
+              <!-- Indicador de cámara / live -->
+              <div class="absolute bottom-0.5 right-0.5 w-2 h-2 rounded-full bg-emerald-400 ring-2 ring-slate-950"></div>
+            </div>
+
+            <!-- Nombre, Estado Biométrico y Tag -->
+            <div class="min-w-0 flex-1">
+              <div class="flex items-center gap-1.5">
+                <h4 class="text-xs font-bold text-white truncate">
+                  {{ item.data.clientName || 'Cliente (Por verificar)' }}
+                </h4>
+                <AppIcon
+                  v-if="item.data.isVerified || item.data.isConfirmed"
+                  name="verified"
+                  :size="13"
+                  class="text-emerald-400 flex-shrink-0"
+                  title="Cliente verificado"
+                />
+              </div>
+
+              <div class="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                <span
+                  :class="[
+                    'text-[9px] px-1.5 py-0.2 rounded font-medium border flex items-center gap-0.5',
+                    item.data.isVerified || item.data.isConfirmed
+                      ? 'bg-emerald-950/70 text-emerald-300 border-emerald-500/30'
+                      : 'bg-amber-950/70 text-amber-300 border-amber-500/30'
+                  ]"
+                >
+                  <AppIcon :name="item.data.isVerified || item.data.isConfirmed ? 'check' : 'help_outline'" :size="10" />
+                  {{ item.data.isVerified || item.data.isConfirmed ? 'Identificado' : 'Por verificar' }}
+                </span>
+                <span v-if="item.data.personId" class="text-[9px] text-slate-400 font-mono truncate max-w-[140px]">
+                  ID: {{ item.data.personId.replace('person_', '') }}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Métricas Clave de la Sesión en Silla -->
+          <div class="grid grid-cols-2 gap-2 mt-2">
+            <!-- Tiempo en Silla -->
+            <div class="bg-slate-950/70 border border-slate-800/80 rounded-lg p-2 flex items-center gap-2">
+              <div class="p-1.5 rounded-md bg-blue-950/60 text-blue-400 border border-blue-500/20">
+                <AppIcon name="timer" :size="14" />
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="text-[9px] text-slate-400 font-medium uppercase tracking-wider">Tiempo en Silla</div>
+                <div class="text-xs font-bold text-white font-mono flex items-baseline gap-1">
+                  <span>{{ item.data.elapsedMinutes }}</span>
+                  <span class="text-[10px] text-emerald-400 font-normal">minutos</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Fotos Biométricas Confirmadas -->
+            <div class="bg-slate-950/70 border border-slate-800/80 rounded-lg p-2 flex items-center gap-2">
+              <div class="p-1.5 rounded-md bg-emerald-950/60 text-emerald-400 border border-emerald-500/20">
+                <AppIcon name="photo_camera" :size="14" />
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="text-[9px] text-slate-400 font-medium uppercase tracking-wider">Fotos Biométricas</div>
+                <div class="text-xs font-bold text-emerald-400 font-mono flex items-baseline gap-1">
+                  <span>{{ item.data.photosCount }}</span>
+                  <span class="text-[10px] text-slate-400 font-normal">acumuladas</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Sección: Bloques Confirmados (Historial Aprobado) -->
+          <div
+            v-if="item.data.confirmedBlocks && item.data.confirmedBlocks.length > 0"
+            class="mt-2 p-2 rounded-lg bg-emerald-950/30 border border-emerald-500/20 text-[10px]"
+          >
+            <div class="flex items-center justify-between text-emerald-300 font-semibold mb-1">
+              <span class="flex items-center gap-1">
+                <AppIcon name="verified_user" :size="12" class="text-emerald-400" />
+                Bloques Confirmados ({{ item.data.confirmedBlocks.length }})
+              </span>
+              <span class="text-[9px] text-emerald-400/80 font-mono">Aprobados IA</span>
+            </div>
+            <div class="space-y-1">
+              <div
+                v-for="cb in item.data.confirmedBlocks.slice(-2)"
+                :key="cb.trackId"
+                class="flex items-center justify-between text-slate-300 bg-slate-950/60 px-2 py-1 rounded border border-emerald-500/10"
+              >
+                <span class="font-mono text-emerald-400 font-bold">Bloque #{{ cb.trackId }}</span>
+                <span class="flex items-center gap-2 text-slate-400">
+                  <span class="flex items-center gap-0.5 text-slate-300">
+                    <AppIcon name="photo" :size="11" class="text-blue-400" />
+                    {{ cb.photosCount }} fotos
+                  </span>
+                  <span v-if="cb.durationSeconds" class="text-slate-500 font-mono">
+                    {{ cb.durationSeconds }}s
+                  </span>
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Sección: En Análisis Ahora (TrackBlock en curso) -->
+          <div
+            v-if="item.data.currentBlockInAnalysis"
+            class="mt-2 p-2.5 rounded-lg bg-gradient-to-r from-cyan-950/40 via-slate-950/80 to-blue-950/40 border border-cyan-500/30 text-[11px]"
+          >
+            <div class="flex items-center justify-between mb-1.5">
+              <div class="flex items-center gap-1.5">
+                <span class="relative flex h-2 w-2">
+                  <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
+                  <span class="relative inline-flex rounded-full h-2 w-2 bg-cyan-500"></span>
+                </span>
+                <span class="font-bold text-cyan-300 text-[11px] flex items-center gap-1">
+                  En Análisis Ahora
+                  <span class="font-mono text-slate-400 font-normal">#{{ item.data.currentBlockInAnalysis.trackId }}</span>
+                </span>
+              </div>
+              <span class="text-[9px] font-mono px-1.5 py-0.5 rounded bg-cyan-950/70 text-cyan-300 border border-cyan-500/20">
+                {{ item.data.currentBlockInAnalysis.frameCount }} cuadros
+              </span>
+            </div>
+
+            <!-- Datos Dinámicos del Bloque Activo -->
+            <div class="grid grid-cols-3 gap-1.5 text-[10px] mt-1 text-slate-300">
+              <div class="bg-slate-950/60 rounded p-1 border border-slate-800 flex flex-col">
+                <span class="text-[8px] text-slate-500 uppercase">Candidatas</span>
+                <span class="font-bold text-cyan-400 font-mono">
+                  {{ item.data.currentBlockInAnalysis.candidatePhotos }} fotos
+                </span>
+              </div>
+              <div class="bg-slate-950/60 rounded p-1 border border-slate-800 flex flex-col">
+                <span class="text-[8px] text-slate-500 uppercase">Pose</span>
+                <span class="font-bold text-white capitalize truncate">
+                  {{ formatPoseLabel(item.data.currentBlockInAnalysis.pose) }}
+                </span>
+              </div>
+              <div class="bg-slate-950/60 rounded p-1 border border-slate-800 flex flex-col">
+                <span class="text-[8px] text-slate-500 uppercase">Nitidez</span>
+                <span class="font-bold text-emerald-400 font-mono">
+                  {{ item.data.currentBlockInAnalysis.sharpnessScore || 0 }}
+                </span>
+              </div>
+            </div>
+
+            <!-- Evidencia acumulada del bloque -->
+            <div class="grid grid-cols-2 gap-1.5 text-[10px] mt-1.5 text-slate-300">
+              <div class="bg-slate-950/60 rounded p-1 border border-slate-800 flex items-center justify-between">
+                <span class="text-[8px] text-slate-500 uppercase">Postura</span>
+                <span class="font-mono text-white">
+                  {{ Math.round((item.data.currentBlockInAnalysis.standingRatio || 0) * 100) }}% de pie
+                </span>
+              </div>
+              <div class="bg-slate-950/60 rounded p-1 border border-slate-800 flex items-center justify-between">
+                <span class="text-[8px] text-slate-500 uppercase">Rostros</span>
+                <span class="font-mono text-white">
+                  {{ item.data.currentBlockInAnalysis.clientFaces ?? 0 }} cliente · {{ item.data.currentBlockInAnalysis.staffFaces ?? 0 }} barbero
+                </span>
+              </div>
+              <div class="bg-slate-950/60 rounded p-1 border border-slate-800 flex items-center justify-between">
+                <span class="text-[8px] text-slate-500 uppercase">Sim. barbero</span>
+                <span class="font-mono text-white">{{ item.data.currentBlockInAnalysis.maxStaffSim ?? 0 }}</span>
+              </div>
+              <div class="bg-slate-950/60 rounded p-1 border border-slate-800 flex items-center justify-between">
+                <span class="text-[8px] text-slate-500 uppercase">Duración</span>
+                <span class="font-mono text-white">{{ item.data.currentBlockInAnalysis.durationSeconds ?? 0 }}s</span>
+              </div>
+            </div>
+
+            <!-- Poses capturadas -->
+            <div v-if="item.data.currentBlockInAnalysis.posesCaptured && item.data.currentBlockInAnalysis.posesCaptured.length" class="flex flex-wrap gap-1 mt-1.5">
+              <span
+                v-for="pose in item.data.currentBlockInAnalysis.posesCaptured"
+                :key="pose"
+                class="text-[9px] px-1.5 py-0.5 rounded bg-slate-950/70 border border-slate-800 text-cyan-300"
+              >{{ formatPoseLabel(pose) }}</span>
+            </div>
+
+            <!-- Criterios que decidirán si se confirma como cliente -->
+            <div v-if="item.data.currentBlockInAnalysis.checks" class="mt-2 space-y-0.5">
+              <div class="text-[9px] text-slate-500 uppercase tracking-wider mb-0.5">Criterios para confirmar cliente</div>
+              <div
+                v-for="chk in item.data.currentBlockInAnalysis.checks"
+                :key="chk.id"
+                class="flex items-center justify-between gap-2 text-[10px]"
+              >
+                <span class="flex items-center gap-1 text-slate-300">
+                  <AppIcon :name="chk.ok ? 'check_circle' : 'radio_button_unchecked'" :size="12" :class="chk.ok ? 'text-emerald-400' : 'text-amber-400'" />
+                  {{ chk.label }}
+                </span>
+                <span class="text-slate-500 font-mono truncate">{{ chk.detail }}</span>
+              </div>
+            </div>
+
+            <!-- Barra de Progreso Dinámica de Acumulación -->
+            <div class="mt-2">
+              <div class="flex items-center justify-between text-[9px] text-slate-400 mb-0.5">
+                <span>Acumulación para consolidación</span>
+                <span class="font-mono text-cyan-300">
+                  {{ Math.min(100, Math.round(((item.data.currentBlockInAnalysis.frameCount || 1) / 30) * 100)) }}%
+                </span>
+              </div>
+              <div class="w-full bg-slate-950 rounded-full h-1.5 overflow-hidden border border-slate-800">
+                <div
+                  class="bg-gradient-to-r from-cyan-500 to-emerald-400 h-full rounded-full transition-all duration-300"
+                  :style="{
+                    width: `${Math.min(100, Math.max(15, Math.round(((item.data.currentBlockInAnalysis.frameCount || 1) / 30) * 100)))}%`
+                  }"
+                ></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Card de atención completada -->
       <div
-        v-for="apt in todayAppointments"
-        :key="apt.id"
-        @click="openDetailModal(apt)"
+        v-else
+        @click="openDetailModal(item.data)"
         class="group bg-slate-900/90 hover:bg-slate-850 border border-slate-800 hover:border-blue-500/50 rounded-xl p-3 transition-all duration-200 cursor-pointer shadow-xs hover:shadow-md hover:-translate-y-0.5 relative overflow-hidden"
       >
         <!-- Tira lateral indicadora de silla -->
         <div
           :class="[
             'absolute left-0 top-0 bottom-0 w-1',
-            apt.chairId === 'Silla 1' || (apt.chairId || '').includes('1') ? 'bg-blue-500' : 'bg-emerald-500'
+            item.data.chairId === 'Silla 1' || (item.data.chairId || '').includes('1') ? 'bg-blue-500' : 'bg-emerald-500'
           ]"
         ></div>
 
@@ -393,15 +686,15 @@ const handleConfirmDelete = async ({ appointmentId }) => {
         <div class="flex items-center justify-between text-[11px] font-semibold text-slate-300 mb-2 pl-1.5">
           <span class="flex items-center gap-1 text-blue-400">
             <AppIcon name="schedule" :size="13" />
-            {{ formatTimeOnly(apt.startTime) }} - {{ formatTimeOnly(apt.endTime) }}
+            {{ formatTimeOnly(item.data.startTime) }} - {{ formatTimeOnly(item.data.endTime) }}
           </span>
           <div class="flex items-center gap-1.5">
             <span class="text-[10px] bg-slate-950 px-1.5 py-0.5 rounded text-slate-400 border border-slate-800">
-              {{ apt.durationMinutes || 45 }} min
+              {{ item.data.durationMinutes || 45 }} min
             </span>
             <button
               type="button"
-              @click.stop="promptDeleteAppointment(apt)"
+              @click.stop="promptDeleteAppointment(item.data)"
               class="p-1 rounded text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 transition cursor-pointer"
               title="Eliminar atención"
             >
@@ -415,11 +708,11 @@ const handleConfirmDelete = async ({ appointmentId }) => {
           <!-- Avatar del Cliente -->
           <div class="relative w-9 h-9 rounded-xl bg-slate-800 overflow-hidden flex-shrink-0 border border-slate-700 shadow-inner">
             <img
-              v-if="getClientDisplayAvatar(apt)"
-              :src="getClientDisplayAvatar(apt)"
-              :alt="getClientDisplayName(apt)"
+              v-if="getClientDisplayAvatar(item.data)"
+              :src="getClientDisplayAvatar(item.data)"
+              :alt="getClientDisplayName(item.data)"
               class="w-full h-full object-cover group-hover:scale-105 transition duration-300"
-              @error="apt.avatarUrl = ''"
+              @error="item.data.avatarUrl = ''"
             />
             <div v-else class="w-full h-full flex items-center justify-center text-slate-500 bg-slate-850">
               <AppIcon name="person" :size="18" />
@@ -429,14 +722,14 @@ const handleConfirmDelete = async ({ appointmentId }) => {
           <!-- Nombre y Silla -->
           <div class="min-w-0 flex-1">
             <h4 class="text-xs font-bold text-white truncate group-hover:text-blue-300 transition">
-              {{ getClientDisplayName(apt) }}
+              {{ getClientDisplayName(item.data) }}
             </h4>
             <div class="flex items-center gap-1.5 mt-0.5">
               <span class="text-[10px] text-slate-400 font-medium truncate">
-                {{ apt.chairName || apt.chairId }}
+                {{ item.data.chairName || item.data.chairId }}
               </span>
               <span class="text-[9px] px-1.5 py-0.2 rounded font-semibold bg-slate-950 text-blue-300 border border-blue-500/20">
-                {{ getClientDisplayBadge(apt) }}
+                {{ getClientDisplayBadge(item.data) }}
               </span>
             </div>
           </div>
@@ -447,11 +740,11 @@ const handleConfirmDelete = async ({ appointmentId }) => {
           <span class="flex items-center gap-1">
             <AppIcon name="check_circle" :size="12" class="text-emerald-400" />
             <span class="text-emerald-400 font-medium">Completada</span>
-            <template v-if="apt.photos && apt.photos.length > 0">
+            <template v-if="item.data.photos && item.data.photos.length > 0">
               <span class="text-slate-600">•</span>
               <span class="text-slate-400 flex items-center gap-0.5">
                 <AppIcon name="photo_camera" :size="11" class="text-blue-400" />
-                {{ apt.photos.length }}
+                {{ item.data.photos.length }}
               </span>
             </template>
           </span>
@@ -460,6 +753,26 @@ const handleConfirmDelete = async ({ appointmentId }) => {
           </span>
         </div>
       </div>
+      </template>
+
+      <!-- Fallback si hay cliente en corte pero activeChairSessions aún no llega -->
+      <template v-if="filteredActiveSessions.length === 0 && totalClientsInCut > 0">
+        <div class="p-2.5 rounded-xl bg-gradient-to-r from-emerald-950/70 to-slate-900 border border-emerald-500/40 flex items-center justify-between shadow-xs">
+          <div class="flex items-center gap-2 min-w-0">
+            <span class="relative flex h-2.5 w-2.5">
+              <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+              <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+            </span>
+            <div class="flex flex-col min-w-0">
+              <span class="text-xs font-bold text-emerald-300 truncate">Atención en Curso Ahora</span>
+              <span class="text-[10px] text-emerald-400/80">Silla activa con cliente en corte • Sincronizando IA...</span>
+            </div>
+          </div>
+          <span class="px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-900/80 text-emerald-200 border border-emerald-500/30">
+            EN CORTE
+          </span>
+        </div>
+      </template>
     </div>
 
     <!-- Modal de Detalle de Atención -->
