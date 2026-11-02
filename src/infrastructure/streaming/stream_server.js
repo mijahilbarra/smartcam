@@ -14,7 +14,7 @@ const JPEG_EOI = Buffer.from([0xff, 0xd9]);
 export class StreamServer {
   constructor(options = {}) {
     this.rtspUrl = options.rtspUrl || process.env.RTSP_STREAM_URL || "rtsp://127.0.0.1:8554/barberia/sub";
-    this.fps = options.fps || Number(process.env.STREAM_FPS) || 3.5;
+    this.fps = options.fps || Number(process.env.STREAM_FPS) || 10;
     this.jpegQuality = options.jpegQuality || Number(process.env.STREAM_JPEG_QUALITY) || 4;
     this.mockVideoPath = options.mockVideoPath || process.env.MOCK_VIDEO_PATH || null;
     this.mockVideoLastMinutes = options.mockVideoLastMinutes != null
@@ -52,6 +52,11 @@ export class StreamServer {
     this.reconnectAttempts = 0;
     this.reconnectTimer = null;
     this.isFramePendingConsumption = false;
+    this.frameQueue = [];
+    this.maxQueueSize = 48;
+    this.mockVideoEnded = false;
+    this.isPaused = false;
+    this._pausedHeartbeatInterval = null;
   }
 
   /**
@@ -64,7 +69,7 @@ export class StreamServer {
       return this.latestConsumedVirtualNow || this.latestFrameVirtualNow;
     }
     if (this.mockVideoPath && this.streamFastForward && this.streamStartEpoch) {
-      const videoElapsedMs = Math.round(((this.framesEmitted || 0) / (this.fps || 3.5)) * 1000);
+      const videoElapsedMs = Math.round(((this.framesEmitted || 0) / (this.fps || 10)) * 1000);
       const postEndMs = (!this.isActive && this.streamEndedAt)
         ? Math.round((Date.now() - this.streamEndedAt) * 10)
         : 0;
@@ -225,8 +230,8 @@ export class StreamServer {
       this.sendFrameToClient(client, freshFrame);
     }
 
-    // Iniciar ffmpeg si es el primer cliente
-    if (this.clients.size === 1) {
+    // Iniciar ffmpeg si es el primer cliente y el video mock no ha concluido
+    if (this.clients.size === 1 && (!this.mockVideoPath || this.mockVideoLoop || !this.mockVideoEnded)) {
       this.startFfmpegStream();
     }
 
@@ -286,10 +291,18 @@ export class StreamServer {
       this.startRemoteRelayLoop();
       return;
     }
+    if (this.mockVideoPath && !this.mockVideoLoop && (this.mockVideoEnded || this.isPaused)) {
+      console.log("[Stream] ⏸️ Video mock finalizado en modo una sola pasada (pausado). Omitiendo reinicio.");
+      return;
+    }
     if (this.ffmpegProcess && !this.ffmpegProcess.killed) return;
     if (this.isStarting) return;
     this.isStarting = true;
 
+    if (this._pausedHeartbeatInterval) {
+      clearInterval(this._pausedHeartbeatInterval);
+      this._pausedHeartbeatInterval = null;
+    }
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -346,7 +359,7 @@ export class StreamServer {
 
       if (this.mockVideoPath) {
         const seekMsg = seekOffset > 0 ? ` (iniciando en ${Math.floor(seekOffset / 60)}m ${seekOffset % 60}s)` : "";
-        console.log(`[Stream] 🎬 Iniciando ingesta FFmpeg en modo MOCK VIDEO desde: ${this.mockVideoPath}${seekMsg} a ${this.fps} FPS (bucle continuo 1x)...`);
+        console.log(`[Stream] 🎬 Iniciando ingesta FFmpeg en modo MOCK VIDEO desde: ${this.mockVideoPath}${seekMsg} a ${this.fps} FPS (${isLoop ? "bucle continuo" : "una sola pasada"})...`);
       } else {
         console.log(`[Stream] Iniciando ingesta FFmpeg on-demand desde: ${this.rtspUrl} a ${this.fps} FPS...`);
       }
@@ -380,7 +393,7 @@ export class StreamServer {
       let chunkBuffer = Buffer.alloc(0);
 
       const processChunks = () => {
-        if (this.mockVideoPath && this.streamFastForward && this.isFramePendingConsumption) {
+        if (this.mockVideoPath && this.streamFastForward && this.frameQueue.length >= this.maxQueueSize) {
           return;
         }
 
@@ -400,25 +413,32 @@ export class StreamServer {
 
           lastFrameTime = Date.now();
           this.latestFrameTimestamp = Date.now();
-          this.framesEmitted = (this.framesEmitted || 0) + 1;
           this.reconnectAttempts = 0;
-          this.latestFrameBuffer = frame;
-
-          const videoElapsedMs = this.mockVideoPath
-            ? Math.round(((this.framesEmitted || 0) / (this.fps || 3.5)) * 1000)
-            : 0;
-          this.latestFrameVirtualNow = this.mockVideoPath
-            ? (this.streamStartEpoch + videoElapsedMs)
-            : Date.now();
-
-          this.broadcastFrame(frame);
 
           if (this.mockVideoPath && this.streamFastForward) {
-            this.isFramePendingConsumption = true;
-            if (this.ffmpegProcess && this.ffmpegProcess.stdout && !this.ffmpegProcess.stdout.isPaused()) {
-              this.ffmpegProcess.stdout.pause();
+            this._decodedFramesCount = (this._decodedFramesCount || 0) + 1;
+            const videoElapsedMs = Math.round((this._decodedFramesCount / (this.fps || 10)) * 1000);
+            const virtualNow = this.streamStartEpoch + videoElapsedMs;
+            this.frameQueue.push({
+              frame,
+              virtualNow,
+              frameIndex: this._decodedFramesCount
+            });
+            if (!this.latestFrameBuffer) {
+              this.latestFrameBuffer = frame;
+              this.latestFrameVirtualNow = virtualNow;
+              this.framesEmitted = 1;
             }
-            break;
+          } else {
+            this.framesEmitted = (this.framesEmitted || 0) + 1;
+            this.latestFrameBuffer = frame;
+            const videoElapsedMs = this.mockVideoPath
+              ? Math.round(((this.framesEmitted || 0) / (this.fps || 10)) * 1000)
+              : 0;
+            this.latestFrameVirtualNow = this.mockVideoPath
+              ? (this.streamStartEpoch + videoElapsedMs)
+              : Date.now();
+            this.broadcastFrame(frame);
           }
 
           const nextSoi = chunkBuffer.indexOf(JPEG_SOI);
@@ -427,6 +447,14 @@ export class StreamServer {
           }
           startIndex = chunkBuffer.indexOf(JPEG_SOI);
           endIndex = chunkBuffer.indexOf(JPEG_EOI);
+
+          if (this.mockVideoPath && this.streamFastForward && this.frameQueue.length >= this.maxQueueSize) {
+            this.isFramePendingConsumption = true;
+            if (this.ffmpegProcess && this.ffmpegProcess.stdout && !this.ffmpegProcess.stdout.isPaused()) {
+              this.ffmpegProcess.stdout.pause();
+            }
+            break;
+          }
         }
 
         // Si el buffer crece demasiado por datos corruptos, reiniciar
@@ -458,16 +486,21 @@ export class StreamServer {
           this.reconnectTimer = null;
         }
 
-        // Si es video mock y terminó normalmente sin bucle, concluir la reproducción limpiamente
-        if (this.mockVideoPath && !this.mockVideoLoop && code === 0) {
-          console.log("[Stream] 🎬 Reproducción de video mock finalizada (reproducción única completa).");
+        // Si es video mock y terminó sin bucle (independientemente del código de salida de FFmpeg al final del clip):
+        if (this.mockVideoPath && !this.mockVideoLoop) {
+          console.log(`[Stream] 🎬 Reproducción de video mock finalizada (código: ${code}, una sola pasada). Pausando en el último fotograma.`);
           this.isPersistent = false;
-          this.latestFrameBuffer = null;
-          this.latestFrameTimestamp = null;
-          if (typeof this.onMockVideoEnd === "function") {
-            Promise.resolve(this.onMockVideoEnd(this.getVirtualNow())).catch(err => {
-              console.warn("[Stream] Aviso en onMockVideoEnd:", err.message);
-            });
+          this.mockVideoEnded = true;
+          if (this.streamFastForward && this.frameQueue && this.frameQueue.length > 0) {
+            console.log(`[Stream] ⏳ Drenando últimos ${this.frameQueue.length} cuadros pendientes en cola antes del flush...`);
+            this._mockEndedPendingFlush = true;
+          } else {
+            this.pauseOnLastFrame();
+            if (typeof this.onMockVideoEnd === "function") {
+              Promise.resolve(this.onMockVideoEnd(this.getVirtualNow())).catch(err => {
+                console.warn("[Stream] Aviso en onMockVideoEnd:", err.message);
+              });
+            }
           }
           return;
         }
@@ -512,6 +545,10 @@ export class StreamServer {
     if (force) {
       this.latestFrameBuffer = null;
       this.latestFrameTimestamp = null;
+    }
+    if (this._pausedHeartbeatInterval) {
+      clearInterval(this._pausedHeartbeatInterval);
+      this._pausedHeartbeatInterval = null;
     }
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
@@ -568,6 +605,45 @@ export class StreamServer {
   }
 
   /**
+   * Pausa la transmisión congelada en el último fotograma capturado sin reiniciar FFmpeg
+   */
+  pauseOnLastFrame() {
+    this.isPaused = true;
+    this.mockVideoEnded = true;
+    this.isActive = false;
+    this.isPersistent = false;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.watchdogInterval) {
+      clearInterval(this.watchdogInterval);
+      this.watchdogInterval = null;
+    }
+
+    if (this.latestFrameBuffer) {
+      this.latestFrameTimestamp = Date.now();
+      this.broadcastFrame(this.latestFrameBuffer);
+      this.startPausedHeartbeat();
+      console.log(`[Stream] ⏸️ Stream pausado en el último fotograma (${this.latestFrameBuffer.length} bytes). Clientes activos: ${this.clients.size}`);
+    } else {
+      console.warn("[Stream] ⚠️ Video mock finalizado pero no hay fotograma en memoria para pausar.");
+    }
+  }
+
+  /**
+   * Mantiene viva la conexión MJPEG de los navegadores enviando el fotograma pausado cada 1 segundo
+   */
+  startPausedHeartbeat() {
+    if (this._pausedHeartbeatInterval) return;
+    this._pausedHeartbeatInterval = setInterval(() => {
+      if (this.isPaused && this.latestFrameBuffer && this.clients.size > 0) {
+        this.broadcastFrame(this.latestFrameBuffer);
+      }
+    }, 1000);
+  }
+
+  /**
    * Consume y retorna el fotograma más reciente en memoria, liberando el backpressure
    * y reanudando la ingesta de FFmpeg si la simulación rápida está activa.
    * @param {number} [maxAgeMs=15000]
@@ -583,6 +659,42 @@ export class StreamServer {
    * @returns {Buffer|null}
    */
   getLatestFrame(maxAgeMs = 15000) {
+    if (this.mockVideoPath && this.streamFastForward && this.frameQueue && this.frameQueue.length > 0) {
+      const nextItem = this.frameQueue.shift();
+      this.latestFrameBuffer = nextItem.frame;
+      this.latestFrameVirtualNow = nextItem.virtualNow;
+      this.latestConsumedVirtualNow = nextItem.virtualNow;
+      this.framesEmitted = nextItem.frameIndex;
+      this.latestFrameTimestamp = Date.now();
+      this.broadcastFrame(nextItem.frame);
+
+      if (this.frameQueue.length < (this.maxQueueSize / 2)) {
+        this.isFramePendingConsumption = false;
+        if (this.ffmpegProcess && this.ffmpegProcess.stdout && this.ffmpegProcess.stdout.isPaused()) {
+          this.ffmpegProcess.stdout.resume();
+        }
+        if (typeof this._processPendingStreamChunks === "function") {
+          this._processPendingStreamChunks();
+        }
+      }
+
+      if (this.frameQueue.length === 0 && this._mockEndedPendingFlush) {
+        this._mockEndedPendingFlush = false;
+        this.pauseOnLastFrame();
+        if (typeof this.onMockVideoEnd === "function") {
+          Promise.resolve(this.onMockVideoEnd(this.getVirtualNow())).catch(err => {
+            console.warn("[Stream] Aviso en onMockVideoEnd diferido tras drenar cola:", err.message);
+          });
+        }
+      }
+      return nextItem.frame;
+    }
+
+    // Si el video está pausado en el último cuadro, entregar siempre el último cuadro preservado
+    if (this.isPaused && this.latestFrameBuffer) {
+      return this.latestFrameBuffer;
+    }
+
     if (this.latestFrameTimestamp && (Date.now() - this.latestFrameTimestamp > maxAgeMs)) {
       return null;
     }

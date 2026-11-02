@@ -346,15 +346,15 @@ assert.strictEqual(closedAppts[0].chairId, "silla_corte_1");
 assert.strictEqual(timeoutService.activeSessions.size, 0, "No deben quedar sesiones activas en la silla");
 console.log("-> Máquina de estados con gracia de 30s y reanudación validada exitosamente.");
 
-console.log("\n[12] Probando filtro de permanencia y debounce de asiento (consecutiveChairFrames >= 6)...");
+console.log("\n[12] Probando filtro de permanencia y debounce de asiento (consecutiveChairFrames >= 10)...");
 const debounceApptService = new VisitSessionService({
   db: mockDb,
   sqliteClient: sqlite,
   customerService: custService,
-  minConsecutiveChairFrames: 6
+  minConsecutiveChairFrames: 10
 });
 
-// Transeúnte en silla por 2 fotogramas (consecutiveChairFrames: 2 < 6)
+// Transeúnte en silla por 2 fotogramas (consecutiveChairFrames: 2 < 10)
 const walkerTrack = {
   trackId: 401,
   consecutiveChairFrames: 2,
@@ -365,17 +365,17 @@ assert.strictEqual(walkerSession, null, "Transeúnte con solo 2 fotogramas NO de
 assert.strictEqual(debounceApptService.activeSessions.has(401), false, "No debe haber sesión en memoria");
 console.log("-> Transeúnte en tránsito (2 fotogramas) descartado correctamente sin abrir atención.");
 
-// Cliente sentado por >= 6 fotogramas (consecutiveChairFrames: 6)
+// Cliente sentado por >= 10 fotogramas (consecutiveChairFrames: 10)
 const seatedTrack = {
   trackId: 402,
-  consecutiveChairFrames: 6,
+  consecutiveChairFrames: 10,
   currentQuadrant: { id: "silla_corte_debounce", label: "Silla Debounce", type: "barber_chair" }
 };
 const seatedSession = await debounceApptService.processTrack(seatedTrack);
-assert.ok(seatedSession, "Cliente con >= 6 fotogramas DEBE abrir la sesión de atención");
+assert.ok(seatedSession, "Cliente con >= 10 fotogramas DEBE abrir la sesión de atención");
 assert.strictEqual(seatedSession.status, "en_corte");
 assert.strictEqual(debounceApptService.activeSessions.has(402), true);
-console.log("-> Cliente con permanencia confirmada (>= 6 fotogramas) inicia atención exitosamente.");
+console.log("-> Cliente con permanencia confirmada (>= 10 fotogramas) inicia atención exitosamente.");
 
 console.log("\n[13] Probando filtro canónico Anti-Nuca / Anti-Espalda (similitud < 0.45)...");
 const antiNucaService = new VisitSessionService({
@@ -387,7 +387,7 @@ const antiNucaService = new VisitSessionService({
 
 const nucaTrack = {
   trackId: 501,
-  consecutiveChairFrames: 6,
+  consecutiveChairFrames: 10,
   currentQuadrant: { id: "silla_corte_nuca", label: "Silla Nuca", type: "barber_chair" }
 };
 await antiNucaService.processTrack(nucaTrack);
@@ -511,7 +511,7 @@ assert.ok(custService.getCustomerData(tempStaffCustId), "El perfil temporal debe
 // Iniciar sesión con fotos que en Set-to-Set pertenecen al barbero (sim >= 0.46)
 const staffChairTrack = {
   trackId: 601,
-  consecutiveChairFrames: 6,
+  consecutiveChairFrames: 10,
   identity: { personId: tempStaffCustId, name: "Cliente por verificar" },
   currentQuadrant: { id: "silla_corte_staff_test", label: "Silla Staff Test", type: "barber_chair" }
 };
@@ -547,7 +547,7 @@ const lifecycleService = new VisitSessionService({
 // Caso A: Cliente nuevo legítimo -> status = 'new'
 const newClientTrack = {
   trackId: 701,
-  consecutiveChairFrames: 6,
+  consecutiveChairFrames: 10,
   currentQuadrant: { id: "silla_corte_lifecycle_1", label: "Silla 1", type: "barber_chair" }
 };
 await lifecycleService.processTrack(newClientTrack);
@@ -578,7 +578,7 @@ await custService.saveOrUpdateCustomer({
 
 const recurringTrack = {
   trackId: 702,
-  consecutiveChairFrames: 6,
+  consecutiveChairFrames: 10,
   currentQuadrant: { id: "silla_corte_lifecycle_2", label: "Silla 2", type: "barber_chair" }
 };
 const recSession = await lifecycleService.processTrack(recurringTrack);
@@ -612,7 +612,7 @@ const cleaningService = new VisitSessionService({
 const tStart = 2000000;
 const clientChairTrack = {
   trackId: 801,
-  consecutiveChairFrames: 6,
+  consecutiveChairFrames: 10,
   chairEnteredAt: tStart - 2400, // Debounce offset
   currentQuadrant: { id: "silla_corte_clean", label: "Silla Limpieza", type: "barber_chair" }
 };
@@ -662,7 +662,7 @@ const fastRotService = new VisitSessionService({
 const tRotStart = 3000000;
 const clientATrack = {
   trackId: 901,
-  consecutiveChairFrames: 6,
+  consecutiveChairFrames: 10,
   currentQuadrant: { id: "silla_rot", label: "Silla Rotación", type: "barber_chair" }
 };
 const sessionA = await fastRotService.processTrack(clientATrack, { now: tRotStart });
@@ -687,7 +687,7 @@ const clientBVec = new Array(512).fill(0);
 clientBVec[50] = 1.0; // sim con clientAVec = 0.0 < 0.45
 const clientBTrack = {
   trackId: 902,
-  consecutiveChairFrames: 6,
+  consecutiveChairFrames: 10,
   chairEnteredAt: tBEnters,
   bestFace: {
     sharpnessScore: 92,
@@ -786,7 +786,7 @@ await custService.saveOrUpdateCustomer({
 
 const consensusTrack = {
   trackId: 950,
-  consecutiveChairFrames: 6,
+  consecutiveChairFrames: 10,
   identity: { personId: tempConsensusId, name: "Cliente temporal" },
   currentQuadrant: { id: "silla_corte_consensus", label: "Silla Consenso", type: "barber_chair" }
 };
@@ -829,7 +829,7 @@ const liveVerifyService = new VisitSessionService({
 
 const sittingTrack = {
   trackId: 960,
-  consecutiveChairFrames: 6,
+  consecutiveChairFrames: 10,
   currentQuadrant: { id: "silla_corte_verify", label: "Silla Verify", type: "barber_chair" },
   bestFace: {
     sharpnessScore: 84,
@@ -859,7 +859,7 @@ const ghostShieldService = new VisitSessionService({
 
 const personSitting = {
   trackId: 970,
-  consecutiveChairFrames: 6,
+  consecutiveChairFrames: 10,
   currentQuadrant: { id: "silla_corte_ghost", label: "Silla Ghost", type: "barber_chair" }
 };
 await ghostShieldService.processTrack(personSitting);
@@ -949,7 +949,7 @@ const faceVecA = new Array(512).fill(0);
 faceVecA[10] = 1.0;
 const testTrack25 = {
   trackId: 1025,
-  consecutiveChairFrames: 6,
+  consecutiveChairFrames: 10,
   chairEnteredAt: tConsStart,
   currentQuadrant: { id: "silla_corte_25", label: "Silla 25", type: "barber_chair" },
   bestFace: {
@@ -1002,7 +1002,7 @@ const clientFrontalVec = new Array(512).fill(0);
 clientFrontalVec[100] = 1.0;
 const testTrack26 = {
   trackId: 1026,
-  consecutiveChairFrames: 6,
+  consecutiveChairFrames: 10,
   chairEnteredAt: tTimeStart,
   currentQuadrant: { id: "silla_corte_26", label: "Silla 26", type: "barber_chair" },
   latestFace: {
@@ -1083,7 +1083,7 @@ mergeVec[150] = 1.0;
 // Tramo 1: Cliente formaliza cita de 20 minutos
 const trackM1 = {
   trackId: 1027,
-  consecutiveChairFrames: 6,
+  consecutiveChairFrames: 10,
   chairEnteredAt: tMergeStart,
   currentQuadrant: { id: "silla_merge", label: "Silla Merge", type: "barber_chair" },
   latestFace: {
@@ -1107,7 +1107,7 @@ const initialApptCount = mergeService.completedAppointments.length;
 const tMerge2Start = tMergeStart + 24 * 60 * 1000; // brecha de 4 min
 const trackM2 = {
   trackId: 1028,
-  consecutiveChairFrames: 6,
+  consecutiveChairFrames: 10,
   chairEnteredAt: tMerge2Start,
   currentQuadrant: { id: "silla_merge", label: "Silla Merge", type: "barber_chair" },
   latestFace: {
@@ -1132,7 +1132,7 @@ const diffPersonVec = new Array(512).fill(0);
 diffPersonVec[200] = 1.0;
 const trackM3 = {
   trackId: 1029,
-  consecutiveChairFrames: 6,
+  consecutiveChairFrames: 10,
   chairEnteredAt: tMerge3Start,
   currentQuadrant: { id: "silla_merge", label: "Silla Merge", type: "barber_chair" },
   latestFace: {

@@ -34,8 +34,8 @@ const BASE_CONFIG_DEFAULTS = {
   },
   tracking: {
     iouThreshold: 0.30,
-    minChairFrames: 6,
-    leaveDebounceFrames: 6,
+    minChairFrames: 10,
+    leaveDebounceFrames: 10,
     minChairDurationMs: 2000,
     leaveDebounceDurationMs: 2000,
     blockInactivityTimeoutMs: 20000
