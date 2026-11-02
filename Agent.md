@@ -45,7 +45,7 @@ El repositorio utiliza GitHub Actions con filtros por ruta (`paths:`):
 
 | Directorio / Archivos | Destino del Despliegue | Pipeline |
 | :--- | :--- | :--- |
-| `src/**`, `neolink.toml`, `package.json`, `package-lock.json` | GCP Compute Engine `e2-micro` (VM Daemon) | `.github/workflows/deploy-vm.yml` |
+| `src/**`, `scripts/**`, `config/**`, `neolink.toml`, `package.json`, `package-lock.json`, `.github/workflows/deploy-vm.yml` | Production VM (OVHcloud) (VM Daemon) | `.github/workflows/deploy-vm.yml` |
 | `web/**`, `firebase.json`, `storage.rules` | Firebase Hosting CDN + Storage Rules | `.github/workflows/deploy-hosting.yml` |
 | `agent/**`, `Agent.md`, `*.md` | Solo repositorio (sin despliegues automáticos) | N/A |
 

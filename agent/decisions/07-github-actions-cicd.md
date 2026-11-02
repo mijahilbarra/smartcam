@@ -1,7 +1,7 @@
 # ADR 07: CI/CD Selectivo con GitHub Actions
 
 * **Estado**: Aceptado / En Producción
-* **Fecha**: Octubre 2026
+* **Fecha**: Octubre 2026 (Actualizado: Noviembre 2026 para Producción en OVHcloud)
 * **Responsable**: Antigravity & Javier
 
 ---
@@ -9,32 +9,49 @@
 ## Contexto y Problema
 
 El repositorio contiene múltiples componentes con diferentes destinos de despliegue:
-* El código del daemon y captura (`src/`, `neolink.toml`, `package.json`), que se ejecuta en la máquina virtual **Compute Engine `e2-micro`**.
+* El código del daemon y captura (`src/`, `scripts/`, `config/`, `neolink.toml`, `package.json`), que se ejecuta en la máquina virtual de producción (**VPS Linux en OVHcloud**).
 * La interfaz web del panel (`web/`, `firebase.json`, `storage.rules`), que se aloja en **Firebase Hosting CDN**.
 * La documentación técnica de arquitectura (`agent/decisions/`).
 
-Desplegar todos los componentes a todos lados en cada commit es ineficiente, desperdicia minutos de GitHub Actions, incrementa el riesgo de interrupciones innecesarias en la VM y ralentiza el ciclo de desarrollo.
+Desplegar todos los componentes a todos lados en cada commit es ineficiente, desperdicia minutos de GitHub Actions, incrementa el riesgo de interrupciones innecesarias en el servidor de producción y ralentiza el ciclo de desarrollo.
 
 ---
 
 ## Decisión Técnica
 
-Se implementaron flujos de trabajo (**Workflows**) separados en GitHub Actions utilizando la directiva nativa `paths:` para **detección selectiva de cambios por carpeta**:
+Se implementaron flujos de trabajo (**Workflows**) separados en GitHub Actions utilizando la directiva nativa `paths:` para **detección selectiva de cambios por carpeta** y soporte para ejecución manual bajo demanda (`workflow_dispatch`):
 
-### 1. Despliegue de la VM (`.github/workflows/deploy-vm.yml`)
-* **Filtro de rutas**:
+### 1. Despliegue de la VM de Producción (`.github/workflows/deploy-vm.yml`)
+* **Nombre del Flujo**: `Deploy to Production VM (Camera Catcher)`
+* **Eventos y Filtro de rutas**:
   ```yaml
-  paths:
-    - 'src/**'
-    - 'neolink.toml'
-    - 'package.json'
-    - 'package-lock.json'
+  on:
+    push:
+      branches:
+        - main
+      paths:
+        - 'src/**'
+        - 'scripts/**'
+        - 'config/**'
+        - 'neolink.toml'
+        - 'package.json'
+        - 'package-lock.json'
+        - '.github/workflows/deploy-vm.yml'
+    workflow_dispatch:
   ```
 * **Mecanismo de Despliegue**:
-  * Autenticación SSH segura mediante llave privada dedicada almacenada en GitHub Secrets (`VM_SSH_KEY`).
-  * Sincronización atómica de archivos con `rsync` hacia `/opt/camera-catcher/` en la VM (incluyendo `package-lock.json`).
-  * **Verificación inteligente de dependencias**: Validación vía checksum SHA-256 de `package-lock.json` para evitar ejecuciones innecesarias de `npm` y prevenir el agotamiento de CPU burst credits / swap thrashing en la instancia `e2-micro`. Si no hay cambios, se omite `npm ci`.
-  * Reinicio sin caída del servicio con `sudo systemctl restart camera-catcher.service` y verificación con `systemctl is-active`.
+  * Autenticación SSH segura mediante llave privada dedicada almacenada en GitHub Secrets (`VM_SSH_KEY`) y host (`VM_HOST`, `VM_USER`).
+  * Sincronización atómica diferencial de archivos con `rsync -avz --delete` hacia `/opt/camera-catcher/` en la VM para los directorios y archivos: `src`, `scripts`, `config`, `package.json`, `package-lock.json`, `neolink.toml`.
+  * **Exclusiones críticas de protección en destino**:
+    * `--exclude 'node_modules'` (conserva dependencias instaladas en el servidor).
+    * `--exclude '.git'` (evita sobreescribir metadatos locales si los hubiera).
+    * `--exclude '.package-lock.hash'` (mantiene el cache de checksum de dependencias).
+    * `--exclude '.env'` (protege credenciales y secretos de entorno de producción).
+    * `--exclude 'service-account.json'` (protege la cuenta de servicio de Firebase / GCP).
+    * `--exclude 'data'` (protege la base de datos SQLite persistente `data/barberia.db` y datos locales).
+    * `--exclude 'daemon.log'` (evita borrar bitácoras activas del daemon).
+  * **Verificación inteligente de dependencias**: Validación vía checksum SHA-256 de `package-lock.json` y presencia de librerías nativas (`onnxruntime-node`, `sharp`) para ejecutar `npm install --omit=dev` únicamente cuando hay cambios de dependencias.
+  * **Limpieza de procesos y reinicio de servicio**: Eliminación preventiva de contenedores Neolink huérfanos (`neolink-capture`), reinicio con `sudo systemctl restart camera-catcher.service` y verificación de salud con `systemctl is-active`.
 
 ### 2. Despliegue de Hosting (`.github/workflows/deploy-hosting.yml`)
 * **Filtro de rutas**:
@@ -52,6 +69,8 @@ Se implementaron flujos de trabajo (**Workflows**) separados en GitHub Actions u
 ## Consecuencias
 
 ### Positivas:
+* **Despliegue 100% Automático**: Cada push a `main` que modifique el backend, scripts, configuraciones canónicas o dependencias se despliega inmediatamente en el VPS de OVHcloud sin intervención manual.
 * **Aislamiento total**: Cambios en la web no tocan la VM; cambios en la VM no redeployan el frontend; cambios en la documentación no disparan ningún pipeline.
-* **Velocidad**: El despliegue a la VM toma menos de 10 segundos vía `rsync` diferencial sobre SSH.
-* **Seguridad**: El usuario `deploy` en la VM solo tiene permisos acotados en `sudoers` para reiniciar el servicio `camera-catcher.service`.
+* **Velocidad**: El despliegue a la VM toma pocos segundos vía `rsync` diferencial sobre SSH.
+* **Seguridad y Persistencia**: Se garantiza que bases de datos SQLite (`data/`), credenciales (`.env`, `service-account.json`) y bitácoras del daemon nunca sean sobreescritas ni eliminadas en producción.
+* **Permisos Acotados**: El usuario `deploy` en la VM solo tiene permisos acotados en `sudoers` para reiniciar el servicio `camera-catcher.service`.

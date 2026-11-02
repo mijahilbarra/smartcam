@@ -18,7 +18,7 @@ on:
 
 jobs:
   inspect:
-    name: Fetch Logs & Status from GCP VM
+    name: Fetch Logs & Status from Production VM (OVHcloud)
     runs-on: ubuntu-latest
 
     steps:
