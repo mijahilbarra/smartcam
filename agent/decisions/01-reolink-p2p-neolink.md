@@ -20,17 +20,20 @@ La cámara instalada en la barbería es una **Reolink E321 (3MP)** con UID `9527
 
 Se adoptó **Neolink** (`quantumentangledandy/neolink:latest`), una implementación de código abierto escrita en **Rust** especializada en el protocolo Baichuan de Reolink:
 
-1. **Modo de extracción de imagen (`neolink image`)**:
-   En lugar de mantener un servidor RTSP perpetuo encendido consumiendo ancho de banda, se utiliza el modo de captura puntual:
-   ```bash
-   neolink image -c /etc/neolink.toml --use-stream -f /out/snap.jpeg barberia
+1. **Modo Servidor RTSP Dual-Stream Permanente (`neolink rtsp`)**:
+   En el contenedor daemon de producción (`neolink-daemon`), se configura `neolink.toml` con exposición dual:
+   ```toml
+   stream = "both"
    ```
+   Neolink publica localmente en el puerto `8554` ambos flujos de video:
+   - `rtsp://127.0.0.1:8554/barberia/sub`: Flujo ligero continuo en 640×360 @ 10 fps para YOLO, telemetría SSE y grabación en Drive.
+   - `rtsp://127.0.0.1:8554/barberia/main`: Flujo nativo en 2304×1296 @ 15 fps negociado reactivamente bajo demanda para biometría facial en sillas de corte.
 2. **P2P Handshake & UDP Punching**:
    Neolink negocia con los servidores P2P de Reolink, resuelve la IP y puerto efímero de la cámara en Movistar, e intercambia tokens de sesión criptográficos.
-3. **Bandwidth Efficiency con `--use-stream`**:
-   Como la cámara no soporta captura estática pura vía P2P, `--use-stream` instruye a Neolink a solicitar temporalmente el flujo de video H.264, esperar el primer Keyframe (I-frame) completo, decodificarlo a RGB y guardarlo como JPEG, cerrando la conexión de red inmediatamente.
-4. **Empaquetado en Docker**:
-   Se ejecuta como contenedor efímero (`docker run --rm`) con volumen montado para `neolink.toml` y el directorio temporal `/tmp`. Esto garantiza portabilidad absoluta en cualquier entorno Linux sin problemas de dependencias nativas de GStreamer o Rust.
+3. **Eficiencia de Ancho de Banda On-Demand**:
+   Aunque Neolink expone ambos streams, el servidor interno de GStreamer solo solicita el flujo pesado `main` a la cámara física cuando un cliente local conecta a su socket RTSP (`acquireClearFrame`), manteniendo el consumo en reposo al nivel de `subStream` (<0.5 Mbps).
+4. **Empaquetado y Auto-Recuperación en Docker**:
+   Se ejecuta como contenedor persistente (`docker run -d --name neolink-daemon --restart always -v /opt/camera-catcher/neolink.toml:/etc/neolink.toml -p 8554:8554 quantumentangledandy/neolink:latest neolink rtsp -c /etc/neolink.toml`). Cuenta con auto-recuperación gestionada por el daemon (`onEnsureRtspSource`) si se detecta apagado.
 
 ---
 
@@ -38,8 +41,8 @@ Se adoptó **Neolink** (`quantumentangledandy/neolink:latest`), una implementaci
 
 ### Positivas:
 * Conexión confiable a través del CGNAT de Movistar sin requerir VPN ni IP pública en la barbería.
-* Captura de alta resolución (3MP / 2304×1296 píxeles) en solo 8 a 12 segundos.
-* Cero consumo continuo de datos: el túnel de video se abre únicamente por los segundos que tarda en recibir un fotograma clave.
+* Disponibilidad dual instantánea: streaming ligero constante a 10 FPS e instantáneas HD de 3MP (2304×1296) bajo demanda en ~1.4 segundos.
+* Cero dependencias nativas complejas en el host gracias a la encapsulación en Docker.
 
 ### Negativas / Restricciones:
 * Requiere un sistema operativo con soporte de red UDP nativo (por lo cual no puede correr en entornos serverless con NAT estricto como Cloud Functions).

@@ -24,45 +24,52 @@ flowchart TB
         CAM -->|Flujo H.264 comprimido| CGNAT
     end
 
-    subgraph GCP ["☁️ Google Cloud Platform (Proyecto: skip-bigotes)"]
-        subgraph VM ["🖥️ Compute Engine e2-micro (us-central1-a) - Free Tier ($0)"]
-            DAEMON["⚙️ Node.js Daemon (camera-catcher.service)<br/>Systemd 24/7"]
-            DOCKER["🐳 Neolink Docker Engine<br/>quantumentangledandy/neolink:latest"]
-            REALTIME["⚡ Continuous Realtime Loop<br/>(2.5s) + Working Hours Gate"]
-            LISTENER["📡 Real-time Firestore Listener<br/>(camera_catcher/commands)"]
+    subgraph Host ["☁️ Host de Producción (OVHcloud VPS-1, US-East Virginia)"]
+        DAEMON["⚙️ Node.js Daemon (camera-catcher.service)<br/>Systemd 24/7 (Ubuntu 24.04, 4 GB RAM)"]
+        DOCKER["🐳 Neolink Docker Engine<br/>quantumentangledandy/neolink:latest (stream = 'both')"]
+        REALTIME["⚡ Bucle Continuo de Visión IA<br/>(~5.5 FPS / 180ms) + Working Hours"]
+        STREAM["📡 Ingesta & Streaming MJPEG<br/>(10 FPS sobre /sub)"]
+        CLEAR["📸 Enriquecimiento Facial Reactivo<br/>(2304x1296 sobre /main on-demand)"]
+        LISTENER["📡 Real-time Firestore Listener<br/>(camera_catcher/commands)"]
+        TUNNEL["🔒 Cloudflare Tunnel (cloudflared)<br/>https://stream.perrosuelto.com"]
 
-            REALTIME -->|Frame en memoria RAM / ML| DOCKER
-            LISTENER -->|Disparo manual| DOCKER
-            DOCKER <-->|P2P Baichuan UDP Relay| CGNAT
-        end
-
-        subgraph FirebaseServices ["🔥 Servicios Firebase & Google APIs"]
-            FS_CMD["📄 Firestore: camera_catcher/commands"]
-            FS_CFG["⚙️ Firestore: camera_catcher/prompt<br/>(prompt + workingHours)"]
-            FS_PHOTOS["🗄️ Firestore: camera_catcher/photos/photos/<doc>"]
-            STORAGE["📦 Firebase Storage<br/>(skip-bigotes.firebasestorage.app)"]
-            GEMINI["🧠 Gemini Vision API<br/>(gemini-flash-latest)"]
-            HOSTING["🌐 Firebase Hosting CDN<br/>(camera-catcher-bigotes.web.app)"]
-            GDRIVE["📁 Google Drive (5 TB)<br/>(IOT_Camera_Recordings/YYYY-MM-DD)"]
-        end
-
-        DAEMON -->|Sube imagen JPEG| STORAGE
-        DAEMON -->|Sube chunks 15m + auto-purga| GDRIVE
-        DAEMON -->|Lee prompt dinámico| FS_CFG
-        FS_CFG -->|Sincroniza horario laboral| REALTIME
-        DAEMON -->|Envía Base64| GEMINI
-        GEMINI -->|Retorna descripción| DAEMON
-        DAEMON -->|Guarda metadata y análisis| FS_PHOTOS
-        FS_CMD -->|WebSocket push| LISTENER
+        STREAM -->|10 FPS Frame en RAM / 0ms| REALTIME
+        REALTIME -->|Track en silla sin rostro nítido| CLEAR
+        CLEAR -->|Recorte HD| DAEMON
+        LISTENER -->|Disparo manual| DOCKER
+        DOCKER <-->|P2P Baichuan UDP Relay| CGNAT
+        DAEMON -->|MJPEG Stream & SSE Telemetría| TUNNEL
     end
+
+    subgraph FirebaseServices ["🔥 Servicios Firebase & Google Cloud (Proyecto: skip-bigotes)"]
+        FS_CMD["📄 Firestore: camera_catcher/commands"]
+        FS_CFG["⚙️ Firestore: camera_catcher/prompt<br/>(prompt + workingHours)"]
+        FS_PHOTOS["🗄️ Firestore: camera_catcher/photos/photos/<doc>"]
+        STORAGE["📦 Firebase Storage<br/>(skip-bigotes.firebasestorage.app)"]
+        GEMINI["🧠 Gemini Vision API<br/>(gemini-flash-latest)"]
+        HOSTING["🌐 Firebase Hosting CDN<br/>(camera-catcher-bigotes.web.app)"]
+        GDRIVE["📁 Google Drive (5 TB)<br/>(IOT_Camera_Recordings/YYYY-MM-DD)"]
+    end
+
+    DAEMON -->|Sube rostro HD a Storage| STORAGE
+    DAEMON -->|Sube chunks 15m @ 10 FPS + auto-purga| GDRIVE
+    DAEMON -->|Lee prompt dinámico| FS_CFG
+    FS_CFG -->|Sincroniza horario laboral| REALTIME
+    DAEMON -->|Envía Base64 en manual| GEMINI
+    GEMINI -->|Retorna descripción| DAEMON
+    DAEMON -->|Guarda metadata y análisis| FS_PHOTOS
+    FS_CMD -->|WebSocket push| LISTENER
 
     subgraph Clients ["👥 Clientes / Usuarios"]
         BROWSER["💻 Panel Web Dashboard<br/>(Cualquier dispositivo)"]
         BROWSER <-->|Lee y actualiza prompt y horario| FS_CFG
         BROWSER -->|Dispara 'Capturar Ahora'| FS_CMD
+        TUNNEL -->|Stream de video 10 FPS y SSE| BROWSER
         FS_PHOTOS -->|onSnapshot en tiempo real| BROWSER
         STORAGE -->|getDownloadURL / CDN| BROWSER
         HOSTING -->|Sirve assets HTML/JS/CSS| BROWSER
+    end
+```
     end
 ```
 
@@ -115,8 +122,8 @@ sequenceDiagram
 
 | Módulo | Tecnología / Herramienta | Rol en la Arquitectura | Archivo de Decisión |
 | :--- | :--- | :--- | :---: |
-| **P2P Protocol** | Neolink (Rust) | Conexión UDP P2P con protocolo Baichuan y extracción H.264 | [01-reolink-p2p-neolink.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/01-reolink-p2p-neolink.md) |
-| **Cómputo 24/7** | GCP Compute Engine `e2-micro` | VM Linux gratuita (Free Tier $0) con stack de red UDP nativo | [02-gcp-compute-engine-e2-micro.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/02-gcp-compute-engine-e2-micro.md) |
+| **P2P Protocol** | Neolink (Rust) | Conexión UDP P2P con protocolo Baichuan y servidor RTSP Dual-Stream (`both`) | [01-reolink-p2p-neolink.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/01-reolink-p2p-neolink.md) |
+| **Cómputo 24/7** | OVHcloud VPS-1 (Starter) | Servidor VPS en Virginia (4 GB RAM, 20 GB SSD, $5.35/m) sin cobros de IPv4 | [02-ovhcloud-vps-production-host.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/02-ovhcloud-vps-production-host.md) |
 | **Base de Datos & Bus** | Cloud Firestore | Base NoSQL, bus de comandos en tiempo real y configuración dinámica | [03-firebase-firestore.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/03-firebase-firestore.md) |
 | **Media Storage** | Firebase Storage (GCS) | Almacenamiento seguro de imágenes y distribución CDN de miniaturas | [04-firebase-storage.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/04-firebase-storage.md) |
 | **Inteligencia Visual** | Google Gemini Vision API | Análisis contextual y descripción visual de fotogramas de la barbería | [05-gemini-vision-ai.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/05-gemini-vision-ai.md) |
@@ -132,7 +139,7 @@ sequenceDiagram
 | **Galería Multi-Ángulo & Sesión Temporal** | ArcFace MobileFaceNet + Sesión Temporal | Fusión de poses faciales por silla/visita y galería multi-embedding (tope 6) sin duplicación | [15-multi-angle-biometric-session-gallery.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/15-multi-angle-biometric-session-gallery.md) |
 | **Almacenamiento Biométrico Dual** | SQLite WAL + RAM Cache + Firebase Asíncrono | Almacenamiento local de ultra-baja latencia (<1ms), caché en RAM y reflejo selectivo a la nube ($0 cuotas) | [16-sqlite-local-biometric-storage.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/16-sqlite-local-biometric-storage.md) |
 | **Túnel HTTPS Seguro & SSE** | Cloudflare Tunnel (`cloudflared`) | Conexión saliente segura sin puertos abiertos para Live Streaming MJPEG y Telemetría SSE en producción | [17-secure-stream-tunnel.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/17-secure-stream-tunnel.md) |
-| **Optimización de RAM & Streaming Resiliente** | Glibc MALLOC_ARENA_MAX=2 + V8 Flags + FFmpeg 3.5 FPS + Self-Healing | Reducción de 84MB RAM, poda de fotos en caché, detección O(1) de personas y auto-recuperación de stream | [18-ram-optimization-and-resilient-stream.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/18-ram-optimization-and-resilient-stream.md) |
+| **Optimización de RAM & Streaming Resiliente** | Glibc MALLOC_ARENA_MAX=2 + Ingesta 10 FPS / IA 5.5 FPS + Self-Healing | Desacoplamiento de FPS (Video 10 FPS / IA 5.5 FPS), poda de fotos en caché, detección O(1) y auto-recuperación | [18-ram-optimization-and-resilient-stream.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/18-ram-optimization-and-resilient-stream.md) |
 | **Grabación & Simulación Offline** | FFmpeg Wallclock + Replay 1x + MOCK_VIDEO_PATH | Grabación sin colisiones P2P, inyección en tiempo real 1x en bucle infinito y pruebas offline sin internet | [19-offline-stream-recording-and-simulation.md](19-offline-stream-recording-and-simulation.md) |
 | **Gobernanza Biométrica sin Tiempos Estáticos** | MobileFaceNet (Umbral <0.60) + Presencia Real | Cero límites estáticos de 60m o timers ciegos; ciclo de vida gobernado exclusivamente por identidad facial y escena física | [20-zero-static-time-rules-and-biometric-lifecycle.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/20-zero-static-time-rules-and-biometric-lifecycle.md) |
 | **Configuración Canónica & Unificación Determinista** | `pipeline_config.json` + Reloj Virtual + Pipeline 2 Pasos | Centralización de umbrales, paridad 100% entre Vivo/Simulador/Dos Pasos y depuración en 5 segundos | [21-canonical-pipeline-config-and-deterministic-unification.md](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/21-canonical-pipeline-config-and-deterministic-unification.md) |

@@ -120,3 +120,26 @@ Ejecutar capturas fotográficas periódicas mediante un temporizador cron dinám
 ### Reemplazo adoptado:
 * **Bucle Continuo en Tiempo Real**: Ejecución cada 2.5s (`startRealtimeLoop` en `src/index.js`), con gating de jornada laboral mediante `WorkingHoursManager` en `src/core/working_hours.js`.
 * **Depuración Total**: Eliminación radical del archivo `src/services/scheduler_service.js`, pruebas de ticker regresivo obsoletas (`test/test-countdown-ticker.js`), campos `countdown`/`intervalMinutes` de `daemonReporter` y controles del intervalo periódico en el frontend web.
+
+---
+
+## 7. Google Cloud Compute Engine `e2-micro` (Free Tier) como Host de Producción
+
+### ¿Qué se utilizó?
+Una máquina virtual `e2-micro` (2 vCPUs compartidas, 1 GB RAM, 20 GB disco `pd-standard`) en la región `us-central1-a` (Iowa) bajo la capa Always Free de Google Cloud para ejecutar el daemon y Neolink 24/7.
+
+### ¿Por qué se retiró / reemplazó?
+1. **Cobros Obligatorios de IPv4 Pública ($0.005/hora)**:
+   * Google Cloud modificó su política tarifaria comenzando a cobrar por toda dirección IPv4 pública en uso (~$3.60 a $7.20 USD mensuales).
+   * La instancia dejó de ser $0.00 real, resultando más costosa que un VPS comercial dedicado con especificaciones superiores.
+2. **Cuello de Botella Severo de Memoria RAM (1 GB)**:
+   * 1 GB de RAM resultaba insuficiente para ejecutar conjuntamente Ubuntu 22.04, Docker, Neolink, Node.js y los modelos ONNX (YOLOv8 + ArcFace).
+   * La memoria se mantenía permanentemente al 85–90% de saturación, forzando el uso de 2 GB de swap en disco, degradando los tiempos de inferencia y aumentando el riesgo de congelamiento del sistema.
+
+### Reemplazo adoptado:
+Se migró formalmente hacia **OVHcloud VPS-1 Starter** ($5.35 USD/mes) en el datacenter de Virginia (US-East) ([ADR 02](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/decisions/02-ovhcloud-vps-production-host.md)):
+* **4 GB de RAM física** (4× más capacidad), operando con holgura al 6% de memoria sin swap.
+* 1 IPv4 pública dedicada incluida sin costo adicional.
+* Tráfico no medido (unmetered) y protección Anti-DDoS.
+* La máquina virtual de GCP fue apagada y decomisionada para cortar los cargos por IP pública.
+

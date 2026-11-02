@@ -40,10 +40,11 @@ Asimismo, se detectaron tres factores críticos de sobreconsumo e inestabilidad:
   - Si la escena está inmóvil (< 1% de variación) y **no hay personas presentes**, el sistema permite hasta **25 ciclos consecutivos de salto de inferencia (~30 segundos a 0% CPU / 0 ms)**.
   - Si hay personas rastreadas activas, el límite de saltos se acota a 5 para preservar la reactividad del tracking continuo.
 
-### 4. Arquitectura Dual-Stream Desacoplada (Stream Continuo a 3.5 FPS + Captura HD On-Demand)
-- **Desacoplamiento Dual-Stream**:
-  - **Flujo Continuo Ligero**: Ingesta continua sobre `subStream` (640x360) a **3.5 FPS** (`STREAM_FPS=3.5`, `-q:v 4`, `-threads 1`). Esto asegura que el visor web MJPEG y la inferencia YOLO consuman menos del 5% de CPU, erradicando saturaciones de carga y riesgos de OOM en la VM `e2-micro`.
-  - **Captura HD On-Demand**: Cuando un cliente sentado en silla requiere biometría nítida, `clear_stream_step.js` solicita puntualmente un único fotograma de alta definición (2304x1296) a `/main`, recortando el rostro a máxima fidelidad con Sharp y respetando cooldown de 12s.
+### 4. Arquitectura Dual-Stream Desacoplada (Video a 10 FPS + Inferencia IA a 5.5 FPS + Captura HD On-Demand)
+- **Desacoplamiento de Frecuencias de Cuadro (FPS)**:
+  - **Video Continuo a 10 FPS**: Ingesta continua sobre `subStream` (640x360) a **10 FPS** (`STREAM_FPS=10`, `-q:v 4`, `-threads 1`). Esto asegura que el visor web MJPEG y la grabación continua en Google Drive se capturen a la tasa de refresco nativa de la cámara con máxima fluidez visual.
+  - **Bucle de Inferencia de IA a ~5.5 FPS (~180ms)**: El bucle de visión y tracking espacial de personas (`RealtimeLoop`) opera con cadencia de ~180 ms. Al nutrirse del fotograma más reciente en RAM en 0 ms, aprovecha la CPU al ~35% durante movimiento y 0% en escenas estáticas, evitando saturar el procesador del VPS.
+  - **Captura HD On-Demand**: Cuando un cliente sentado en silla requiere biometría nítida, `clear_stream_step.js` solicita puntualmente un único fotograma de alta definición (2304x1296) a `/barberia/main`, recortando el rostro a máxima fidelidad con Sharp y respetando cooldown de 20s.
 - **Sondeo RTSP Robusto**: Flags `-analyzeduration 15000000` y `-probesize 1000000` preservados en el demuxer RTSP TCP para garantizar la recepción completa de parámetros SPS/PPS de H.264 sin abortar por timeout.
 - **Auto-Recuperación (`onEnsureRtspSource`)**: Si un cliente se conecta a `/api/stream` y el contenedor `neolink-daemon` no está activo en el puerto 8554, el servidor lo detecta y lo levanta automáticamente antes de spawnear FFmpeg.
 - **Persistencia de Último Fotograma**: Si FFmpeg reconecta momentáneamente, `latestFrameBuffer` no se anula, permitiendo que `/api/snapshot` continúe entregando el último frame válido en lugar de responder 503.
