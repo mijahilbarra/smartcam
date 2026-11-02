@@ -117,7 +117,7 @@ El repositorio utiliza GitHub Actions con filtros por ruta (`paths:`):
 > El servidor / daemon (`src/index.js`) tiene una única responsabilidad: conectarse a la cámara/stream, adquirir fotogramas y procesar el pipeline de visión por computadora (detección YOLO, ArcFace y seguimiento).
 > 1. **Prohibición Total de Servir como API Web o Backend CRUD**: Queda terminantemente prohibido utilizar el servidor para servir endpoints de consulta, creación, modificación o eliminación de datos de negocio (como atenciones/appointments, perfiles de clientes, fotos o configuraciones).
 > 2. **Todo el Proceso de Datos Vive en el Frontend**: Toda la gestión de lectura, escritura y borrado de citas, clientes y configuraciones debe realizarse directamente desde el frontend (`web/`) comunicándose de forma serverless con Firebase (Cloud Firestore y Storage).
-> 3. **Cero Sobrecarga Extra en la Máquina Virtual**: La VM de cómputo (`e2-micro` o hardware de borde) debe dedicar el 100% de su capacidad a la inferencia neuronal y flujo de imágenes sin sobrecargas de peticiones HTTP de datos.
+> 3. **Cero Sobrecarga Extra en la Máquina Virtual**: La VM de cómputo (OVHcloud VPS o hardware de borde) debe dedicar el 100% de su capacidad a la inferencia neuronal y flujo de imágenes sin sobrecargas de peticiones HTTP de datos.
 > 4. **Flujo Continuo en Tiempo Real**: El sistema opera de forma continua y autónoma con bucle en tiempo real (`startRealtimeLoop`). La telemetría y métricas se transmiten vía Server-Sent Events (SSE) hacia la interfaz web.
 
 ---
@@ -130,7 +130,7 @@ El repositorio utiliza GitHub Actions con filtros por ruta (`paths:`):
 > | Entorno | Firestore Database | Firebase Cloud Storage | SQLite Local |
 > | :--- | :--- | :--- | :--- |
 > | **Local / Dev / Simulador E2** (`localhost`, `127.0.0.1`, Docker `e2-micro-sim`) | `"test"` | `"skip-bigotes-test"` (`gs://skip-bigotes-test`) | `data/barberia_test.db` |
-> | **Producción Real** (`camera-catcher-bigotes.web.app`, VM GCP `/opt/camera-catcher`) | `"(default)"` | `"skip-bigotes.firebasestorage.app"` (`gs://...`) | `data/barberia.db` |
+> | **Producción Real** (`camera-catcher-bigotes.web.app`, VPS OVH `/opt/camera-catcher`) | `"(default)"` | `"skip-bigotes.firebasestorage.app"` (`gs://...`) | `data/barberia.db` |
 > 
 > 1. **Prohibición de Fallback a Producción en Local**: En [`web/src/shared/lib/environment.js`](web/src/shared/lib/environment.js), el cálculo automático DEBE resolver siempre:
 >    ```javascript
@@ -212,19 +212,19 @@ El repositorio utiliza GitHub Actions con filtros por ruta (`paths:`):
 
 1. **Captura P2P (Neolink)**:
    - Comunicación UDP con protocolo Baichuan propietario de Reolink para atravesar CGNAT sin IP pública.
-2. **Daemon Host (GCP VM `e2-micro`)**:
-   - Servicio systemd 24/7 (`camera-catcher.service`) que coordina Neolink, captura de fotogramas, inferencia local ONNX y túnel Cloudflare.
-   - Configurado con `MALLOC_ARENA_MAX=2` y flags de Node.js `--optimize-for-size --max-old-space-size=192` para operar de forma ultra-ligera en 1 GB de RAM (~210 MB RSS en prod).
+2. **Daemon Host (OVHcloud VPS-1, US-East Virginia)**:
+   - Servicio systemd 24/7 (`camera-catcher.service`) sobre Ubuntu 24.04 LTS (4 GB RAM, 20 GB SSD NVMe) que coordina Neolink, captura de fotogramas, inferencia local ONNX y túnel Cloudflare.
+   - Opera de forma holgada al ~6% de RAM (~240 MB RSS) sin requerir swap en disco.
 3. **Firestore**:
    - `camera_catcher/prompt`: Configuración viva de horario laboral (workStartTime, workEndTime, timezone) y prompt para Gemini.
    - `camera_catcher/photos/photos/<id>`: Metadatos y descripciones analíticas de cada foto.
 4. **Firebase Storage**:
-   - Bucket que almacena los fotogramas JPEG (`camera_catcher/photos/<id>.jpg`).
+   - Bucket que almacena los fotogramas JPEG (`camera_catcher/photos/<id>.jpg`) y recortes de rostros en alta resolución (`camera_catcher/faces/<id>.jpg`).
 5. **Gemini Vision AI (`gemini-flash-latest`)**:
    - Inferencia multimodal sobre el fotograma capturado según el prompt dinámico configurado.
 6. **Frontend Web Dashboard (`web/`)**:
    - Vue 3 + Tailwind CSS + Vite y Firebase SDK para monitoreo y control en tiempo real desde navegadores con badge de memoria RAM en vivo.
 7. **Pipeline Funcional Core (`src/services/processes.js`, `src/services/pipeline/` & `agent/PROCESSES.md`)**:
-   - **Pipeline Core del Sistema**: Orquestador lineal de alto nivel (`src/services/processes.js`, < 110 líneas) descompuesto en etapas puras y declarativas bajo `src/services/pipeline/` para adquisición de fotogramas (0ms RAM en tiempo real o Stream Clear 2560x1440 reactivo en `clear_stream_step.js`), inferencia local YOLOv8 con acceso $O(1)$ a personas y modo centinela de 25 skips estáticos (`detection_step.js`), seguimiento continuo de personas (`tracking_step.js`), biometría gobernada por sesión con galería multi-ángulo y caché podada de fotos en RAM (`biometrics_step.js` + `VisitSessionService` + ArcFace MobileFaceNet), gestión de visitas (`visits_step.js`), cálculo funcional de ocupación (`occupancy_step.js`), emisión SSE de telemetría y métricas de RAM (`telemetry_step.js`) y persistencia atómica (`persistence_step.js`). Especificación canónica y guía de extensión detalladas en [`agent/PROCESSES.md`](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/PROCESSES.md).
-8. **Live Streaming MJPEG Resiliente & Túnel Seguro (ADR 17 & ADR 18)**:
-   - Arquitectura Dual-Stream desacoplada: Streaming continuo liviano (`subStream` 640x360 a 3.5 FPS, `-q:v 4`, `-threads 1`) para el visor web y YOLO (<5% CPU), y captura puntual en alta resolución (2304x1296) bajo demanda gobernada por `clear_stream_step.js` para biometría de clientes sentados, retención de último fotograma para `/api/snapshot` y auto-recuperación (`onEnsureRtspSource`) que levanta el contenedor `neolink-daemon` si se encuentra apagado. Conectado a producción vía Cloudflare Tunnel en `https://stream.perrosuelto.com`.
+   - **Pipeline Core del Sistema**: Orquestador lineal de alto nivel (`src/services/processes.js`, < 110 líneas) descompuesto en etapas puras y declarativas bajo `src/services/pipeline/` para adquisición de fotogramas (0ms RAM en tiempo real o Stream Clear 2304x1296 reactivo en `clear_stream_step.js`), inferencia local YOLOv8 con acceso $O(1)$ a personas y modo centinela de skips estáticos (`detection_step.js`), seguimiento continuo de personas (`tracking_step.js`), biometría gobernada por sesión con galería multi-ángulo y caché podada de fotos en RAM (`biometrics_step.js` + `VisitSessionService` + ArcFace MobileFaceNet), gestión de visitas (`visits_step.js`), cálculo funcional de ocupación (`occupancy_step.js`), emisión SSE de telemetría y métricas de RAM (`telemetry_step.js`) y persistencia atómica (`persistence_step.js`). Especificación canónica y guía de extensión detalladas en [`agent/PROCESSES.md`](file:///Users/javierli/Documents/elmuki/IOTCameraCatcher/agent/PROCESSES.md).
+8. **Live Streaming MJPEG Resiliente & Túnel Seguro (ADR 17, ADR 18 & ADR 23)**:
+   - Arquitectura Dual-Stream desacoplada: Ingesta y streaming continuo ligero a **10 FPS** (`subStream` 640x360, `-q:v 4`, `-threads 1`) para el visor web y grabación continua a Google Drive, bucle de inferencia neuronal IA a **~5.5 FPS (~180 ms)**, y captura reactiva en alta resolución (2304x1296) bajo demanda gobernada por `clear_stream_step.js` para biometría de clientes sentados, retención de último fotograma para `/api/snapshot` y auto-recuperación (`onEnsureRtspSource`) que levanta el contenedor `neolink-daemon` si se encuentra apagado. Conectado a producción vía Cloudflare Tunnel en `https://stream.perrosuelto.com`.

@@ -17,8 +17,8 @@ El Pipeline Core está estructurado bajo el principio de **separación estricta 
 2. **Módulos de Pasos Independientes (`src/services/pipeline/*.js`)**:
    - Toda la lógica procedural pesada (manipulación de buffers con Sharp, transformaciones de coordenadas, llamadas ONNX, sincronizaciones locales SQLite/WAL y sockets) vive confinada en módulos específicos.
    - Cada step expone funciones puras, desacopladas y aisladamente testeables.
-3. **Eficiencia de recursos ($0 Cloud / 1 GB RAM)**:
-   - Diseñado para operar 24/7 sobre una máquina virtual GCP `e2-micro` sin saturar CPU ni memoria.
+3. **Eficiencia de recursos (4 GB RAM / ~240 MB RSS)**:
+   - Diseñado para operar 24/7 sobre un servidor OVHcloud VPS-1 (4 GB RAM) con mínimo consumo (<7% RAM) y control térmico estricto.
 
 ---
 
@@ -51,7 +51,7 @@ flowchart TD
     VNOW --> S3["3. detectScene<br/>(detection_step.js: ONNX Runtime + YOLOv8 + Cuadrantes)"]
     S3 --> S4["4. trackEntities(tracker, mlResult, virtualNow)<br/>(tracking_step.js: PersonTracker espacial trackId)"]
     S4 --> TEL_EARLY["⚡ 4a. broadcastTelemetry Inmediato<br/>(telemetry_step.js: SSE <50ms Cajas, Tracks e immediateOccupancy)"]
-    TEL_EARLY --> CLEAR["4b. enrichCropsWithClearStream<br/>(clear_stream_step.js: Snapshot RTSP 2560x1440, reescalado y recortes Sharp)"]
+    TEL_EARLY --> CLEAR["4b. enrichCropsWithClearStream<br/>(clear_stream_step.js: Snapshot RTSP 2304x1296 nativo, reescalado y recortes Sharp)"]
     CLEAR --> S5A["5a. extractClientCrops<br/>(biometrics_step.js: Recortes y storage manual)"]
     S5A --> S5B["5b. reidentifyPeople(nowEpoch: virtualNow)<br/>(biometrics_step.js: ArcFace + CustomerService SQLite WAL)"]
     S5B --> S6["6. matchIdentitiesToTracks(now: virtualNow)<br/>(tracking_step.js: Asociación Espacial IoU Box-to-Track)"]
