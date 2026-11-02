@@ -431,6 +431,14 @@ export async function flushCausalPipeline({
     }
   }
 
+  // 1b. Extraer y despachar cualquier bloque confirmado pendiente (ej. tramo sentado salvado)
+  const pendingBlocks = typeof trackBlockManager.extractPendingConfirmedBlocks === "function"
+    ? trackBlockManager.extractPendingConfirmedBlocks()
+    : (Array.isArray(trackBlockManager.pendingConfirmedBlocks) ? trackBlockManager.pendingConfirmedBlocks.splice(0) : []);
+  for (const block of pendingBlocks) {
+    await visitService.processConfirmedBlock(block, { now: lastTimestamp });
+  }
+
   // 2. Forzar avance de reloj para timeout y cierre ordenado de sillas
   if (lastTimestamp !== null && lastTimestamp !== undefined) {
     const finalStep = lastTimestamp + emptyChairTimeoutMs + 1000;

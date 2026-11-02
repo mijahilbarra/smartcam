@@ -3,10 +3,11 @@
  * Firebase (base `test`) y SQLite (`barberia_test.db`) los datos de la fecha elegida.
  *
  * Uso:
- *   npm run stream:test                          -> borra desde hoy en adelante (America/Lima)
+ *   npm run stream:test                          -> borra desde hoy en adelante (America/Lima) en avance rápido
+ *   npm run stream:test -- --realtime            -> corre a cadencia real sincronizada con prod (10 FPS video, ~180ms IA)
  *   npm run stream:test -- --date 2026-10-24     -> borra solo esa fecha
  *   npm run stream:test -- --no-clean            -> no borra nada
- *   npm run stream:test -- --video data/recordings/otro.mp4 --start 2420
+ *   npm run stream:test -- --video data/recordings/otro.mp4 --start 2420 --fps 10
  *
  * Qué borra para la fecha: citas (camera_catcher_appointments) y visitas
  * (camera_catcher_visits) con inicio en ese día, y los clientes que queden sin
@@ -181,7 +182,9 @@ async function main() {
   }
 
   const isLoop = args.loop === true;
+  const isRealtime = args.realtime === true;
   console.log(`[StreamTest] 🎬 Modo: ${isLoop ? "Bucle continuo (--loop)" : "Una sola pasada (SIN BUCLE). El video correrá una vez y quedará pausado al finalizar."}`);
+  console.log(`[StreamTest] ⏱️ Cadencia: ${isRealtime ? "Tiempo Real (~180ms inferencia, 10 FPS video)" : "Avance Rápido (FAST_FORWARD, 0ms intervalo)"}`);
 
   const env = {
     ...process.env,
@@ -192,17 +195,17 @@ async function main() {
     MOCK_VIDEO_PATH: typeof args.video === "string" ? args.video : "data/recordings/barberia_stream_7h.mp4",
     MOCK_VIDEO_START_SS: typeof args.start === "string" ? args.start : "2420",
     MOCK_VIDEO_DURATION_SS: typeof args.duration === "string" ? args.duration : (process.env.MOCK_VIDEO_DURATION_SS || ""),
-    STREAM_FPS: typeof args.fps === "string" ? args.fps : (process.env.STREAM_FPS || "3.5"),
+    STREAM_FPS: typeof args.fps === "string" ? args.fps : (process.env.STREAM_FPS || "10"),
     ONNX_PROVIDER: "coreml",
     MOCK_VIDEO_LOOP: isLoop ? "true" : "false",
-    STREAM_FAST_FORWARD: "true",
+    STREAM_FAST_FORWARD: isRealtime ? "false" : "true",
     ENABLE_GDRIVE_RECORDING: "false",
-    REALTIME_INTERVAL_MS: "0",
+    REALTIME_INTERVAL_MS: isRealtime ? (typeof args.interval === "string" ? args.interval : "180") : "0",
     PORT: "8085"
   };
 
   const entry = args.dev ? "scripts/dev-local.js" : "src/index.js";
-  const maxMem = process.env.NODE_MAX_MEM || "8192";
+  const maxMem = process.env.NODE_MAX_MEM || "4096";
   const nodeArgs = [`--max-old-space-size=${maxMem}`, entry];
   const child = spawn("node", nodeArgs, { env, stdio: "inherit" });
   const forward = (sig) => () => child.kill(sig);

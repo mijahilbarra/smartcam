@@ -21,7 +21,20 @@ Antes de probar con video, siempre verifica que las 14 suites pasen al 100%:
 ```bash
 npm test
 ```
-*Verifica: desinfección de Firestore, reporter daemon, detector ONNX, horario comercial, modular core, nitidez facial, person tracker, visit sessions, debounce de procesos, unificación de clientes, cliente SQLite, servicio de clientes, pipeline de atenciones (27 pruebas) y resiliencia de stream (8 pruebas).*
+*Verifica: desinfección de Firestore, reporter daemon, detector ONNX, horario comercial, modular core, nitidez facial, person tracker, visit sessions, debounce de procesos, unificación de clientes, cliente SQLite, servicio de clientes, pipeline de atenciones, resiliencia de stream, detector de capa, anclaje espacial de silla, descargador de grabaciones Google Drive, track block manager, pipeline causal canónico componible y consulta de incidentes.*
+
+### B. Pruebas de Streaming y Monitoreo en Vivo (`npm run stream:test`)
+Lanza una prueba de streaming con video mock (una sola pasada) tras purgar la base `test` de Firebase y `barberia_test.db`:
+```bash
+# Avance rápido (FAST_FORWARD, 0ms intervalo):
+npm run stream:test
+
+# En tiempo real sincronizado con producción (10 FPS video, ~180ms inferencia):
+npm run stream:test -- --realtime
+
+# Tramo específico o fecha concreta:
+npm run stream:test -- --video data/recordings/barberia_stream_7h.mp4 --start 2420 --fps 10
+```
 
 ### B. Ejecutar pruebas dentro del contenedor Docker E2
 ```bash
@@ -169,6 +182,7 @@ Reproduce causalmente los recortes cosechados en el Paso 1 con paridad arquitect
 | `--video <nombre>` | | Nombre del video cosechado a evaluar | Detecta el más reciente |
 | `--from <segundos>` | | Filtra eventos a partir del segundo especificado | Inicio del video |
 | `--last <minutos>` | | Filtra únicamente los últimos N minutos | Ninguno |
+| `--verbose-blocks` | | Muestra log en consola de cada decisión de bloque (confirmado, descartado, presencia) | Desactivado |
 
 ##### Ejemplos de Ejecución:
 
@@ -186,7 +200,7 @@ node scripts/step2_causal_replay.js --last 30
 ```
 
 **Salidas generadas automáticamente:**
-- **Reporte Markdown del Funnel:** `docs/REPORTE_FUNNEL_<timestamp>.md` detallando el embudo paso a paso (recortes brutos $\to$ caras $\to$ piel $\to$ nitidez $\to$ barbero $\to$ sesiones $\to$ citas finales), tiempo de ejecución y el **motor de procesos exacto** utilizado.
+- **Reporte Markdown del Funnel:** `docs/REPORTE_FUNNEL_<timestamp>.md` detallando el embudo paso a paso (recortes brutos $\to$ caras $\to$ piel $\to$ nitidez $\to$ barbero $\to$ sesiones $\to$ citas finales), tiempo de ejecución, árbol de linaje genealógico, historial completo de segmentación de bloques (TrackBlocks Timeline con veredictos, razones y descartes explicados) y el **motor de procesos exacto** utilizado.
 - **Hoja de Contacto:** `docs/assets/simulacion_7h/contact_sheet_funnel_<timestamp>.jpg` con la galería de fotos reales de cada cliente clasificado.
 - **Tablas de Experimento:** `experiment_appointments` y `experiment_customers` en `data/experiments.db` (sin tocar las bases de datos de producción).
 
