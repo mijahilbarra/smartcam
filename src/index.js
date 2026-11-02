@@ -9,7 +9,7 @@ import { fileURLToPath } from "url";
 import sharp from "sharp";
 
 process.env.MALLOC_ARENA_MAX = process.env.MALLOC_ARENA_MAX || "2";
-sharp.concurrency(1);
+sharp.concurrency(process.env.STREAM_FAST_FORWARD === "true" ? 4 : 1);
 sharp.cache(false);
 
 // Re-exports de compatibilidad para suites de prueba y clientes externos
@@ -62,7 +62,7 @@ const mockVideoPath = process.env.MOCK_VIDEO_PATH ? path.resolve(PROJECT_ROOT, p
 
 const streamServer = new StreamServer({
   rtspUrl: process.env.RTSP_STREAM_URL || "rtsp://127.0.0.1:8554/barberia/sub",
-  fps: Number(process.env.STREAM_FPS) || 3.5,
+  fps: Number(process.env.STREAM_FPS) || 10,
   streamFastForward: process.env.STREAM_FAST_FORWARD === "true",
   mockVideoPath,
   mockVideoLastMinutes: process.env.MOCK_VIDEO_LAST_MINUTES ? Number(process.env.MOCK_VIDEO_LAST_MINUTES) : null,
@@ -151,6 +151,11 @@ app.get(["/api/yolo/latest", "/api/telemetry/latest"], (req, res) => {
   res.json(telemetryStream.getLatestTelemetry() || { status: "no_data_yet" });
 });
 
+app.get(["/api/trackblocks", "/api/track-blocks"], (req, res) => {
+  const blocks = orchestrator?.trackBlockManager?.getAllTrackBlocksSnapshot?.() || telemetryStream.getLatestTrackBlocks() || [];
+  res.json(blocks);
+});
+
 app.get("/api/simulation/progress", (req, res) => {
   const ss = orchestrator?.streamServer;
   const framesEmitted = ss?.framesEmitted || 0;
@@ -231,7 +236,9 @@ registerFirestoreListeners({
   customerService
 });
 
-const DEFAULT_REALTIME_INTERVAL_MS = Number(process.env.REALTIME_INTERVAL_MS) || 400;
+const DEFAULT_REALTIME_INTERVAL_MS = process.env.REALTIME_INTERVAL_MS !== undefined
+  ? Number(process.env.REALTIME_INTERVAL_MS)
+  : (process.env.STREAM_FAST_FORWARD === "true" ? 0 : 180);
 let isRealtimeLoopRunning = false;
 let realtimeLoopTimeout = null;
 
@@ -300,11 +307,13 @@ export function startRealtimeLoop(intervalMs = DEFAULT_REALTIME_INTERVAL_MS) {
 
     if (!isRealtimeLoopRunning) return;
     const elapsed = Date.now() - start;
-    const delay = Math.max(10, intervalMs - elapsed);
+    const minDelay = process.env.STREAM_FAST_FORWARD === "true" ? 0 : 10;
+    const delay = Math.max(minDelay, intervalMs - elapsed);
     realtimeLoopTimeout = setTimeout(loopStep, delay);
   };
 
-  console.log(`[RealtimeLoop] Bucle de visión continua activo cadencia dinámica ~${intervalMs}ms (${(1000 / intervalMs).toFixed(1)} FPS objetivo).`);
+  const fpsTarget = intervalMs > 0 ? `${(1000 / intervalMs).toFixed(1)} FPS objetivo` : `VELOCIDAD MÁXIMA (Fast-Forward)`;
+  console.log(`[RealtimeLoop] Bucle de visión continua activo cadencia dinámica ~${intervalMs}ms (${fpsTarget}).`);
   loopStep();
 }
 
