@@ -34,8 +34,11 @@ function normalizeCropInput(cropInput) {
   }
 
   let vector = null;
-  if (Array.isArray(cropInput.vector) || Array.isArray(cropInput.embedding)) {
-    vector = cropInput.vector || cropInput.embedding;
+  const rawVec = cropInput.vector || cropInput.embedding;
+  if (Array.isArray(rawVec)) {
+    vector = rawVec;
+  } else if (rawVec && ArrayBuffer.isView(rawVec)) {
+    vector = Array.from(rawVec);
   } else if (cropInput.embedding_blob) {
     vector = blobToVector(cropInput.embedding_blob);
   }
@@ -45,7 +48,14 @@ function normalizeCropInput(cropInput) {
   let poseLabel = cropInput.poseLabel || cropInput.pose_label || cropInput.quality?.poseLabel || pose;
   let skinRatio = Number(cropInput.skinRatio ?? cropInput.skin_ratio ?? cropInput.quality?.skinRatio ?? 0);
   let warmRatio = Number(cropInput.warmRatio ?? cropInput.warm_ratio ?? cropInput.quality?.warmRatio ?? 0);
-  let faceDetected = Boolean(cropInput.faceDetected ?? (cropInput.face_detected === 1) ?? cropInput.quality?.isValid ?? (cropInput.faceBuffer || cropInput.thumbnailBase64 || cropInput.embedding || cropInput.vector));
+  const explicitFaceDetected = cropInput.faceDetected !== undefined
+    ? cropInput.faceDetected
+    : (cropInput.face_detected !== undefined ? cropInput.face_detected === 1 : undefined);
+  let faceDetected = Boolean(
+    explicitFaceDetected ??
+    cropInput.quality?.isValid ??
+    (cropInput.faceBuffer || cropInput.thumbnailBase64 || cropInput.embedding || cropInput.vector || vector)
+  );
 
   let landmarks = null;
   if (cropInput.landmarks) {
@@ -249,6 +259,8 @@ export function evaluateCrop7Stages(cropInput, options = {}) {
       landmarks: norm.landmarks,
       hasTwoEyes,
       isUpright,
+      isAnatomical: Boolean(hasTwoEyes || isUpright),
+      boxNorm: norm.faceBoxNorm,
       thumbnailBase64: norm.thumbnailBase64,
       frontalityScore: norm.frontalityScore,
       yawScore: norm.yawScore,

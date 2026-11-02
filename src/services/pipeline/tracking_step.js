@@ -1,4 +1,4 @@
-import { calculateIoU } from "../../core/geometry.js";
+import { calculateIoU, isStandingPosture } from "../../core/geometry.js";
 import { daemonReporter } from "../../daemon_reporter.js";
 import { PIPELINE_CONFIG } from "../../core/pipeline_config.js";
 
@@ -48,33 +48,28 @@ export function matchIdentitiesToTracks({ tracker, activeTracks = [], identified
     let maxIoU = 0;
 
     if (person.box) {
-      // Primero verificar a qué track físico corresponde geométricamente la caja con mayor IoU
+      // Asociar al track físico correspondiente usando IoU de YOLO (paridad 1:1 con step1_harvest_crops.js)
       let rawBestTrack = null;
       let rawMaxIoU = 0;
       for (const track of activeTracks) {
+        if (!track.box || matchedTrackIds.has(track.trackId)) continue;
         const iou = calculateIoU(person.box, track.box);
         if (iou > rawMaxIoU) {
           rawMaxIoU = iou;
           rawBestTrack = track;
         }
       }
-      // Si la caja pertenece geométricamente al track del barbero de pie (IoU >= 0.70 con un track isStaffHint),
-      // no redirigir ese rostro hacia el track del cliente sentado por solapamiento parcial
-      if (!person.isStaff && rawBestTrack && rawMaxIoU >= 0.70 && rawBestTrack.isStaffHint && !rawBestTrack.identity?.isStaff) {
-        continue;
-      }
 
-      for (const track of activeTracks) {
-        if (matchedTrackIds.has(track.trackId)) continue;
-        // Evitar asignar un cliente al track del barbero de pie
-        if (!person.isStaff && track.isStaffHint && !track.identity?.isStaff) continue;
-        // Evitar asignar staff al cliente sentado
-        if (person.isStaff && !track.isStaffHint && track.role === "client") continue;
-
-        const iou = calculateIoU(person.box, track.box);
-        if (iou > maxIoU) {
-          maxIoU = iou;
-          bestTrack = track;
+      if (rawBestTrack && rawMaxIoU >= iouThreshold) {
+        // Solo bloquear cuando el solapamiento es parcial (< 0.70) y contradice la identidad o rol geométrico del track,
+        // o cuando una cara de staff se superpone a un track que ya está formalmente sentado como cliente o ya tiene identidad de cliente.
+        const isSeatedClientTrack = (rawBestTrack.isFormallySeated && rawBestTrack.role === "client") ||
+          (rawBestTrack.identity && rawBestTrack.identity.isStaff === false);
+        const isOverlapLeakToStaff = !person.isStaff && rawMaxIoU < 0.70 && !rawBestTrack.isFormallySeated && (rawBestTrack.identity?.isStaff === true || rawBestTrack.isStaffHint === true);
+        const isOverlapLeakToClient = person.isStaff && (isSeatedClientTrack || (rawMaxIoU < 0.70 && !rawBestTrack.isStaffHint && rawBestTrack.role === "client"));
+        if (!isOverlapLeakToStaff && !isOverlapLeakToClient) {
+          bestTrack = rawBestTrack;
+          maxIoU = rawMaxIoU;
         }
       }
     }
@@ -92,6 +87,8 @@ export function matchIdentitiesToTracks({ tracker, activeTracks = [], identified
         frontalityScore: person.frontalityScore,
         yawScore: person.yawScore,
         pitchScore: person.pitchScore,
+        skinRatio: person.skinRatio,
+        warmRatio: person.warmRatio,
         sharpnessScore: person.sharpnessScore,
         thumbnailBase64: person.thumbnailBase64 || person.faceThumbnailBase64 || null,
         embedding: person.embedding || null,

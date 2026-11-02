@@ -1,3 +1,5 @@
+import { emitBlockDecision } from "./pipeline/decision_feed.js";
+import { telemetryStream } from "../infrastructure/streaming/telemetry_stream.js";
 import { killCaptureContainer } from "../infrastructure/camera/neolink_client.js";
 import { daemonReporter } from "../daemon_reporter.js";
 import { PersonTracker } from "../core/person_tracker.js";
@@ -29,13 +31,24 @@ export class CaptureOrchestrator {
     const clockFn = streamServer && typeof streamServer.getVirtualNow === "function"
       ? () => streamServer.getVirtualNow()
       : null;
-    this.visitService = new VisitSessionService({ db, bucket, minAppointmentMinutes, emptyChairTimeoutMs, clockFn });
-
     // Dimensiones y parámetros espaciales de video
     const videoWidth = Number(process.env.VIDEO_WIDTH) || 1280;
     const videoHeight = Number(process.env.VIDEO_HEIGHT) || 720;
     const resolvedQuadrants = quadrants || getCachedQuadrants();
+    const chairZone = resolvedQuadrants?.find(q => q.type === "barber_chair" || q.id === "silla_barbero_puesto2") || resolvedQuadrants?.[0] || null;
     const staffThreshold = PIPELINE_CONFIG.staffFilter?.staffExclusionThreshold ?? 0.46;
+
+    this.visitService = new VisitSessionService({
+      db,
+      bucket,
+      minAppointmentMinutes,
+      emptyChairTimeoutMs,
+      staffThreshold,
+      maxCompletedAppointments: Infinity,
+      quadrants: resolvedQuadrants,
+      chairZone,
+      clockFn
+    });
 
     // Cargar perfiles de staff desde customerService
     const comparisonProfiles = this.visitService?.customerService?.getComparisonProfiles?.() || [];
@@ -46,7 +59,17 @@ export class CaptureOrchestrator {
       staffThreshold,
       quadrants: resolvedQuadrants,
       width: videoWidth,
-      height: videoHeight
+      height: videoHeight,
+      onBlockDecided: (decision) => {
+        emitBlockDecision(decision);
+        if (decision.valid) {
+          console.log(`[TrackBlockManager] ✅ Bloque confirmado #${decision.block?.trackId} en ${decision.block?.chairId}: ${decision.reason}`);
+        } else if (decision.isSeatedPresenceOnly) {
+          console.log(`[TrackBlockManager] 🪑 Bloque de presencia sin rostro #${decision.block?.trackId}: ${decision.reason}`);
+        } else {
+          console.log(`[TrackBlockManager] ⚠️ Bloque descartado #${decision.block?.trackId}: ${decision.verdict} - ${decision.reason}`);
+        }
+      }
     });
     this.visitService.trackBlockManager = this.trackBlockManager;
 
@@ -58,6 +81,14 @@ export class CaptureOrchestrator {
           visitService: this.visitService,
           options: { emptyChairTimeoutMs }
         });
+
+        // Emitir estado final completo con todos los TrackBlocks cerrados para la UI
+        if (this.trackBlockManager?.getAllTrackBlocksSnapshot) {
+          const finalBlocks = this.trackBlockManager.getAllTrackBlocksSnapshot(virtualNow);
+          telemetryStream.broadcast({
+            allTrackBlocks: finalBlocks
+          });
+        }
       };
     }
   }

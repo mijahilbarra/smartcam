@@ -31,6 +31,8 @@ export function filterOutlierSamples(photos = [], embeddings = []) {
 
     let totalSim = 0;
     let count = 0;
+    let maxPeerSim = -1;
+    let closePeers = 0;
     for (let j = 0; j < N; j++) {
       if (i === j) continue;
       const vecJ = vectors[j];
@@ -38,13 +40,16 @@ export function filterOutlierSamples(photos = [], embeddings = []) {
       const sim = computeCosineSimilarity(vecI, vecJ);
       totalSim += sim;
       count++;
+      if (sim > maxPeerSim) maxPeerSim = sim;
+      if (sim >= 0.45) closePeers++;
     }
 
     const avgSim = count > 0 ? (totalSim / count) : 1.0;
-    if (avgSim >= 0.45) {
+    const isMultiPoseSupported = (avgSim >= 0.35 && (closePeers >= 2 || maxPeerSim >= 0.52)) || maxPeerSim >= 0.58;
+    if (avgSim >= 0.45 || isMultiPoseSupported) {
       validIndices.push(i);
     } else {
-      console.warn(`[Appointment] Muestra #${i + 1} descartada por outlier biométrico (similitud promedio con cluster: ${avgSim.toFixed(3)} < 0.45). Excluye foto contaminante.`);
+      console.warn(`[Appointment] Muestra #${i + 1} descartada por outlier biométrico (similitud promedio con cluster: ${avgSim.toFixed(3)} < 0.45, maxPeer=${maxPeerSim.toFixed(3)}). Excluye foto contaminante.`);
     }
   }
 

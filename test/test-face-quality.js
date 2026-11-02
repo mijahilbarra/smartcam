@@ -23,9 +23,16 @@ console.log("-> Evaluación de calidad:", {
 assert.strictEqual(barberQuality.isValid, true, "Debe ser un rostro válido y nítido");
 assert.ok(barberQuality.faceBuffer.length > 0, "Debe contener el buffer de la cara recortada");
 
-// 2. Probar recorte de espaldas / nuca (test/test-client-1-crop.jpg)
-console.log("\n[2] Probando recorte de cliente de espaldas / nuca (test/test-client-1-crop.jpg)...");
-const client1Img = fs.readFileSync("test/test-client-1-crop.jpg");
+// 2. Probar recorte de espaldas / nuca (test/test-client-1-crop.jpg o sintético)
+console.log("\n[2] Probando recorte de cliente de espaldas / nuca...");
+let client1Img;
+if (fs.existsSync("test/test-client-1-crop.jpg")) {
+  client1Img = fs.readFileSync("test/test-client-1-crop.jpg");
+} else {
+  client1Img = await sharp({
+    create: { width: 150, height: 200, channels: 3, background: { r: 35, g: 30, b: 25 } }
+  }).jpeg().toBuffer();
+}
 const client1Quality = await evaluateFaceQuality(client1Img);
 console.log("-> Evaluación de nuca/espalda:", client1Quality);
 assert.strictEqual(client1Quality.isValid, false, "La nuca no debe ser considerada un rostro válido");

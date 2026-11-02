@@ -12,6 +12,7 @@ export function useDaemonState() {
   const isYoloStreaming = ref(false);
   const liveOccupancy = ref(null);
   const activeChairSessions = ref([]);
+  const allTrackBlocks = ref([]);
   // Decisiones explicables del análisis (cards temporales de ~15s)
   const analysisDecisions = ref([]);
   const firestoreStreamUrl = ref('');
@@ -300,6 +301,17 @@ export function useDaemonState() {
         sseEventSource.close();
         sseEventSource = null;
       }
+      if (activeBackendUrl.value) {
+        fetch(`${activeBackendUrl.value}/api/trackblocks`)
+          .then((r) => (r.ok ? r.json() : []))
+          .then((blocks) => {
+            if (Array.isArray(blocks) && blocks.length > 0) {
+              allTrackBlocks.value = blocks;
+            }
+          })
+          .catch(() => {});
+      }
+
       console.log(`[YOLO Stream] Conectando a flujo directo SSE: ${url}`);
       sseEventSource = new EventSource(url);
 
@@ -335,6 +347,12 @@ export function useDaemonState() {
 
             if (Array.isArray(data.activeChairSessions)) {
               activeChairSessions.value = data.activeChairSessions;
+            }
+
+            if (Array.isArray(data.allTrackBlocks)) {
+              if (data.allTrackBlocks.length > 0 || allTrackBlocks.value.length === 0) {
+                allTrackBlocks.value = data.allTrackBlocks;
+              }
             }
 
             if (data.memory) {
@@ -454,6 +472,7 @@ export function useDaemonState() {
     activeBackendUrl,
     canvasImageData,
     activeChairSessions,
+    allTrackBlocks,
     analysisDecisions,
     clientsInCut,
     clientsWaiting,

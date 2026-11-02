@@ -270,7 +270,8 @@ export async function initChairSession({
       right: null,
       tilted: null
     },
-    topFaces: []
+    topFaces: [],
+    confirmedBlocks: []
   };
 
   activeSessions.set(chairId, session);
@@ -425,6 +426,10 @@ export async function evaluateChairTimeouts({
       if ((t.confidence || 0) < minConfidence) {
         return false;
       }
+      // Si la persona está de pie y no está formalmente sentada, no es el cliente sentado en corte
+      if (t.box && isStandingPosture(t.box) && !t.isFormallySeated) {
+        return false;
+      }
       const hasQuadrantInfo = t.currentQuadrant !== undefined || t.lastChairQuadrant !== undefined;
       return isChairMatchFn(t) || (!hasQuadrantInfo && t.trackId === session.trackId);
     });
@@ -432,7 +437,8 @@ export async function evaluateChairTimeouts({
     // Anclaje por co-presencia activa del Barbero (Barber Working Anchor):
     // Si el barbero está trabajando activamente en o junto a esta silla, el corte está en progreso
     const barberWorkingAtChair = activeTracks.find(t => {
-      const isStaff = t.role === "staff" || t.isStaffHint === true || t.identity?.isStaff === true;
+      const isStaff = t.role === "staff" || t.isStaffHint === true || t.identity?.isStaff === true ||
+        (!t.isFormallySeated && t.box && isStandingPosture(t.box));
       if (!isStaff) return false;
       if ((t.missedFrames || 0) >= 6) return false;
       return isChairMatchFn(t);

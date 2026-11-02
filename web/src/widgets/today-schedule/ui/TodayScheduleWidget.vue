@@ -144,18 +144,22 @@ const timelineItems = computed(() => {
   return items;
 });
 
-// Auto-scroll al final (como un chat) cuando aparece un nuevo elemento
+// Auto-scroll al final (como un chat) solo si el usuario ya está al fondo
 const timelineScroll = ref(null);
-const scrollToBottom = async (smooth = true) => {
+const scrollToBottom = async (smooth = true, force = false) => {
   await nextTick();
   const el = timelineScroll.value;
-  if (el) el.scrollTo({ top: el.scrollHeight, behavior: smooth ? 'smooth' : 'auto' });
+  if (!el) return;
+  const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 80;
+  if (force || isNearBottom) {
+    el.scrollTo({ top: el.scrollHeight, behavior: smooth ? 'smooth' : 'auto' });
+  }
 };
 watch(
   () => timelineItems.value.map((i) => i.key).join('|'),
-  () => scrollToBottom(true)
+  () => scrollToBottom(true, false)
 );
-onMounted(() => scrollToBottom(false));
+onMounted(() => scrollToBottom(false, true));
 
 // Métricas del día actual
 const totalToday = computed(() => todayAppointments.value.length);
@@ -536,11 +540,12 @@ const handleConfirmDelete = async ({ appointmentId }) => {
               </span>
               <span class="text-[9px] text-emerald-400/80 font-mono">Aprobados IA</span>
             </div>
-            <div class="space-y-1">
+            <div class="space-y-1 max-h-32 overflow-y-auto pr-1">
               <div
-                v-for="cb in item.data.confirmedBlocks.slice(-2)"
+                v-for="cb in item.data.confirmedBlocks"
                 :key="cb.trackId"
-                class="flex items-center justify-between text-slate-300 bg-slate-950/60 px-2 py-1 rounded border border-emerald-500/10"
+                :title="`Bloque #${cb.trackId}: Unido a la atención en silla (${cb.photosCount} fotos, ${cb.durationSeconds || 1}s)`"
+                class="flex items-center justify-between text-slate-300 bg-slate-950/60 px-2 py-1 rounded border border-emerald-500/10 cursor-help"
               >
                 <span class="font-mono text-emerald-400 font-bold">Bloque #{{ cb.trackId }}</span>
                 <span class="flex items-center gap-2 text-slate-400">

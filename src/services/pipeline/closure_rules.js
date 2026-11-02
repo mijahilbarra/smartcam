@@ -183,6 +183,9 @@ export function validateSpatialChairAnchor(sessionOrBlock, chairZone = null, opt
   let insideCount = 0;
   let totalInsideRatio = 0;
   let totalY2 = 0;
+  const hasConfirmedClientFaces =
+    ((sessionOrBlock.clientFacesCount || 0) >= 1 && (sessionOrBlock.anatomicalFacesCount || 0) >= 1) ||
+    (Array.isArray(sessionOrBlock.photos) && sessionOrBlock.photos.length >= 1);
 
   for (const item of validItems) {
     const b = item.box;
@@ -202,10 +205,12 @@ export function validateSpatialChairAnchor(sessionOrBlock, chairZone = null, opt
       : null;
 
     // Regla de Aprobación individual:
-    // 1. insideRatio >= 0.50 (minOverlapRatio)
+    // 1. insideRatio >= 0.50 (o >= 0.22 cuando el cuerpo está anclado a la base de la silla y2 >= 612 y el barbero ensancha la caja de YOLO)
     // 2. y2 >= 550 (o y2 / frameHeight >= 0.75)
     // 3. Cabeza: si el cuerpo está sentado en la silla (isY2Ok), NO descartar si la cabeza sobresale por arriba (y1 < 200, personas altas o erguidas).
-    const isRatioOk = ratio >= minOverlapRatio;
+    const isAnchoredAtChairBase = y2 >= 612 || (y2 / frameHeight >= 0.85);
+    const effectiveMinRatio = (hasConfirmedClientFaces && isAnchoredAtChairBase) ? Math.min(minOverlapRatio, 0.22) : minOverlapRatio;
+    const isRatioOk = ratio >= effectiveMinRatio;
     const isY2Ok = y2 >= minY2 || (y2 / frameHeight >= 0.75);
     const isHeadOk = isY2Ok || (y1 >= 240) || (fcy !== null ? fcy >= 320 : y1 >= 200);
 
@@ -218,10 +223,11 @@ export function validateSpatialChairAnchor(sessionOrBlock, chairZone = null, opt
   const overlapRatio = totalBoxes > 0 ? insideCount / totalBoxes : 0;
   const avgInsideRatio = totalBoxes > 0 ? totalInsideRatio / totalBoxes : 0;
   const avgY2 = totalBoxes > 0 ? totalY2 / totalBoxes : 0;
+  const effectiveAvgMinRatio = (hasConfirmedClientFaces && avgY2 >= 612) ? Math.min(minOverlapRatio, 0.22) : minOverlapRatio;
 
-  // Si la sesión o bloque tiene un promedio de insideRatio < 0.50 o y2 < 550,
+  // Si la sesión o bloque tiene un promedio de insideRatio < effectiveAvgMinRatio o y2 < 550,
   // se descarta formalmente con motivo fuera_de_caja_silla_firebase.
-  if (insideCount === 0 || overlapRatio < minOverlapRatio || avgInsideRatio < minOverlapRatio || avgY2 < minY2) {
+  if (insideCount === 0 || overlapRatio < effectiveAvgMinRatio || avgInsideRatio < effectiveAvgMinRatio || avgY2 < minY2) {
     return {
       isValid: false,
       reason: "fuera_de_caja_silla_firebase",
@@ -682,7 +688,7 @@ export async function prepareAndFilterSessionForClosure({
     }
     logVerbal(`Atención descartada para Barbero/Staff: ${session.personName || `Track #${trackId}`}.`, "info");
     if (stats) stats.barberDiscarded++;
-    return { shouldDiscard: true };
+    return { shouldDiscard: true, reason: "Sesión identificada como Barbero/Staff al cierre." };
   }
 
   // Sincronizar fotos desde customerService si la sesión no las recolectó directamente
@@ -737,25 +743,24 @@ export async function prepareAndFilterSessionForClosure({
     }
     logVerbal(`✋ Sesión de ${durationMinutes}m sin rostro anatómico con dos ojos en ${session.chairName || `Track #${trackId}`}: descartada como falso positivo (nuca/pelo/objeto).`, 'info');
     if (stats) stats.noiseDiscarded++;
-    return { shouldDiscard: true };
+    return { shouldDiscard: true, reason: `Sin rostro anatómico con 2 ojos tras ${durationMinutes} min (falso positivo de nuca/objeto).` };
   }
 
-  // B. Filtro de Densidad Mínima y Purga de Colitas Efímeras (< 2 min / <= 4 fotos):
+  // B. Filtro de Densidad Mínima en Silla Vacía de Tránsito (sin eliminar segmentos cortos con rostro válido):
   const isUnitTest = /[\\\/]test[\\\/]/.test(process.argv[1] || '') && process.env.IS_LOCAL_SIMULATOR !== "true";
   if (!isUnitTest) {
     const hasSolidFace = candidatePhotos.some(p => (p.sharpnessScore || 0) >= 50);
-    const isTransitEmptyChair = (durationMinutes >= 4 && (candidatePhotos.length === 0 || (!hasSolidFace && candidatePhotos.length <= 2)));
-    const isMicroTail = (durationMinutes <= 1 && candidatePhotos.length <= 4) || (durationMinutes <= 2 && !hasSolidFace);
-    if (isTransitEmptyChair || isMicroTail) {
+    const isTransitEmptyChair = (durationMinutes >= 4 && (candidatePhotos.length === 0 || (!hasSolidFace && candidatePhotos.length <= 1)));
+    if (isTransitEmptyChair) {
       if (session.tempClientId) {
         await customerService?.deleteCustomer?.(session.tempClientId, { db });
       }
       if (session.personId && session.personId !== session.tempClientId && !session.personId.startsWith("staff_")) {
         await customerService?.deleteCustomer?.(session.personId, { db });
       }
-      logVerbal(`⏱️ Sesión de ${durationMinutes} min con densidad o duración insuficiente (${candidatePhotos.length} fotos) en ${session.chairName || `Track #${trackId}`}: descartada como falso positivo de tránsito/barbero limpiando.`, "info");
+      logVerbal(`⏱️ Sesión de ${durationMinutes} min con densidad insuficiente (${candidatePhotos.length} fotos) en ${session.chairName || `Track #${trackId}`}: descartada como falso positivo de tránsito/barbero limpiando.`, "info");
       if (stats) stats.noiseDiscarded++;
-      return { shouldDiscard: true };
+      return { shouldDiscard: true, reason: `Densidad facial insuficiente (${candidatePhotos.length} fotos en ${durationMinutes} min): tránsito o limpieza de silla.` };
     }
   }
 
@@ -820,7 +825,7 @@ export async function validateBiometricsForFinalization({
     }
     logVerbal(`⚠️ Estancia de ${durationMinutes} min en ${session.chairName} descartada: evidencia biométrica insuficiente (0 fotos).`, "info");
     if (stats) stats.noiseDiscarded++;
-    return { isValid: false };
+    return { isValid: false, reason: "0 fotos válidas tras purgar fotos del barbero y outliers en el cierre." };
   }
 
   if (session.embeddings && session.embeddings.length > 0) {
@@ -832,7 +837,7 @@ export async function validateBiometricsForFinalization({
     });
 
     if (staffProfiles.length > 0) {
-      const { isBarberMatch } = checkBarberConsensus(session.embeddings, staffProfiles);
+      const { isBarberMatch, avgStaffSim, ratioStaff } = checkBarberConsensus(session.embeddings, staffProfiles);
       if (isBarberMatch) {
         if (session.tempClientId) {
           await customerService?.deleteCustomer?.(session.tempClientId, { db });
@@ -842,7 +847,7 @@ export async function validateBiometricsForFinalization({
         }
         console.log("[Appointment] 🗑️ Atención descartada: el cluster de fotos pertenece al Barbero/Staff. Perfil temporal eliminado físicamente.");
         if (stats) stats.barberDiscarded++;
-        return { isValid: false };
+        return { isValid: false, reason: `Consenso biométrico de Barbero/Staff al cerrar (avgSim=${(avgStaffSim || 0).toFixed(3)}, ratioStaff=${Math.round((ratioStaff || 0) * 100)}%).` };
       }
     }
   }
@@ -853,7 +858,7 @@ export async function validateBiometricsForFinalization({
 /**
  * Valida si un segmento independiente califica como ruido o cumple con duración mínima
  * @param {Object} params
- * @returns {Promise<{ isNoise: boolean }>}
+ * @returns {Promise<{ isNoise: boolean, reason?: string }>}
  */
 export async function validatePostConsolidationNoise({
   session,
@@ -864,30 +869,25 @@ export async function validatePostConsolidationNoise({
   stats,
   logVerbal = console.log
 }) {
-  const isSingleLateralNoise =
+  const isSinglePhotoNoise =
     session.photos &&
     session.photos.length === 1 &&
-    session.photos[0]?.pose &&
-    session.photos[0].pose !== "frontal";
+    (
+      (session.photos[0]?.pose && session.photos[0].pose !== "frontal") ||
+      durationMinutes < minMinutes
+    );
 
-  const hasFrontalOrSemi = (session.photos || []).some(p =>
-    ['frontal', 'semi_left', 'semi_right'].includes(p?.pose || (p && !p.pose ? 'frontal' : ''))
-  );
-
-  const photosCount = session.photos ? session.photos.length : 0;
-
-  const isUnmergedMicroTail = durationMinutes <= 2;
-
-  if (isSingleLateralNoise || isUnmergedMicroTail || (durationMinutes < minMinutes && (photosCount < 3 || !hasFrontalOrSemi))) {
+  if (isSinglePhotoNoise) {
     if (session.tempClientId) {
       await customerService?.deleteCustomer?.(session.tempClientId, { db });
     }
     if (session.personId && session.personId !== session.tempClientId && !session.personId.startsWith("staff_")) {
       await customerService?.deleteCustomer?.(session.personId, { db });
     }
-    logVerbal(`⏱️ Estancia de ${durationMinutes} min en ${session.chairName} descartada (${isSingleLateralNoise ? '1 sola foto no frontal' : isUnmergedMicroTail ? `micro-estancia no consolidada (duración <= 2 min)` : `< ${minMinutes} min y ${photosCount} fotos`}).`, "info");
+    const reasonMsg = `No consolidó con sesión previa y solo tenía 1 foto aislada (${durationMinutes} min)`;
+    logVerbal(`⏱️ Estancia de ${durationMinutes} min en ${session.chairName} descartada (${reasonMsg}).`, "info");
     if (stats) stats.noiseDiscarded++;
-    return { isNoise: true };
+    return { isNoise: true, reason: reasonMsg };
   }
   return { isNoise: false };
 }

@@ -18,6 +18,7 @@
 
 import { PIPELINE_CONFIG } from "../../core/pipeline_config.js";
 import { evaluateCrop7Stages } from "./crop_filter_engine.js";
+import { validateSpatialChairAnchor } from "./closure_rules.js";
 
 /**
  * Paso 1: Evalúa un recorte de persona a través de la Cascada Canónica de 7 Etapas.
@@ -95,10 +96,20 @@ export function evaluateInactiveBlocksStep({
     20000;
 
   const confirmedBlocks = [];
+
+  // Extraer bloques confirmados inmediatamente (ej. tramos sentados salvados tras ponerse de pie/cruce)
+  if (typeof trackBlockManager.extractPendingConfirmedBlocks === "function") {
+    confirmedBlocks.push(...trackBlockManager.extractPendingConfirmedBlocks());
+  } else if (Array.isArray(trackBlockManager.pendingConfirmedBlocks) && trackBlockManager.pendingConfirmedBlocks.length > 0) {
+    confirmedBlocks.push(...trackBlockManager.pendingConfirmedBlocks.splice(0));
+  }
+
   for (const [tId, block] of Array.from(trackBlockManager.activeBlocks.entries())) {
     if (timestampEpoch - block.lastSeenEpoch > timeoutMs) {
       const decision = trackBlockManager.evaluateAndCloseBlock(tId, timestampEpoch);
       if (decision.valid && decision.verdict === "CONFIRMED_CLIENT_BLOCK") {
+        confirmedBlocks.push(decision.block);
+      } else if (decision.isSeatedPresenceOnly && decision.block) {
         confirmedBlocks.push(decision.block);
       }
     }
@@ -168,16 +179,25 @@ export async function heartbeatStep({
   const closedAppointments = [];
 
   const getActiveChairTracks = (step) => {
-    if (Array.isArray(options.activeTracks) && options.activeTracks.length > 0) {
-      return options.activeTracks;
-    }
     const active = [];
     if (trackBlockManager && trackBlockManager.activeBlocks) {
       for (const b of trackBlockManager.activeBlocks.values()) {
         const totalFrames = (b.seatedFrames || 0) + (b.standingFrames || 0);
         const isStanding = totalFrames > 0 && ((b.standingFrames || 0) / totalFrames >= 0.65) && ((b.seatedFrames || 0) < 15);
-        const isStaleNoFace = (step - b.startedAtEpoch > 45000) && ((b.anatomicalFacesCount || 0) === 0);
-        if (!b.isStaffConfirmed && !isStanding && !isStaleNoFace && (step - b.lastSeenEpoch <= inactivityTimeoutMs)) {
+        // Validar que el bloque activo realmente esté anclado a la silla (no en el sillón de espera)
+        let isInsideChair = true;
+        if (Array.isArray(b.boxes) && b.boxes.length > 0) {
+          const spatialRes = validateSpatialChairAnchor(b, b.chairId || trackBlockManager.chairZone, {
+            quadrants: trackBlockManager.quadrants,
+            minInsideRatio: 0.50,
+            minY2: 550,
+            allowEmptyBoxes: true
+          });
+          isInsideChair = spatialRes.isValid;
+        }
+        // Acotar extensión sin rostro a máx 180s continuos para que una silla vacía con reflejo/capa no congele el cierre por 30 min
+        const isExcessiveFaceless = (b.anatomicalFacesCount || 0) === 0 && (step - b.startedAtEpoch > 180000);
+        if (!b.isStaffConfirmed && !isStanding && isInsideChair && !isExcessiveFaceless && (step - b.lastSeenEpoch <= inactivityTimeoutMs)) {
           active.push({
             trackId: b.trackId,
             currentQuadrant: { id: b.chairId, label: b.chairId, type: "barber_chair" },
@@ -186,6 +206,10 @@ export async function heartbeatStep({
           });
         }
       }
+      return active;
+    }
+    if (Array.isArray(options.activeTracks) && options.activeTracks.length > 0) {
+      return options.activeTracks;
     }
     return active;
   };
@@ -282,7 +306,8 @@ export async function executeCausalCycle({
         : (cropEvaluation?.passed ? cropEvaluation.faceData : null),
       isStaff: sample.isStaff !== undefined
         ? sample.isStaff
-        : Boolean(cropEvaluation?.isStaff)
+        : Boolean(cropEvaluation?.isStaff),
+      staffSim: sample.staffSim ?? cropEvaluation?.staffCheck?.maxStaffSim ?? 0
     };
   } else if (cropInput) {
     const ts = cropInput.timestampEpoch ?? cropInput.timestamp_epoch ?? Date.now();
@@ -299,7 +324,8 @@ export async function executeCausalCycle({
       videoSecond: cropInput.videoSecond ?? cropInput.video_second ?? Math.round(ts / 1000),
       box: box || cropEvaluation?.faceData?.box,
       faceData: cropEvaluation?.passed ? cropEvaluation.faceData : null,
-      isStaff: Boolean(cropEvaluation?.isStaff)
+      isStaff: Boolean(cropEvaluation?.isStaff),
+      staffSim: cropEvaluation?.staffCheck?.maxStaffSim ?? 0
     };
   }
 
@@ -400,7 +426,7 @@ export async function flushCausalPipeline({
   // 1. Cerrar todos los bloques activos en TrackBlockManager
   for (const [tId, block] of Array.from(trackBlockManager.activeBlocks.entries())) {
     const decision = trackBlockManager.evaluateAndCloseBlock(tId, lastTimestamp);
-    if (decision.valid && decision.verdict === "CONFIRMED_CLIENT_BLOCK") {
+    if ((decision.valid && decision.verdict === "CONFIRMED_CLIENT_BLOCK") || (decision.isSeatedPresenceOnly && decision.block)) {
       await visitService.processConfirmedBlock(decision.block, { now: lastTimestamp });
     }
   }

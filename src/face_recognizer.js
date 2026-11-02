@@ -21,15 +21,22 @@ export async function getFaceInferenceSession() {
     }
     console.log(`[FaceRecognizer] Cargando modelo MobileFaceNet ONNX desde: ${FACE_MODEL_PATH}...`);
     const t0 = Date.now();
+    const defaultThreads = process.env.STREAM_FAST_FORWARD === "true" ? 4 : 1;
+    const threads = Number(process.env.ONNX_THREADS) || defaultThreads;
+    const isMac = process.platform === "darwin";
+    const explicitProvider = process.env.ONNX_PROVIDER;
+    const executionProviders = explicitProvider
+      ? [explicitProvider, "cpu"]
+      : (isMac && (process.env.IS_LOCAL_SIMULATOR === "true" || process.env.STREAM_FAST_FORWARD === "true") ? ["coreml", "cpu"] : ["cpu"]);
     faceSession = await ort.InferenceSession.create(FACE_MODEL_PATH, {
-      executionProviders: ["cpu"],
-      graphOptimizationLevel: "basic",
-      intraOpNumThreads: Number(process.env.ONNX_THREADS) || 1,
-      interOpNumThreads: Number(process.env.ONNX_THREADS) || 1,
+      executionProviders,
+      graphOptimizationLevel: "all",
+      intraOpNumThreads: threads,
+      interOpNumThreads: threads,
       enableCpuMemArena: false,
       enableMemPattern: false
     });
-    console.log(`[FaceRecognizer] Modelo facial inicializado en ${Date.now() - t0} ms.`);
+    console.log(`[FaceRecognizer] Modelo facial inicializado en ${Date.now() - t0} ms (${threads} hilo(s) CPU, providers: ${executionProviders.join(", ")}).`);
   }
   return faceSession;
 }

@@ -8,6 +8,8 @@ export class TelemetryStreamServer {
   constructor() {
     this.clients = new Set();
     this.latestTelemetry = null;
+    this.latestDaemonState = null;
+    this.latestTrackBlocks = [];
     this.heartbeatInterval = null;
 
     // Iniciar ping de liveness para proxies y balanceadores
@@ -55,20 +57,39 @@ export class TelemetryStreamServer {
    * @param {Object} data - Objeto de telemetría (detections, tracks, quadrants, occupancy)
    */
   broadcast(data) {
+    if (Array.isArray(data.allTrackBlocks)) {
+      this.latestTrackBlocks = data.allTrackBlocks;
+    }
+
     this.latestTelemetry = {
+      ...(this.latestTelemetry || {}),
       ...data,
+      allTrackBlocks: Array.isArray(data.allTrackBlocks) ? data.allTrackBlocks : (this.latestTrackBlocks || []),
       timestamp: Date.now()
     };
 
-    const payload = `data: ${JSON.stringify(this.latestTelemetry)}\n\n`;
+    let payload = null;
 
     for (const client of this.clients) {
       try {
+        // Protección de contrapresión (backpressure):
+        // Si el socket del cliente tiene más de 1 MB pendiente por drenar (típico en fast-forward),
+        // omitir este fotograma de telemetría para evitar acumulación infinita en el heap de V8.
+        if (client.res?.writableLength > 1024 * 1024) {
+          continue;
+        }
+        if (!payload) {
+          payload = `data: ${JSON.stringify(this.latestTelemetry)}\n\n`;
+        }
         client.res.write(payload);
       } catch (_) {
         this.clients.delete(client);
       }
     }
+  }
+
+  getLatestTrackBlocks() {
+    return this.latestTrackBlocks || [];
   }
 
   sendToClient(client, data) {
@@ -86,6 +107,20 @@ export class TelemetryStreamServer {
   broadcastDaemonState(state) {
     this.latestDaemonState = { ...state, updatedAt: state.updatedAt || new Date().toISOString() };
     const payload = `event: daemon_state\ndata: ${JSON.stringify(this.latestDaemonState)}\n\n`;
+    for (const client of this.clients) {
+      try {
+        client.res.write(payload);
+      } catch (_) {
+        this.clients.delete(client);
+      }
+    }
+  }
+
+  /**
+   * Transmite un evento SSE nombrado genérico (p. ej. "analysis_decision") a todos los clientes.
+   */
+  broadcastEvent(eventName, data) {
+    const payload = `event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`;
     for (const client of this.clients) {
       try {
         client.res.write(payload);

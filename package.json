@@ -9,6 +9,8 @@
     "dev:mock": "MOCK_VIDEO_PATH=data/recordings/mock_stream.mp4 node scripts/dev.js",
     "dev:mock:fast": "MOCK_VIDEO_PATH=data/recordings/mock_stream.mp4 docker compose -f docker-compose.fast-sim.yml up -d --force-recreate && vite",
     "dev:mock:local": "MOCK_VIDEO_PATH=data/recordings/mock_stream.mp4 node scripts/dev-local.js",
+    "stream:test": "node scripts/stream_test.js",
+    "dev:stream:test": "node scripts/stream_test.js --dev",
     "record": "node scripts/record-stream.js",
     "record:gdrive": "node scripts/record-to-gdrive.js",
     "incident": "node scripts/query-incident.js",

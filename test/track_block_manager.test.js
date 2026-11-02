@@ -291,4 +291,57 @@ test("TrackBlockManager - Bloques de TrackId", async (t) => {
     assert.equal(block.bestFaceScore, 85);
     assert.equal(block.bestFaceVector[0], 0.2);
   });
+
+  await t.test("Salva todo el tiempo sentado previo cuando un bloque se pone de pie por cruce del barbero", () => {
+    const manager = new TrackBlockManager({ height: 720 });
+    const start = 10000;
+
+    // 1. Cliente sentado durante 15 minutos (15 muestras, 1 por minuto)
+    for (let i = 0; i < 15; i++) {
+      manager.ingestTrackSample({
+        trackId: 505,
+        chairId: "chair_1",
+        timestampEpoch: start + i * 60000,
+        videoSecond: 10 + i * 60,
+        box: [200, 300, 400, 550], // Box sentado (top/height = 300/720 = 0.41, h = 250/720 = 0.34)
+        faceData: {
+          vector: new Array(512).fill(0.3),
+          sharpnessScore: 70,
+          pose: "frontal",
+          hasTwoEyes: true,
+          thumbnailBase64: "data:image/jpeg;base64,clientFace"
+        }
+      });
+    }
+
+    // 2. Barbero se cruza y YOLO lo sigue de pie durante 5 fotogramas
+    const barberCrossingStart = start + 15 * 60000 + 1000;
+    for (let j = 0; j < 5; j++) {
+      manager.ingestTrackSample({
+        trackId: 505,
+        chairId: "chair_1",
+        timestampEpoch: barberCrossingStart + j * 1000,
+        videoSecond: 10 + 15 * 60 + 1 + j,
+        box: [200, 100, 400, 600], // Box de pie (top/height = 100/720 = 0.138 <= 0.22, h = 500/720 = 0.69 >= 0.55)
+        isStaff: true,
+        staffSim: 0.65
+      });
+    }
+
+    // Verificar que el tramo sentado previo fue salvado y confirmado
+    const pending = manager.extractPendingConfirmedBlocks();
+    assert.equal(pending.length, 1, "Debe haber salvado 1 bloque confirmado del tramo sentado");
+    assert.equal(pending[0].valid, true);
+    assert.equal(pending[0].durationMinutes, 14); // ~14 min de cliente sentado
+    assert.equal(pending[0].standingFrames, 0);
+    assert.equal(pending[0].crops.length, 15);
+
+    // 3. Cuando el track de pie termina, el nuevo bloque residual es de pie y se descarta
+    const finalDecision = manager.evaluateAndCloseBlock(505, barberCrossingStart + 10000);
+    assert.equal(finalDecision.valid, false);
+    assert.ok(
+      finalDecision.verdict === "DISCARDED_BARBER" || finalDecision.verdict === "DISCARDED_BARBER_STANDING",
+      `El bloque residual del barbero debe ser descartado (fue: ${finalDecision.verdict})`
+    );
+  });
 });

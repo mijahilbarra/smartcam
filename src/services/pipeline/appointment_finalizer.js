@@ -458,7 +458,7 @@ export async function finalizeCustomerAndAppointment({
   const sessionBank = session.representatives || getMultiPoseRepresentativeBank(session.photos || [], session.embeddings || []);
 
   let bestSessionPhotoThumb = repApptThumbnail || session.thumbnailBase64 || null;
-  if (Array.isArray(session.photos) && session.photos.length > 0) {
+  if (!bestSessionPhotoThumb && Array.isArray(session.photos) && session.photos.length > 0) {
     let maxSharp = -1;
     for (const ph of session.photos) {
       const s = Number(ph?.sharpnessScore || 0);
@@ -472,6 +472,8 @@ export async function finalizeCustomerAndAppointment({
   const appointmentRecord = {
     id: session.appointmentId || session.visitId,
     trackId: session.trackId,
+    initialTrackId: session.initialTrackId || session.trackId,
+    allSessionTrackIds: Array.isArray(session.allSessionTrackIds) ? [...session.allSessionTrackIds] : [session.trackId],
     personId: finalClient.id,
     personName: finalClient.name,
     clientId: finalClient.id,
@@ -584,6 +586,7 @@ export async function executeSessionClosurePipeline({
   db,
   bucket,
   stats,
+  trackBlockManager = null,
   closeSession,
   matchSessionAgainstClients,
   logVerbal = console.log
@@ -605,19 +608,26 @@ export async function executeSessionClosurePipeline({
     options,
     logVerbal
   });
-  if (prep.shouldDiscard) return null;
+  if (prep.shouldDiscard) {
+    trackBlockManager?.updateBlocksBySession?.(session, (item) => ({
+      status: "eliminado",
+      statusLabel: "Eliminado al cerrar",
+      reason: `Sesión descartada al cerrar (${durationMinutes} min): ${prep.reason || "No superó validación inicial de cierre"}. (Antes: ${item.initialReason || item.reason})`
+    }));
+    return null;
+  }
 
   session.status = "to_verify";
 
-  // Regla Estricta Causal: Al cerrarse la sesión en la silla C, se evalúan las citas históricas
-  // previas en la misma silla (t_prev < t_actual, gap <= 45 min)
+  // Regla Estricta Causal Atemporal: Al cerrarse la sesión en la silla C, se evalúan las citas históricas
+  // previas en la misma silla (t_prev < t_actual, sin límite rígido de tiempo)
   const currentStartMs = session.startedAtEpoch || (session.startedAt ? new Date(session.startedAt).getTime() : now);
   const minMergeGap = PIPELINE_CONFIG.consolidation?.minMergeGapMs ?? -300000;
   const candidatePrevAppts = [...completedAppointments].reverse().filter(a => {
     if (a.chairId !== session.chairId) return false;
     const aEnd = a.endedAtEpoch || (a.endedAt ? new Date(a.endedAt).getTime() : 0);
     const gap = currentStartMs - aEnd;
-    return gap >= minMergeGap && gap <= 45 * 60 * 1000;
+    return gap >= minMergeGap;
   });
   const prevSameChairAppt = candidatePrevAppts[0] || null;
 
@@ -653,20 +663,33 @@ export async function executeSessionClosurePipeline({
     stats,
     logVerbal
   });
-  if (!bioCheck.isValid) return null;
+  if (!bioCheck.isValid) {
+    trackBlockManager?.updateBlocksBySession?.(session, (item) => ({
+      status: "eliminado",
+      statusLabel: "Eliminado al cerrar (Barbero/0 fotos)",
+      reason: `Sesión descartada al finalizar (${durationMinutes} min): ${bioCheck.reason || "Consenso de barbero o 0 fotos válidas"}.`
+    }));
+    return null;
+  }
 
   // Consolidación cronológica causal (Capa 13 con Cirugía Argon 4)
-  // Evalúa la cita previa de la misma silla (o la penúltima solo si la inmediata fue un micro-tramo <= 3 min)
+  // Evalúa la cita inmediata previa en la misma silla; si no consolida con ella únicamente porque fue un tramo corto
+  // o de pocas fotos (<= 4 fotos o <= 5 min, ej. cliente ocluido o inclinado), permite evaluar puente con la penúltima cita
+  // siempre que la cita intermedia NO sea una atención larga de otro cliente confirmado.
   const targetCandidateAppts = [];
   if (candidatePrevAppts.length > 0) {
     targetCandidateAppts.push(candidatePrevAppts[0]);
-    if ((candidatePrevAppts[0].durationMinutes || 0) <= 3 && candidatePrevAppts.length > 1) {
+    const immediatePrev = candidatePrevAppts[0];
+    const isInterveningBridgeable = (immediatePrev.photos?.length || 0) <= 4 || (immediatePrev.durationMinutes || 0) <= 5;
+    if (candidatePrevAppts.length > 1 && isInterveningBridgeable) {
       targetCandidateAppts.push(candidatePrevAppts[1]);
     }
   }
 
   let consolidatedAppt = null;
-  for (const prevAppt of targetCandidateAppts) {
+  let bridgedInterveningAppt = null;
+  for (let cIdx = 0; cIdx < targetCandidateAppts.length; cIdx++) {
+    const prevAppt = targetCandidateAppts[cIdx];
     consolidatedAppt = await consolidateChairAppointment({
       session,
       prevSameChairAppt: prevAppt,
@@ -681,10 +704,58 @@ export async function executeSessionClosurePipeline({
       stats
     });
     if (consolidatedAppt) {
+      if (cIdx > 0 && targetCandidateAppts[0]) {
+        const interAppt = targetCandidateAppts[0];
+        if ((interAppt.photos?.length || 0) <= 6 && (interAppt.durationMinutes || 0) <= 6) {
+          bridgedInterveningAppt = interAppt;
+        }
+      }
       break;
     }
   }
   if (consolidatedAppt) {
+    if (bridgedInterveningAppt) {
+      const idx = completedAppointments.findIndex(a => a.id === bridgedInterveningAppt.id);
+      if (idx !== -1) {
+        completedAppointments.splice(idx, 1);
+      }
+      const vIdx = completedVisits.findIndex(a => a.id === bridgedInterveningAppt.id);
+      if (vIdx !== -1) {
+        completedVisits.splice(vIdx, 1);
+      }
+      if (sqliteClient?.deleteAppointment) {
+        try { sqliteClient.deleteAppointment(bridgedInterveningAppt.id); } catch (_) {}
+      } else if (customerService?.sqliteClient?.deleteAppointment) {
+        try { customerService.sqliteClient.deleteAppointment(bridgedInterveningAppt.id); } catch (_) {}
+      }
+      if (db) {
+        try { await db.doc(`camera_catcher_appointments/${bridgedInterveningAppt.id}`).delete(); } catch (_) {}
+      }
+      if (bridgedInterveningAppt.clientId && !String(bridgedInterveningAppt.clientId).startsWith("staff_")) {
+        await customerService?.deleteCustomer?.(bridgedInterveningAppt.clientId, { db });
+      }
+      trackBlockManager?.updateBlocksBySession?.(bridgedInterveningAppt, {
+        status: "fusionado",
+        statusLabel: `Absorbido en ${consolidatedAppt.clientName} (#${consolidatedAppt.trackId})`,
+        appointmentId: consolidatedAppt.id,
+        clientName: consolidatedAppt.clientName,
+        mergedWithTrackId: consolidatedAppt.trackId,
+        mergedWithLabel: `${consolidatedAppt.clientName} (#${consolidatedAppt.trackId})`,
+        reason: `Cita intermedia corta (${bridgedInterveningAppt.durationMinutes} min, ${bridgedInterveningAppt.photos?.length || 0} fotos) puenteada y absorbida dentro de ${consolidatedAppt.clientName} (#${consolidatedAppt.trackId}).`
+      });
+      logVerbal(`🧹 Cita intermedia ${bridgedInterveningAppt.id} (${bridgedInterveningAppt.durationMinutes} min, ${bridgedInterveningAppt.photos?.length || 0} fotos) absorbida y purgada tras puente de consolidación en ${session.chairName}.`, "info");
+    }
+    const m = consolidatedAppt._lastMergeMetrics || {};
+    const mergeReasonText = consolidatedAppt._lastMergeReason || "continuidad biométrica";
+    trackBlockManager?.updateBlocksBySession?.(session, {
+      status: "fusionado",
+      statusLabel: `Fusionado con ${consolidatedAppt.clientName} (#${consolidatedAppt.trackId})`,
+      appointmentId: consolidatedAppt.id,
+      clientName: consolidatedAppt.clientName,
+      mergedWithTrackId: consolidatedAppt.trackId,
+      mergedWithLabel: `${consolidatedAppt.clientName} (#${consolidatedAppt.trackId})`,
+      reason: `Consolidado al cerrar en ${consolidatedAppt.clientName} (#${consolidatedAppt.trackId}, total ${consolidatedAppt.durationMinutes} min): ${mergeReasonText}${m.centroidSim !== undefined ? ` (centroidSim=${Number(m.centroidSim || 0).toFixed(3)}, maxGallery=${Number(m.maxGallerySim || 0).toFixed(3)}, brecha=${Math.round((m.gapMs || 0) / 1000)}s)` : ""}.`
+    });
     return consolidatedAppt;
   }
 
@@ -698,7 +769,14 @@ export async function executeSessionClosurePipeline({
     stats,
     logVerbal
   });
-  if (noiseCheck.isNoise) return null;
+  if (noiseCheck.isNoise) {
+    trackBlockManager?.updateBlocksBySession?.(session, {
+      status: "eliminado",
+      statusLabel: "Eliminado (Ruido no consolidado)",
+      reason: `Descartado tras no consolidar con cliente previo: ${noiseCheck.reason || "Evidencia insuficiente como cita independiente"}.`
+    });
+    return null;
+  }
 
   logVerbal(`🔍 Analizando biometría acumulada de atención (${session.photos.length} fotos contra base de clientes)...`, "process");
 
@@ -707,6 +785,85 @@ export async function executeSessionClosurePipeline({
     matchedClient = matchSessionAgainstClients(session.embeddings);
     if (matchedClient && (matchedClient.name?.includes("confirmación") || matchedClient.status === "to_verify")) {
       matchedClient = null;
+    }
+  }
+
+  // Si matchedClient corresponde exactamente a una de las atenciones recientes en la misma silla (ej. Visita #2 en la misma sesión por un corte intermedio),
+  // unificar directamente en esa atención previa para no fragmentar el mismo servicio en dos visitas separadas.
+  if (matchedClient && targetCandidateAppts.length > 0) {
+    const sameClientRecentIndex = targetCandidateAppts.findIndex(a => a.clientId === matchedClient.id || a.personId === matchedClient.id);
+    const sameClientRecentAppt = sameClientRecentIndex >= 0 ? targetCandidateAppts[sameClientRecentIndex] : null;
+    if (sameClientRecentAppt && !isCapeBarrierSeparating(sameClientRecentAppt, session)) {
+      if (sameClientRecentIndex > 0 && targetCandidateAppts[0]) {
+        const interAppt = targetCandidateAppts[0];
+        if ((interAppt.photos?.length || 0) <= 6 && (interAppt.durationMinutes || 0) <= 6) {
+          const idx = completedAppointments.findIndex(a => a.id === interAppt.id);
+          if (idx !== -1) completedAppointments.splice(idx, 1);
+          const vIdx = completedVisits.findIndex(a => a.id === interAppt.id);
+          if (vIdx !== -1) completedVisits.splice(vIdx, 1);
+          if (sqliteClient?.deleteAppointment) {
+            try { sqliteClient.deleteAppointment(interAppt.id); } catch (_) {}
+          } else if (customerService?.sqliteClient?.deleteAppointment) {
+            try { customerService.sqliteClient.deleteAppointment(interAppt.id); } catch (_) {}
+          }
+          if (db) {
+            try { await db.doc(`camera_catcher_appointments/${interAppt.id}`).delete(); } catch (_) {}
+          }
+          if (interAppt.clientId && !String(interAppt.clientId).startsWith("staff_")) {
+            await customerService?.deleteCustomer?.(interAppt.clientId, { db });
+          }
+          trackBlockManager?.updateBlocksBySession?.(interAppt, {
+            status: "fusionado",
+            statusLabel: `Absorbido en ${sameClientRecentAppt.clientName} (#${sameClientRecentAppt.trackId})`,
+            appointmentId: sameClientRecentAppt.id,
+            clientName: sameClientRecentAppt.clientName,
+            mergedWithTrackId: sameClientRecentAppt.trackId,
+            mergedWithLabel: `${sameClientRecentAppt.clientName} (#${sameClientRecentAppt.trackId})`,
+            reason: `Cita intermedia corta (${interAppt.durationMinutes} min) puenteada y absorbida por coincidencia de identidad recurrente con ${sameClientRecentAppt.clientName}.`
+          });
+          logVerbal(`🧹 Cita intermedia ${interAppt.id} (${interAppt.durationMinutes} min, ${interAppt.photos?.length || 0} fotos) absorbida y purgada tras puente de identidad recurrente en ${session.chairName}.`, "info");
+        }
+      }
+      const prevPhotos = sameClientRecentAppt.photos || [];
+      const prevVecs = sameClientRecentAppt.embeddings || [];
+      const merged = mergePhotosAndEmbeddings(prevPhotos, session.photos || [], prevVecs, session.embeddings || []);
+      const deduped = deduplicateSessionPhotos(merged.photos, merged.embeddings, 20);
+      const pureMerged = purgeChimeraPairs(deduped.photos, deduped.embeddings, 0.38);
+      const prevStartMs = new Date(sameClientRecentAppt.startedAt).getTime();
+      const sessionEndMs = session.endedAtEpoch || (session.endedAt ? new Date(session.endedAt).getTime() : now);
+      sameClientRecentAppt.endedAt = new Date(sessionEndMs).toISOString();
+      sameClientRecentAppt.endedAtEpoch = sessionEndMs;
+      sameClientRecentAppt.durationMinutes = Math.max(
+        (sameClientRecentAppt.durationMinutes || 0) + durationMinutes,
+        Math.round((sessionEndMs - prevStartMs) / 60000)
+      );
+      sameClientRecentAppt.photos = pureMerged.photos;
+      sameClientRecentAppt.embeddings = pureMerged.embeddings;
+      if ((session.bestFaceScore || 0) > (sameClientRecentAppt.bestFaceScore || 0)) {
+        sameClientRecentAppt.bestFaceScore = session.bestFaceScore;
+        sameClientRecentAppt.thumbnailBase64 = session.thumbnailBase64 || sameClientRecentAppt.thumbnailBase64;
+      }
+      const sqlite = sqliteClient || (customerService?.sqliteClient);
+      if (sqlite?.saveAppointment) {
+        try { sqlite.saveAppointment(sameClientRecentAppt); } catch (_) {}
+      }
+      if (db) {
+        try { await db.doc(`camera_catcher_appointments/${sameClientRecentAppt.id}`).set(sanitizeForFirestore(sameClientRecentAppt)); } catch (_) {}
+      }
+      if (session.tempClientId && session.tempClientId !== sameClientRecentAppt.clientId) {
+        await customerService?.deleteCustomer?.(session.tempClientId, { db });
+      }
+      trackBlockManager?.updateBlocksBySession?.(session, {
+        status: "fusionado",
+        statusLabel: `Fusionado con ${sameClientRecentAppt.clientName} (#${sameClientRecentAppt.trackId})`,
+        appointmentId: sameClientRecentAppt.id,
+        clientName: sameClientRecentAppt.clientName,
+        mergedWithTrackId: sameClientRecentAppt.trackId,
+        mergedWithLabel: `${sameClientRecentAppt.clientName} (#${sameClientRecentAppt.trackId})`,
+        reason: `Unificado con la cita reciente de ${sameClientRecentAppt.clientName} (#${sameClientRecentAppt.trackId}) por coincidencia de identidad contra base de clientes (total ${sameClientRecentAppt.durationMinutes} min).`
+      });
+      logVerbal(`🔗 Tramo de ${durationMinutes} min unificado por coincidencia de identidad recurrente en ${sameClientRecentAppt.id} (${sameClientRecentAppt.clientName}, duración total: ${sameClientRecentAppt.durationMinutes} min).`, "success");
+      return sameClientRecentAppt;
     }
   }
 
@@ -724,6 +881,26 @@ export async function executeSessionClosurePipeline({
     maxCompletedAppointments,
     logVerbal
   });
+
+  if (appointmentRecord) {
+    const anchorTrack = session.initialTrackId || session.trackId;
+    trackBlockManager?.updateBlocksBySession?.(session, (item) => {
+      const isInitialBlock = item.trackId === anchorTrack;
+      return {
+        status: isInitialBlock ? "confirmado" : "fusionado",
+        statusLabel: isInitialBlock
+          ? `Confirmado (${appointmentRecord.clientName})`
+          : `Fusionado con #${anchorTrack} (${appointmentRecord.clientName})`,
+        appointmentId: appointmentRecord.id,
+        clientName: appointmentRecord.clientName,
+        mergedWithTrackId: isInitialBlock ? null : anchorTrack,
+        mergedWithLabel: isInitialBlock ? null : `#${anchorTrack} (${appointmentRecord.clientName})`,
+        reason: isInitialBlock
+          ? `Atención formalizada en el Calendario como ${appointmentRecord.clientName} (${appointmentRecord.durationMinutes} min totales, ${appointmentRecord.photos?.length || 0} fotos).`
+          : `${item.reason ? `${item.reason} → ` : ""}Parte de la cita finalizada de ${appointmentRecord.clientName} (#${anchorTrack}, ${appointmentRecord.durationMinutes} min).`
+      };
+    });
+  }
 
   session.rotatedFromPrevSession = false;
   session._blockPrevChairMerge = false;

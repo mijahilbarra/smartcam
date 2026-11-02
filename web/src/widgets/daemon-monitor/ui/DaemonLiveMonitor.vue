@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, onUnmounted, watch, computed } from 'vue';
+import { ref, onMounted, onUnmounted, watch } from 'vue';
 import AppIcon from '@/shared/ui/atoms/AppIcon.vue';
 import AppButton from '@/shared/ui/atoms/AppButton.vue';
 import AppBadge from '@/shared/ui/atoms/AppBadge.vue';
@@ -10,6 +10,7 @@ import { useQuadrants } from '@/entities/quadrant/model/useQuadrants';
 import { hexToRgba, toPointObject, ensureNorm01, boxNormToPolygonNorm } from '@/shared/lib/geometry';
 import { IS_LOCAL_ENV } from '@/shared/api/firebase';
 import TodayScheduleWidget from '@/widgets/today-schedule/ui/TodayScheduleWidget.vue';
+import TrackBlocksTimelineWidget from '@/widgets/track-blocks-bar/ui/TrackBlocksTimelineWidget.vue';
 
 const emit = defineEmits(['open-settings', 'open-calibrator', 'switch-tab']);
 
@@ -23,13 +24,11 @@ const {
   activeBackendUrl,
   canvasImageData,
   activeChairSessions,
-  analysisDecisions,
+  allTrackBlocks,
   clientsInCut,
   clientsWaiting,
   activeBarbers,
-  totalHumans,
-  logs,
-  addLog
+  totalHumans
 } = useDaemonState();
 
 const { quadrants: configuredQuadrants } = useQuadrants();
@@ -42,29 +41,6 @@ const canvasRef = ref(null);
 const showQuadrants = ref(true);
 const showHumans = ref(true);
 const showBiometry = ref(true);
-
-// Reloj y estilos para las notificaciones flotantes (toasts) de decisiones del análisis (15s)
-const nowMs = ref(Date.now());
-const dismissedDecisionIds = ref(new Set());
-let decisionTicker = null;
-
-const decisionStyles = {
-  success: { border: 'border-emerald-500/60', bg: 'from-emerald-950/95 via-slate-900/95 to-slate-950/95', text: 'text-emerald-300', bar: 'bg-emerald-400', icon: 'check_circle' },
-  info: { border: 'border-sky-500/60', bg: 'from-sky-950/95 via-slate-900/95 to-slate-950/95', text: 'text-sky-300', bar: 'bg-sky-400', icon: 'merge' },
-  warning: { border: 'border-amber-500/60', bg: 'from-amber-950/95 via-slate-900/95 to-slate-950/95', text: 'text-amber-300', bar: 'bg-amber-400', icon: 'report' },
-  neutral: { border: 'border-slate-600/80', bg: 'from-slate-900/95 to-slate-950/95', text: 'text-slate-300', bar: 'bg-slate-400', icon: 'info' }
-};
-const getDecisionStyle = (d) => decisionStyles[d?.tone] || decisionStyles.neutral;
-
-const dismissDecision = (id) => {
-  dismissedDecisionIds.value = new Set([...dismissedDecisionIds.value, id]);
-};
-
-const activeDecisions = computed(() =>
-  (Array.isArray(analysisDecisions.value) ? analysisDecisions.value : []).filter(
-    (d) => d.expiresAt > nowMs.value && !dismissedDecisionIds.value.has(d.id)
-  )
-);
 
 // Stream & image loading state
 const streamKey = ref(Date.now());
@@ -600,13 +576,11 @@ watch(() => canvasImageData.value, (newData) => {
 onMounted(() => {
   startAnimationLoop();
   startSnapshotFallback();
-  decisionTicker = setInterval(() => { nowMs.value = Date.now(); }, 1000);
 });
 
 onUnmounted(() => {
   stopAnimationLoop();
   stopSnapshotFallback();
-  if (decisionTicker) clearInterval(decisionTicker);
 });
 </script>
 
@@ -700,10 +674,10 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- Main Live Grid: Video Stream / Overlays (Left) & Real-Time Today Calendar (Right) -->
-    <div class="grid grid-cols-1 lg:grid-cols-12 gap-5 w-full items-start">
+    <!-- Main Live Grid: Video Stream / Overlays (Left), TrackBlocks Event Bar (Center) & Real-Time Today Calendar (Right) -->
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-4 w-full items-start">
       <!-- Left Column: Video Stream, Overlays & Logs underneath -->
-      <div class="lg:col-span-7 xl:col-span-8 flex flex-col gap-3.5">
+      <div class="lg:col-span-12 xl:col-span-6 flex flex-col gap-3.5">
         <!-- Viewport Toolbar -->
         <div class="flex flex-wrap items-center justify-between gap-3 bg-slate-950/80 border border-slate-800 rounded-xl px-3 py-2 text-xs">
           <div class="flex items-center gap-2 text-slate-300">
@@ -840,60 +814,17 @@ onUnmounted(() => {
             :value-class="canvasImageData.peopleIdentified?.length ? 'text-amber-400 font-bold' : 'text-slate-400'"
           />
         </div>
+      </div>
 
-        <!-- Logs debajo del Video (Bitácora de Visitas y Seguimiento) -->
-        <div class="flex flex-col bg-slate-950/70 border border-slate-800 rounded-xl overflow-hidden h-[290px] shadow-xs mt-1">
-          <div class="flex items-center justify-between p-3 border-b border-slate-800 bg-slate-900/80">
-            <div class="flex items-center gap-2 text-sm font-semibold text-slate-200">
-              <AppIcon name="timeline" :size="18" class="text-blue-400" />
-              <h4>Bitácora de Visitas y Seguimiento en Vivo</h4>
-            </div>
-            <div class="flex items-center gap-2">
-              <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-950/70 text-emerald-400 border border-emerald-500/30">
-                <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                En directo
-              </span>
-              <AppBadge variant="default" class="text-[11px] font-mono">
-                {{ logs.length }} eventos
-              </AppBadge>
-            </div>
-          </div>
-
-          <div class="flex-1 p-3 overflow-y-auto flex flex-col gap-2 font-mono text-xs">
-            <div
-              v-for="log in logs"
-              :key="log.id"
-              class="p-2.5 rounded-lg border border-slate-800/90 bg-slate-900/90 flex flex-col gap-1 transition hover:border-slate-700"
-            >
-              <div class="flex items-center justify-between text-[11px] text-slate-400">
-                <div class="flex items-center gap-1.5 font-bold text-slate-200">
-                  <AppIcon :name="log.icon || 'sensors'" :size="15" class="text-blue-400" />
-                  <span>{{ log.title }}</span>
-                </div>
-                <span class="font-mono text-slate-500">{{ log.time }}</span>
-              </div>
-
-              <p class="text-slate-300 font-sans text-xs leading-relaxed">{{ log.desc }}</p>
-
-              <div v-if="log.badge" class="self-start mt-0.5">
-                <span :class="['px-2 py-0.5 rounded-md text-[10px] font-semibold font-sans uppercase tracking-wider', log.badgeClass || 'text-slate-400 bg-slate-800']">
-                  {{ log.badge }}
-                </span>
-              </div>
-            </div>
-
-            <div
-              v-if="logs.length === 0"
-              class="h-full flex items-center justify-center text-slate-500 text-xs text-center p-4 font-sans"
-            >
-              Esperando eventos de seguimiento y visitas en tiempo real...
-            </div>
-          </div>
-        </div>
+      <!-- Center Column: Barra de Todos los TrackBlocks (Sin Borrar) -->
+      <div class="lg:col-span-6 xl:col-span-3 flex flex-col">
+        <TrackBlocksTimelineWidget
+          :all-track-blocks="allTrackBlocks"
+        />
       </div>
 
       <!-- Right Column: Lateral - Calendario de Atención del Día -->
-      <div class="lg:col-span-5 xl:col-span-4 flex flex-col">
+      <div class="lg:col-span-6 xl:col-span-3 flex flex-col">
         <TodayScheduleWidget
           :clients-in-cut="clientsInCut"
           :active-barbers="activeBarbers"
@@ -902,96 +833,5 @@ onUnmounted(() => {
         />
       </div>
     </div>
-
-    <!-- Columna de Toasts Flotantes (Lado Derecho Inferior) -->
-    <Teleport to="body">
-      <div
-        v-if="activeDecisions.length > 0"
-        class="fixed bottom-4 right-4 z-50 flex flex-col gap-2.5 w-[340px] sm:w-[380px] max-w-[calc(100vw-2rem)] max-h-[80vh] overflow-y-auto pointer-events-none"
-        aria-live="polite"
-      >
-        <TransitionGroup name="toast-slide">
-          <div
-            v-for="decision in activeDecisions"
-            :key="decision.id"
-            :class="[
-              'pointer-events-auto rounded-xl bg-gradient-to-br border p-3.5 relative overflow-hidden shadow-2xl backdrop-blur-md transition-all',
-              getDecisionStyle(decision).bg,
-              getDecisionStyle(decision).border
-            ]"
-          >
-            <div class="flex items-start gap-2.5">
-              <AppIcon
-                :name="getDecisionStyle(decision).icon"
-                :size="18"
-                :class="['mt-0.5 flex-shrink-0', getDecisionStyle(decision).text]"
-              />
-              <div class="min-w-0 flex-1">
-                <div class="flex items-center justify-between gap-2">
-                  <span :class="['text-xs font-bold leading-snug', getDecisionStyle(decision).text]">
-                    {{ decision.title }}
-                  </span>
-                  <div class="flex items-center gap-1.5 flex-shrink-0">
-                    <span class="text-[10px] font-mono text-slate-400">
-                      {{ Math.max(0, Math.ceil((decision.expiresAt - nowMs) / 1000)) }}s
-                    </span>
-                    <button
-                      type="button"
-                      @click="dismissDecision(decision.id)"
-                      class="text-slate-400 hover:text-white transition p-0.5 rounded cursor-pointer"
-                      title="Cerrar notificación"
-                    >
-                      <AppIcon name="close" :size="14" />
-                    </button>
-                  </div>
-                </div>
-                <div v-if="decision.trackId || decision.chairName" class="text-[10px] font-mono text-slate-400 mt-0.5">
-                  <span v-if="decision.trackId">Bloque #{{ decision.trackId }}</span>
-                  <span v-if="decision.trackId && decision.chairName"> · </span>
-                  <span v-if="decision.chairName">{{ decision.chairName }}</span>
-                </div>
-                <p class="text-[11px] text-slate-200 leading-relaxed mt-1 break-words">
-                  {{ decision.reason }}
-                </p>
-              </div>
-            </div>
-
-            <!-- Barra de cuenta regresiva de 15s -->
-            <div class="absolute bottom-0 left-0 right-0 h-0.5 bg-slate-800/80">
-              <div
-                :class="['h-full decision-countdown', getDecisionStyle(decision).bar]"
-                :style="{ animationDuration: (decision.expiresAt - decision.receivedAt) + 'ms' }"
-              ></div>
-            </div>
-          </div>
-        </TransitionGroup>
-      </div>
-    </Teleport>
   </section>
 </template>
-
-<style scoped>
-@keyframes decision-shrink {
-  from { width: 100%; }
-  to { width: 0%; }
-}
-.decision-countdown {
-  width: 100%;
-  animation-name: decision-shrink;
-  animation-timing-function: linear;
-  animation-fill-mode: forwards;
-}
-
-.toast-slide-enter-active,
-.toast-slide-leave-active {
-  transition: all 0.25s ease;
-}
-.toast-slide-enter-from {
-  opacity: 0;
-  transform: translateX(24px) scale(0.96);
-}
-.toast-slide-leave-to {
-  opacity: 0;
-  transform: translateX(24px) scale(0.96);
-}
-</style>

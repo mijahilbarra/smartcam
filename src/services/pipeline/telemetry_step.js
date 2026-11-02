@@ -4,11 +4,11 @@ import { getSystemMemoryMetrics } from "../../core/system_metrics.js";
 /**
  * 9. Emisión de telemetría de baja latencia por Server-Sent Events (SSE).
  */
-export function broadcastTelemetry({ docId, mlResult, activeTracks = [], identifiedPeople = [], occupancy }) {
+export function broadcastTelemetry({ docId, mlResult, activeTracks = [], identifiedPeople = [], occupancy, activeChairSessions = [], allTrackBlocks }) {
   const frameWidth = mlResult.origWidth || mlResult.imageDimensions?.width || 640;
   const frameHeight = mlResult.origHeight || mlResult.imageDimensions?.height || 360;
 
-  telemetryStream.broadcast({
+  const payload = {
     type: "yolo_telemetry",
     docId,
     inferenceMs: mlResult.inferenceMs,
@@ -58,8 +58,15 @@ export function broadcastTelemetry({ docId, mlResult, activeTracks = [], identif
         }))
       : undefined,
     occupancy,
+    activeChairSessions,
     memory: getSystemMemoryMetrics()
-  });
+  };
+
+  if (Array.isArray(allTrackBlocks)) {
+    payload.allTrackBlocks = allTrackBlocks;
+  }
+
+  telemetryStream.broadcast(payload);
 }
 
 export const STEP_NAME = "Emisión de Telemetría (SSE)";

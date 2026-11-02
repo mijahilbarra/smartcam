@@ -104,11 +104,18 @@ export async function getScrfdInferenceSession() {
     if (!fs.existsSync(SCRFD_MODEL_PATH)) {
       throw new Error(`Modelo SCRFD-500M no encontrado en: ${SCRFD_MODEL_PATH}`);
     }
+    const defaultThreads = process.env.STREAM_FAST_FORWARD === "true" ? 4 : 1;
+    const threads = Number(process.env.ONNX_THREADS) || defaultThreads;
+    const isMac = process.platform === "darwin";
+    const explicitProvider = process.env.ONNX_PROVIDER;
+    const executionProviders = explicitProvider
+      ? [explicitProvider, "cpu"]
+      : (isMac && (process.env.IS_LOCAL_SIMULATOR === "true" || process.env.STREAM_FAST_FORWARD === "true") ? ["coreml", "cpu"] : ["cpu"]);
     scrfdSession = await ort.InferenceSession.create(SCRFD_MODEL_PATH, {
-      executionProviders: ["cpu"],
+      executionProviders,
       graphOptimizationLevel: "all",
-      intraOpNumThreads: Number(process.env.ONNX_THREADS) || 1,
-      interOpNumThreads: Number(process.env.ONNX_THREADS) || 1,
+      intraOpNumThreads: threads,
+      interOpNumThreads: threads,
       enableCpuMemArena: false,
       enableMemPattern: false
     });
@@ -124,11 +131,18 @@ export async function getRfbInferenceSession() {
     if (!fs.existsSync(RFB_MODEL_PATH)) {
       throw new Error(`Modelo RFB-320 no encontrado en: ${RFB_MODEL_PATH}`);
     }
+    const defaultThreads = process.env.STREAM_FAST_FORWARD === "true" ? 4 : 1;
+    const threads = Number(process.env.ONNX_THREADS) || defaultThreads;
+    const isMac = process.platform === "darwin";
+    const explicitProvider = process.env.ONNX_PROVIDER;
+    const executionProviders = explicitProvider
+      ? [explicitProvider, "cpu"]
+      : (isMac && (process.env.IS_LOCAL_SIMULATOR === "true" || process.env.STREAM_FAST_FORWARD === "true") ? ["coreml", "cpu"] : ["cpu"]);
     rfbSession = await ort.InferenceSession.create(RFB_MODEL_PATH, {
-      executionProviders: ["cpu"],
-      graphOptimizationLevel: "basic",
-      intraOpNumThreads: Number(process.env.ONNX_THREADS) || 1,
-      interOpNumThreads: Number(process.env.ONNX_THREADS) || 1,
+      executionProviders,
+      graphOptimizationLevel: "all",
+      intraOpNumThreads: threads,
+      interOpNumThreads: threads,
       enableCpuMemArena: false,
       enableMemPattern: false
     });
@@ -254,7 +268,7 @@ export function hasTwoEyesVisible(landmarks, boxNorm = null, pose = null) {
     if (!isValidFaceGeometry(landmarks, boxNorm)) {
       return false;
     }
-    const [leftEye, rightEye, nose] = landmarks;
+    const [leftEye, rightEye, nose, leftMouth, rightMouth] = landmarks;
     const boxW = (Array.isArray(boxNorm) && boxNorm.length === 4 && boxNorm.every(v => typeof v === 'number' && v >= 0 && v <= 1.5) && (boxNorm[2] - boxNorm[0]) > 0)
       ? (boxNorm[2] - boxNorm[0])
       : 1.0;
@@ -273,7 +287,16 @@ export function hasTwoEyesVisible(landmarks, boxNorm = null, pose = null) {
     const isNoseBetween = (nose[0] > minEyeX + 0.06 * eyeSpan) && (nose[0] < maxEyeX - 0.06 * eyeSpan);
     const hasBothEyesSeparated = (dxL >= 0.06 * eyeSpan) && (dxR >= 0.06 * eyeSpan);
 
-    return isNoseBetween && hasBothEyesSeparated;
+    // Verificación de proporción vertical ojos-nariz-boca (Anti-oclusión de frente/ojos por mano del barbero):
+    // Si la mano del barbero cubre la frente/ojos, los landmarks oculares se desplazan artificialmente hacia la punta de la nariz
+    // colapsando dTop (dTop / dBottom < 0.35 o pitch <= -0.45), por lo que NO hay dos ojos limpios visibles.
+    const yEye = (leftEye[1] + rightEye[1]) / 2;
+    const yMouth = (leftMouth[1] + rightMouth[1]) / 2;
+    const dTop = nose[1] - yEye;
+    const dBottom = yMouth - nose[1];
+    const isUpperFaceOccluded = dBottom > 0.01 && (dTop < dBottom * 0.35);
+
+    return isNoseBetween && hasBothEyesSeparated && !isUpperFaceOccluded;
   }
 
   // Sin landmarks anatómicos válidos (5 puntos de ojos, nariz y boca), no es posible certificar la presencia de dos ojos
@@ -666,7 +689,7 @@ export async function estimateFacePose({ landmarks, faceBuffer, faceBoxNorm, emb
   let isSemiRight = false;
 
   if (hasLandmarks) {
-    const [leftEye, rightEye, nose] = landmarks;
+    const [leftEye, rightEye, nose, leftMouth, rightMouth] = landmarks;
     const minEyeX = Math.min(leftEye[0], rightEye[0]);
     const maxEyeX = Math.max(leftEye[0], rightEye[0]);
     const eyeSpan = maxEyeX - minEyeX;
