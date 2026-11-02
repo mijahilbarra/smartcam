@@ -33,7 +33,7 @@ jobs:
       - name: Deploy Code to VM via Rsync
         run: |
           echo "Sincronizando archivos hacia /opt/camera-catcher..."
-          rsync -avz --delete \
+          rsync -avz --no-owner --no-group --delete \
             -e "ssh -o StrictHostKeyChecking=accept-new" \
             --exclude 'node_modules' \
             --exclude '.git' \
