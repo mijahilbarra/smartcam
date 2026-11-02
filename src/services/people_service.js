@@ -261,7 +261,7 @@ export function matchStaffFace(embedding, knownProfiles = [], staffThreshold = 0
   const staffProfiles = knownProfiles.filter(p => {
     if (p.name && /^Cliente\s*#\d+/i.test(p.name)) return false;
     if (p.role === "client" || p.isStaff === false) return false;
-    return (p.isStaff === true && p.role !== "client") || p.role === "barber" || (String(p.id).startsWith("staff_") && p.role !== "client" && p.isStaff !== false);
+    return (p.isStaff === true && p.role !== "client") || p.role === "barber" || (String(p.id).startsWith("staff_") && p.role !== "client" && p.isStaff !== false) || (!p.role && !p.id && (p.vector || p.embeddings || p.embedding));
   });
   if (staffProfiles.length === 0) {
     return { isStaffMatch: false, maxStaffSim: 0, maxSamePoseSim: 0, staffProfile: null };
@@ -285,6 +285,9 @@ export function matchStaffFace(embedding, knownProfiles = [], staffThreshold = 0
     }
     if (vectors.length === 0 && Array.isArray(staff.embedding)) {
       vectors.push({ vector: staff.embedding, pose: 'frontal' });
+    }
+    if (vectors.length === 0 && Array.isArray(staff.vector)) {
+      vectors.push({ vector: staff.vector, pose: staff.pose || 'frontal' });
     }
 
     for (const v of vectors) {
@@ -378,7 +381,7 @@ export async function cleanupFakeProfiles(db) {
  * @returns {Promise<Array>}
  */
 export async function processPeopleRecognition(db, clientRecords, clientCrops, activeSessions = [], options = {}) {
-  if (!db || !clientCrops || clientCrops.length === 0) return [];
+  if (!clientCrops || clientCrops.length === 0) return [];
   const identifiedPeople = [];
   const custService = options.customerService || customerService;
   const backgroundSync = options?.backgroundSync === true;
@@ -470,26 +473,9 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
         const staff = staffMatch.staffProfile;
         staff.lastSeen = new Date().toISOString();
 
-        // Nivel 4: Enriquecimiento dinámico en memoria de la galería del día del Objeto Barbero
-        const isCleanStaffPose = ['frontal', 'semi_left', 'semi_right', 'tilted_down', 'tilted_down_left', 'tilted_down_right'].includes(quality.pose);
-        if ((quality.sharpnessScore || 0) >= 48 && isCleanStaffPose && staffMatch.maxStaffSim >= 0.54) {
-          if (!Array.isArray(staff.embeddings)) {
-            staff.embeddings = Array.isArray(staff.embedding) ? [staff.embedding] : [];
-          }
-          if (staff.embeddings.length < 35) {
-            const isNearDuplicate = staff.embeddings.some(item => {
-              const vec = Array.isArray(item) ? item : item?.vector;
-              return Array.isArray(vec) && computeCosineSimilarity(embedding, vec) >= 0.92;
-            });
-            if (!isNearDuplicate) {
-              staff.embeddings.push({
-                vector: embedding,
-                pose: quality.pose || 'frontal',
-                poseLabel: quality.poseLabel || 'Frontal'
-              });
-            }
-          }
-        }
+        // INMUTABILIDAD TOTAL DEL STAFF EN STREAMING:
+        // Jamás añadir ni mutar vectores en staff.embeddings durante el streaming,
+        // para garantizar paridad 100% con los 30 vectores canónicos y evitar contaminación cruzada con clientes sentados.
 
         console.log(`[FaceRecognition] Barbero / Staff identificado: "${staff.name}" (Similitud: ${staffMatch.maxStaffSim.toFixed(3)}). Excluido de clientes.`);
 
@@ -504,8 +490,18 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
           confidence: crop.confidence,
           faceBuffer: quality.faceBuffer,
           faceBoxNorm: quality.faceBoxNorm,
+          landmarks: quality.landmarks || null,
+          hasTwoEyes: quality.hasTwoEyes,
+          frontalityScore: quality.frontalityScore,
+          yawScore: quality.yawScore,
+          pitchScore: quality.pitchScore,
+          skinRatio: quality.skinRatio,
+          warmRatio: quality.warmRatio,
           thumbnailBase64: staff.thumbnailBase64 || staff.photos?.[0]?.thumbnailBase64 || faceThumbnailBase64,
-          sharpnessScore: quality.sharpnessScore
+          sharpnessScore: quality.sharpnessScore,
+          embedding: embedding,
+          pose: quality.pose || 'frontal',
+          poseLabel: quality.poseLabel || 'Frontal'
         });
 
         // NUNCA procesar al barbero como cliente, ni en sesión de silla ni en debounce.
@@ -728,7 +724,7 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
 
           console.log(`[FaceRecognition] Rostro confirmado en sesión activa de ${crop.zoneId || 'silla'} -> Cliente: "${p.name}" (${p.id}).`);
 
-          identifiedPeople.push({
+          const identifiedEntry = {
             cropId: crop.id || `crop_${i + 1}`,
             box: crop.box,
             personId: p.id,
@@ -745,6 +741,8 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
             frontalityScore: quality.frontalityScore,
             yawScore: quality.yawScore,
             pitchScore: quality.pitchScore,
+            skinRatio: quality.skinRatio,
+            warmRatio: quality.warmRatio,
             thumbnailBase64: faceThumbnailBase64 || p.photos?.[0]?.thumbnailBase64 || p.thumbnailBase64,
             sharpnessScore: quality.sharpnessScore,
             embedding: embedding,
@@ -752,7 +750,8 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
             poseLabel: quality.poseLabel || 'Frontal',
             sessionGoverned: true,
             photos: p.photos || []
-          });
+          };
+          identifiedPeople.push(identifiedEntry);
 
           continue;
         } else {
@@ -788,111 +787,118 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
         const canonicalVector = pVectors[0] || null;
         const canonicalSim = canonicalVector ? computeCosineSimilarity(embedding, canonicalVector) : result.similarity;
 
-        if (canonicalSim < 0.60) {
-          console.log(`[FaceRecognition] Match con "${p.name}" rechazado: similitud con rostro canónico (${canonicalSim.toFixed(3)}) < 0.60. No se guarda.`);
+        if (canonicalSim >= 0.60) {
+          console.log(`[FaceRecognition] Match biométrico confirmado: "${p.name}" (Similitud: ${result.similarity.toFixed(3)}, Canónica: ${canonicalSim.toFixed(3)})`);
+
+          // Cliente existente: durante streaming en tiempo real NO incrementar visitas ni modificar lastSeen cuadro a cuadro
+          const count = p.visitCount || 1;
+          if (record?.storagePath) {
+            p.thumbnailPath = record.storagePath;
+          }
+
+          let currentGallery = Array.isArray(p.embeddings) && p.embeddings.length > 0
+            ? [...p.embeddings]
+            : (Array.isArray(p.embedding) ? [p.embedding] : []);
+          let galleryUpdated = false;
+
+          const pPhotosCount = Array.isArray(p.photos) ? p.photos.length : 0;
+          const pEmbeddingsCount = currentGallery.length;
+          const hasMissingPhotos = pPhotosCount < pEmbeddingsCount && pPhotosCount < 20;
+
+          const nowEpoch = options.nowEpoch || Date.now();
+          const lastPhotoTime = p.lastPhotoAtEpoch || (p.lastPhotoAt ? new Date(p.lastPhotoAt).getTime() : 0);
+          const timeSinceLastPhoto = nowEpoch - lastPhotoTime;
+          const cadencePassed = timeSinceLastPhoto >= 20000;
+          const canAddMorePhotos = pPhotosCount < 20 && (cadencePassed || pPhotosCount === 0);
+
+          const isNovelAngle = result.similarity >= 0.50 && result.similarity <= 0.88 && canonicalSim >= 0.48;
+          const hasHigherSharpness = quality.sharpnessScore > (p.bestFaceScore || 0) && canonicalSim >= 0.48;
+
+          const currentPoses = new Set((p.photos || []).map(ph => ph.pose || 'frontal'));
+          const isUnrepresentedPose = quality.pose && !currentPoses.has(quality.pose) && canonicalSim >= 0.48;
+
+          if (canAddMorePhotos || isNovelAngle || hasHigherSharpness || hasMissingPhotos || isUnrepresentedPose) {
+            const enriched = enrichPersonAngles(p, {
+              embedding,
+              faceThumbnailBase64,
+              sharpnessScore: quality.sharpnessScore,
+              pose: quality.pose,
+              poseLabel: quality.poseLabel,
+              nowEpoch
+            }, { minCanonicalSimilarity: 0.48, enforceCooldown: !canAddMorePhotos && !hasMissingPhotos });
+
+            if (!enriched.rejected && !enriched.duplicate) {
+              p.lastPhotoAtEpoch = nowEpoch;
+              p.lastPhotoAt = new Date(nowEpoch).toISOString();
+              currentGallery = enriched.embeddings;
+              p.photos = enriched.photos;
+              galleryUpdated = true;
+              console.log(`[FaceRecognition] 📸 Rostro complementario añadido a cliente "${p.name}" (Total fotos: ${p.photos.length}/20, Nitidez: ${quality.sharpnessScore}, Pose: ${quality.pose || 'frontal'}).`);
+            } else if (enriched.duplicate && enriched.updatedSharpness) {
+              currentGallery = enriched.embeddings;
+              p.photos = enriched.photos;
+              galleryUpdated = true;
+            }
+          }
+
+          if (!p.photos || p.photos.length === 0) {
+            p.photos = [{
+              thumbnailBase64: faceThumbnailBase64,
+              sharpnessScore: quality.sharpnessScore || 0,
+              capturedAt: new Date(nowEpoch).toISOString(),
+              pose: quality.pose || 'frontal',
+              poseLabel: quality.poseLabel || 'Frontal'
+            }];
+            p.bestFaceScore = quality.sharpnessScore;
+            p.thumbnailBase64 = faceThumbnailBase64;
+            p.embedding = embedding;
+            galleryUpdated = true;
+          } else if (hasHigherSharpness) {
+            p.bestFaceScore = quality.sharpnessScore;
+            p.thumbnailBase64 = faceThumbnailBase64;
+            p.embedding = embedding;
+          }
+
+          if (galleryUpdated) {
+            p.embeddings = currentGallery;
+          }
+
+          // En streaming en tiempo real: actualizar solo en memoria RAM sin llamadas a Firestore cuadro a cuadro
+          if (custService?.profilesCache) {
+            custService.profilesCache.set(p.id, p);
+          }
+
+          identifiedPeople.push({
+            cropId: crop.id || `crop_${i + 1}`,
+            box: crop.box,
+            personId: p.id,
+            name: p.name,
+            isStaff: false,
+            isFrequent: count > 1,
+            visitCount: count,
+            similarity: result.similarity,
+            confidence: crop.confidence,
+            faceBuffer: quality.faceBuffer,
+            faceBoxNorm: quality.faceBoxNorm,
+            landmarks: quality.landmarks || null,
+            hasTwoEyes: quality.hasTwoEyes,
+            frontalityScore: quality.frontalityScore,
+            yawScore: quality.yawScore,
+            pitchScore: quality.pitchScore,
+            skinRatio: quality.skinRatio,
+            warmRatio: quality.warmRatio,
+            thumbnailBase64: faceThumbnailBase64 || p.photos?.[0]?.thumbnailBase64 || p.thumbnailBase64,
+            sharpnessScore: quality.sharpnessScore,
+            embedding: embedding,
+            pose: quality.pose || 'frontal',
+            poseLabel: quality.poseLabel || 'Frontal',
+            photos: p.photos || []
+          });
           continue;
         }
-
-        console.log(`[FaceRecognition] Match biométrico confirmado: "${p.name}" (Similitud: ${result.similarity.toFixed(3)}, Canónica: ${canonicalSim.toFixed(3)})`);
-
-        // Cliente existente: durante streaming en tiempo real NO incrementar visitas ni modificar lastSeen cuadro a cuadro
-        const count = p.visitCount || 1;
-        if (record?.storagePath) {
-          p.thumbnailPath = record.storagePath;
-        }
-
-        let currentGallery = Array.isArray(p.embeddings) && p.embeddings.length > 0
-          ? [...p.embeddings]
-          : (Array.isArray(p.embedding) ? [p.embedding] : []);
-        let galleryUpdated = false;
-
-        const pPhotosCount = Array.isArray(p.photos) ? p.photos.length : 0;
-        const pEmbeddingsCount = currentGallery.length;
-        const hasMissingPhotos = pPhotosCount < pEmbeddingsCount && pPhotosCount < 20;
-
-        const nowEpoch = Date.now();
-        const lastPhotoTime = p.lastPhotoAtEpoch || (p.lastPhotoAt ? new Date(p.lastPhotoAt).getTime() : 0);
-        const timeSinceLastPhoto = nowEpoch - lastPhotoTime;
-        const cadencePassed = timeSinceLastPhoto >= 20000;
-        const canAddMorePhotos = pPhotosCount < 20 && (cadencePassed || pPhotosCount === 0);
-
-        const isNovelAngle = result.similarity >= 0.50 && result.similarity <= 0.88 && canonicalSim >= 0.48;
-        const hasHigherSharpness = quality.sharpnessScore > (p.bestFaceScore || 0) && canonicalSim >= 0.48;
-
-        const currentPoses = new Set((p.photos || []).map(ph => ph.pose || 'frontal'));
-        const isUnrepresentedPose = quality.pose && !currentPoses.has(quality.pose) && canonicalSim >= 0.48;
-
-        if (canAddMorePhotos || isNovelAngle || hasHigherSharpness || hasMissingPhotos || isUnrepresentedPose) {
-          const enriched = enrichPersonAngles(p, {
-            embedding,
-            faceThumbnailBase64,
-            sharpnessScore: quality.sharpnessScore,
-            pose: quality.pose,
-            poseLabel: quality.poseLabel,
-            nowEpoch
-          }, { minCanonicalSimilarity: 0.48, enforceCooldown: !canAddMorePhotos && !hasMissingPhotos });
-
-          if (!enriched.rejected && !enriched.duplicate) {
-            p.lastPhotoAtEpoch = nowEpoch;
-            p.lastPhotoAt = new Date(nowEpoch).toISOString();
-            currentGallery = enriched.embeddings;
-            p.photos = enriched.photos;
-            galleryUpdated = true;
-            console.log(`[FaceRecognition] 📸 Rostro complementario añadido a cliente "${p.name}" (Total fotos: ${p.photos.length}/20, Nitidez: ${quality.sharpnessScore}, Pose: ${quality.pose || 'frontal'}).`);
-          } else if (enriched.duplicate && enriched.updatedSharpness) {
-            currentGallery = enriched.embeddings;
-            p.photos = enriched.photos;
-            galleryUpdated = true;
-          }
-        }
-
-        if (!p.photos || p.photos.length === 0) {
-          p.photos = [{
-            thumbnailBase64: faceThumbnailBase64,
-            sharpnessScore: quality.sharpnessScore || 0,
-            capturedAt: new Date().toISOString(),
-            pose: quality.pose || 'frontal',
-            poseLabel: quality.poseLabel || 'Frontal'
-          }];
-          p.bestFaceScore = quality.sharpnessScore;
-          p.thumbnailBase64 = faceThumbnailBase64;
-          p.embedding = embedding;
-          galleryUpdated = true;
-        } else if (hasHigherSharpness) {
-          p.bestFaceScore = quality.sharpnessScore;
-          p.thumbnailBase64 = faceThumbnailBase64;
-          p.embedding = embedding;
-        }
-
-        if (galleryUpdated) {
-          p.embeddings = currentGallery;
-        }
-
-        // En streaming en tiempo real: actualizar solo en memoria RAM sin llamadas a Firestore cuadro a cuadro
-        if (custService?.profilesCache) {
-          custService.profilesCache.set(p.id, p);
-        }
-
-        identifiedPeople.push({
-          cropId: crop.id || `crop_${i + 1}`,
-          box: crop.box,
-          personId: p.id,
-          name: p.name,
-          isStaff: false,
-          isFrequent: count > 1,
-          visitCount: count,
-          similarity: result.similarity,
-          confidence: crop.confidence,
-          faceBuffer: quality.faceBuffer,
-          faceBoxNorm: quality.faceBoxNorm,
-          thumbnailBase64: faceThumbnailBase64 || p.photos?.[0]?.thumbnailBase64 || p.thumbnailBase64,
-          sharpnessScore: quality.sharpnessScore,
-          embedding: embedding,
-          pose: quality.pose || 'frontal',
-          poseLabel: quality.poseLabel || 'Frontal',
-          photos: p.photos || []
-        });
-      } else {
+        console.log(`[FaceRecognition] Match con "${p.name}" rechazado como recurrente (canónica ${canonicalSim.toFixed(3)} < 0.60). Evaluando como nuevo candidato en silla.`);
+      }
+      {
         // 5. GESTIÓN DE CANDIDATOS EN MEMORIA (TELEMETRÍA)
         // Regla: "si se parece al barbero, no se guarda".
         if (staffMatch.maxStaffSim >= 0.58) {
@@ -903,10 +909,11 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
         let matchedCandidateKey = null;
         let candidate = null;
         let candidateSim = 0;
+        const candidateNow = options.nowEpoch || Date.now();
 
         for (const [key, cand] of pendingNewClients.entries()) {
           // Expirar candidatos inactivos > 120 seg
-          if (Date.now() - cand.lastSeen > 120000) {
+          if (candidateNow - cand.lastSeen > 120000) {
             pendingNewClients.delete(key);
             continue;
           }
@@ -928,14 +935,14 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
 
         if (candidate) {
           candidate.count += 1;
-          candidate.lastSeen = Date.now();
+          candidate.lastSeen = candidateNow;
           if (!candidate.name) candidate.name = "Candidato";
           if (!candidate.embeddings) candidate.embeddings = [candidate.embedding];
           if (!Array.isArray(candidate.photos) || candidate.photos.length === 0) {
             candidate.photos = [{
               thumbnailBase64: candidate.faceThumbnailBase64 || faceThumbnailBase64,
               sharpnessScore: candidate.bestFaceScore || quality?.sharpnessScore || 0,
-              capturedAt: new Date(candidate.firstSeen || Date.now()).toISOString(),
+              capturedAt: new Date(candidate.firstSeen || candidateNow).toISOString(),
               pose: candidate.pose || quality?.pose || 'frontal',
               poseLabel: candidate.poseLabel || quality?.poseLabel || 'Frontal'
             }];
@@ -950,7 +957,8 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
               faceThumbnailBase64,
               sharpnessScore: quality.sharpnessScore,
               pose: quality.pose,
-              poseLabel: quality.poseLabel
+              poseLabel: quality.poseLabel,
+              nowEpoch: candidateNow
             }, { minCanonicalSimilarity: 0.48 });
             candidate.embeddings = enriched.embeddings;
             candidate.photos = enriched.photos;
@@ -993,6 +1001,8 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
             frontalityScore: quality.frontalityScore,
             yawScore: quality.yawScore,
             pitchScore: quality.pitchScore,
+            skinRatio: quality.skinRatio,
+            warmRatio: quality.warmRatio,
             thumbnailBase64: faceThumbnailBase64,
             sharpnessScore: quality.sharpnessScore,
             embedding: embedding,
@@ -1002,19 +1012,19 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
           });
         } else {
           // Ciclo 1: Registrar como candidato pendiente en memoria
-          // Validar que el recorte tenga rostro válido y nítido
-          const isEligibleCandidateSeed = quality.isValid && (quality.sharpnessScore || 0) >= 28;
+          // Validar que el recorte tenga rostro válido y nítido (minSharpness del pipeline)
+          const isEligibleCandidateSeed = quality.isValid && (quality.sharpnessScore || 0) >= (PIPELINE_CONFIG.faceDetection?.minSharpness ?? 20);
           if (!isEligibleCandidateSeed) {
             console.log(`[FaceRecognition] Recorte en ${crop.zoneId || 'silla'} no elegible como candidato inicial (pose: ${quality.pose}, nitidez: ${quality.sharpnessScore}).`);
             continue;
           }
 
-          const tempId = `person_${Date.now()}_${i + 1}`;
-          const candidateKey = `cand_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+          const tempId = `person_${candidateNow}_${i + 1}`;
+          const candidateKey = `cand_${candidateNow}_${Math.random().toString(36).substring(2, 6)}`;
           const initialPhoto = {
             thumbnailBase64: faceThumbnailBase64,
             sharpnessScore: quality?.sharpnessScore || 0,
-            capturedAt: new Date().toISOString(),
+            capturedAt: new Date(candidateNow).toISOString(),
             pose: quality?.pose || 'frontal',
             poseLabel: quality?.poseLabel || 'Frontal'
           };
@@ -1022,8 +1032,8 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
             tempId,
             zoneId: crop.zoneId || null,
             count: 1,
-            firstSeen: Date.now(),
-            lastSeen: Date.now(),
+            firstSeen: candidateNow,
+            lastSeen: candidateNow,
             embedding,
             embeddings: [embedding],
             photos: [initialPhoto],
@@ -1056,6 +1066,8 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
             frontalityScore: quality.frontalityScore,
             yawScore: quality.yawScore,
             pitchScore: quality.pitchScore,
+            skinRatio: quality.skinRatio,
+            warmRatio: quality.warmRatio,
             thumbnailBase64: faceThumbnailBase64,
             sharpnessScore: quality.sharpnessScore,
             embedding: embedding,

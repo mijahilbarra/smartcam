@@ -386,22 +386,26 @@ export class PersonTracker {
         let standingTracks = [];
 
         // 1. Si uno de los tracks ya estaba formalmente sentado (track.isFormallySeated === true y track.role === "client"),
-        // preservarlo como el cliente sentado
+        // preservarlo incondicionalmente como el cliente sentado
         const formallySeatedClients = tracksInChair.filter(t => t.isFormallySeated === true && t.role === "client");
         if (formallySeatedClients.length === 1) {
           seatedTrack = formallySeatedClients[0];
           standingTracks = tracksInChair.filter(t => t !== seatedTrack);
         } else {
+          // Filtrar candidatos que realmente alcanzan el plano inferior del asiento de la silla (y2 / imgHeight >= 0.85, es decir y2 >= 612 en 720p, excluyendo sofá de fondo y acompañantes traseros)
+          const chairPlaneTracks = tracksInChair.filter(t => !t.box || !imgHeight || (t.box[3] / imgHeight) >= 0.85);
+          const candidatePool = chairPlaneTracks.length > 0 ? chairPlaneTracks : tracksInChair;
+
           // 2. Usar la altura corporal total (box[3] - box[1]):
           // El barbero de pie tiene mayor elongación vertical que el cliente sentado con la capa.
           // El cliente sentado tiene menor elongación vertical.
-          const sortedByHeight = [...tracksInChair].sort((a, b) => {
+          const sortedByHeight = [...candidatePool].sort((a, b) => {
             const hA = a.box ? (a.box[3] - a.box[1]) : 0;
             const hB = b.box ? (b.box[3] - b.box[1]) : 0;
             return hA - hB;
           });
           seatedTrack = sortedByHeight[0];
-          standingTracks = sortedByHeight.slice(1);
+          standingTracks = tracksInChair.filter(t => t !== seatedTrack);
         }
 
         // 3. El track de pie se marca incondicionalmente: standingTrack.isStaffHint = true; standingTrack.role = "staff";
@@ -420,15 +424,15 @@ export class PersonTracker {
         const isClearStandingGeometry = imgHeight > 0 && (boxH / imgHeight) >= 0.58 && (boxTop / imgHeight) <= 0.20;
         const isStandingPosture = imgHeight > 0 && ((boxH / imgHeight) >= 0.55 || (boxTop / imgHeight) <= 0.22);
 
-        if (singleTrack.identity?.isStaff === true) {
+        if (singleTrack.isFormallySeated === true && singleTrack.role === "client" && !isClearStandingGeometry) {
+          singleTrack.isStaffHint = false;
+          singleTrack.role = "client";
+        } else if (singleTrack.identity?.isStaff === true) {
           singleTrack.isStaffHint = true;
           singleTrack.role = "staff";
         } else if (!singleTrack.isFormallySeated && singleTrack.isStaffHint === true && (isClearStandingGeometry || isStandingPosture)) {
           singleTrack.isStaffHint = true;
           singleTrack.role = "staff";
-        } else if (singleTrack.isFormallySeated === true && singleTrack.role === "client") {
-          singleTrack.isStaffHint = false;
-          singleTrack.role = "client";
         } else if ((singleTrack.isStaffHint === true || singleTrack.role === "staff") && isStandingPosture) {
           singleTrack.isStaffHint = true;
           singleTrack.role = "staff";
@@ -546,7 +550,7 @@ export class PersonTracker {
   /**
    * Actualiza la identidad y el buffer de mejores caras para un track
    */
-  updateIdentityAndFace(trackId, { identity, faceBuffer, faceBoxNorm, sharpnessScore, thumbnailBase64, embedding, pose, landmarks, hasTwoEyes, frontalityScore, yawScore, pitchScore, now: overrideNow }) {
+  updateIdentityAndFace(trackId, { identity, faceBuffer, faceBoxNorm, sharpnessScore, thumbnailBase64, embedding, pose, landmarks, hasTwoEyes, frontalityScore, yawScore, pitchScore, skinRatio, warmRatio, now: overrideNow }) {
     const track = this.activeTracks.get(trackId);
     if (!track) return false;
 
@@ -568,6 +572,8 @@ export class PersonTracker {
         frontalityScore: frontalityScore !== undefined ? frontalityScore : identity?.frontalityScore,
         yawScore: yawScore !== undefined ? yawScore : identity?.yawScore,
         pitchScore: pitchScore !== undefined ? pitchScore : identity?.pitchScore,
+        skinRatio: skinRatio !== undefined ? skinRatio : identity?.skinRatio,
+        warmRatio: warmRatio !== undefined ? warmRatio : identity?.warmRatio,
         sharpnessScore,
         thumbnailBase64: thumbnailBase64 || identity?.thumbnailBase64 || null,
         embedding: targetEmbedding,
@@ -607,8 +613,11 @@ export class PersonTracker {
       }
 
       // 2. Control de cadencia temporal ("de vez en cuando"):
-      // Si la última foto tomada fue hace menos de 20,000 ms (o 12,000 ms virtuales) y la pose es la misma, omitir adición
-      const cooldownMs = (typeof overrideNow === "number" && overrideNow > 0) ? 12000 : (process.env.STREAM_FAST_FORWARD === "true" ? 2000 : 20000);
+      // En Fast-Forward se reduce a 2,000 ms; en tiempo real con reloj virtual es 12,000 ms (o 20,000 ms reloj pared)
+      const isFastForward = process.env.STREAM_FAST_FORWARD === "true";
+      const cooldownMs = isFastForward
+        ? 2000
+        : ((typeof overrideNow === "number" && overrideNow > 0) ? 12000 : 20000);
       if (track.lastPhotoTime && (now - track.lastPhotoTime < cooldownMs) && incomingPose && track.lastPose === incomingPose) {
         // Si supera la nitidez de la foto de esta pose, actualizarla
         const samePoseIdx = track.topFaces.findIndex(f => f.pose === incomingPose);

@@ -156,15 +156,22 @@ export async function getInferenceSession() {
   if (!inferenceSession) {
     console.log(`[Detector] Cargando modelo ONNX desde: ${MODEL_PATH}...`);
     const t0 = Date.now();
+    const defaultThreads = process.env.STREAM_FAST_FORWARD === "true" ? 4 : 1;
+    const threads = Number(process.env.ONNX_THREADS) || defaultThreads;
+    const isMac = process.platform === "darwin";
+    const explicitProvider = process.env.ONNX_PROVIDER;
+    const executionProviders = explicitProvider
+      ? [explicitProvider, "cpu"]
+      : (isMac && (process.env.IS_LOCAL_SIMULATOR === "true" || process.env.STREAM_FAST_FORWARD === "true") ? ["coreml", "cpu"] : ["cpu"]);
     inferenceSession = await ort.InferenceSession.create(MODEL_PATH, {
-      executionProviders: ["cpu"],
-      graphOptimizationLevel: "basic",
-      intraOpNumThreads: Number(process.env.ONNX_THREADS) || 1,
-      interOpNumThreads: Number(process.env.ONNX_THREADS) || 1,
+      executionProviders,
+      graphOptimizationLevel: "all",
+      intraOpNumThreads: threads,
+      interOpNumThreads: threads,
       enableCpuMemArena: false,
       enableMemPattern: false
     });
-    console.log(`[Detector] Modelo ONNX inicializado en ${Date.now() - t0} ms (1 hilo CPU).`);
+    console.log(`[Detector] Modelo ONNX inicializado en ${Date.now() - t0} ms (${threads} hilo(s) CPU, providers: ${executionProviders.join(", ")}).`);
   }
   return inferenceSession;
 }
@@ -368,6 +375,10 @@ export async function detectObjectsAndQuadrants(imageBuffer, options = {}) {
     const isClient = q.role === "client" || q.category === "cliente" || q.type === "barber_chair" || q.type === "waiting_chair";
     const isStaff = q.role === "staff" || q.category === "personal" || q.type === "barber_workstation";
     const isVisitor = q.role === "visitor";
+
+    if (process.env.STREAM_FAST_FORWARD === "true") {
+      return q.type === "barber_chair";
+    }
 
     return q.capturePerson === true || isClient || isStaff || isVisitor;
   });

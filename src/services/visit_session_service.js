@@ -11,6 +11,7 @@
  * - Persiste en SQLite (tabla appointments) y Firestore (camera_catcher_appointments y camera_catcher_visits).
  */
 
+import { emitDecisionFromLog } from "./pipeline/decision_feed.js";
 import { isServiceChair as isServiceChairRule, isTransitZone } from "../core/barbershop_rules.js";
 import { customerService as defaultCustomerService } from "./customer_service.js";
 import { daemonReporter } from "../daemon_reporter.js";
@@ -160,6 +161,36 @@ export class VisitSessionService {
     try {
       daemonReporter.reportVerbalLog(text, type);
     } catch (_) {}
+    try {
+      emitDecisionFromLog(text);
+    } catch (_) {}
+  }
+
+  /**
+   * Datos explicativos del bloque en análisis: qué evidencia lleva acumulada y
+   * qué criterios debe cumplir para ser confirmado como cliente (ver TrackBlockManager).
+   */
+  _buildBlockInsight(b, blockMgr, now) {
+    const staffThreshold = blockMgr?.staffThreshold ?? 0.46;
+    const total = b.totalFrames || 0;
+    const standingRatio = total > 0 ? (b.standingFrames || 0) / total : 0;
+    const durationSeconds = Math.max(0, Math.round(((b.lastSeenEpoch || now) - (b.startedAtEpoch || now)) / 1000));
+    const poses = Array.from(new Set((b.crops || []).map(c => c.faceData?.pose).filter(Boolean)));
+    const photosCount = b.crops?.length || 0;
+    const maxStaffSim = Number((b.maxStaffSim || 0).toFixed(3));
+    return {
+      staffThreshold,
+      standingRatio: Number(standingRatio.toFixed(2)),
+      staffFaces: b.staffFacesCount || 0,
+      clientFaces: b.clientFacesCount || 0,
+      posesCaptured: poses,
+      checks: [
+        { id: "anatomical", label: "Rostro con dos ojos", ok: (b.anatomicalFacesCount || 0) > 0, detail: `${b.anatomicalFacesCount || 0} rostros anatómicos` },
+        { id: "not_staff", label: "No es el barbero", ok: maxStaffSim < staffThreshold, detail: `similitud ${maxStaffSim} (umbral ${staffThreshold})` },
+        { id: "seated", label: "Sentado en la silla", ok: standingRatio < 0.65, detail: `${Math.round(standingRatio * 100)}% del tiempo de pie` },
+        { id: "duration", label: "Permanencia suficiente", ok: durationSeconds >= 90 || photosCount >= 5, detail: `${durationSeconds}s, ${photosCount} fotos (mín. 90s o 5 fotos)` }
+      ]
+    };
   }
 
   /**
@@ -232,6 +263,65 @@ export class VisitSessionService {
     let session = this.findSessionByChair(chairId);
     let isRotatedFromMismatch = false;
 
+    // Si es un bloque de presencia física sentada sin rostro reconocible (isSeatedPresenceOnly):
+    // NO se elimina ni se ignora para continuidad: sirve para confirmar que la silla sigue ocupada
+    // y extender la sesión en curso (cubriendo hasta 5 min de lavado/inclinación/barbero tapando)
+    // sin alterar fotos ni vectores.
+    if (session) {
+      session.lastSeenEpoch = Math.max(session.lastSeenEpoch || 0, block.lastSeenEpoch || now);
+    }
+
+    if (block.isSeatedPresenceOnly) {
+      if (session) {
+        // Presencia sin rostro: solo mantiene el heartbeat de presencia física si la atención NO está esperando liberación.
+        // Si ya está esperando liberación (cliente se levantó), una presencia sin rostro (capa, barbero limpiando o nuca)
+        // NUNCA debe cancelar el conteo de liberación ni resetear emptySinceEpoch.
+        if (session.status !== "esperando_liberacion") {
+          const lastFaceMs = session.lastFaceSeenEpoch || session.startedAtEpoch || 0;
+          const blockEndMs = block.lastSeenEpoch || now;
+          const maxPresenceBridgeMs = 300000;
+          if (blockEndMs - lastFaceMs <= maxPresenceBridgeMs) {
+            session.lastSeenEpoch = Math.max(session.lastSeenEpoch || 0, blockEndMs);
+            if (block.boxes && block.boxes.length > 0) {
+              if (!session.boxes) session.boxes = [];
+              session.boxes.push(...block.boxes);
+              if (session.boxes.length > 100) session.boxes = session.boxes.slice(-100);
+            }
+            if (this.customerService?.profilesCache && session.tempClientId) {
+              const p = this.customerService.profilesCache.get(session.tempClientId);
+              if (p) p.lastSeen = new Date(session.lastSeenEpoch).toISOString();
+            }
+            if (!session.allSessionTrackIds) session.allSessionTrackIds = [session.initialTrackId || session.trackId].filter(Boolean);
+            if (block.trackId && !session.allSessionTrackIds.includes(block.trackId)) {
+              session.allSessionTrackIds.push(block.trackId);
+            }
+            const anchorTrackId = session.initialTrackId || session.trackId;
+            this.trackBlockManager?.updateBlockHistory?.(block.trackId, {
+              status: "fusionado",
+              statusLabel: `Puente → Fusionado con #${anchorTrackId}`,
+              sessionId: session.id,
+              mergedWithTrackId: anchorTrackId,
+              mergedWithLabel: `#${anchorTrackId} (${session.clientName || "En corte"})`,
+              reason: `Puente de presencia física sin rostro visible (${block.durationSeconds || 1}s): mantuvo viva la atención activa #${anchorTrackId} sin agregar fotos.`
+            });
+            return session;
+          }
+        }
+        this.trackBlockManager?.updateBlockHistory?.(block.trackId, {
+          status: "eliminado",
+          statusLabel: "Eliminado (Presencia Sin Rostro)",
+          reason: `Presencia sin rostro (${block.durationSeconds || 1}s) descartada por silla en liberación o tiempo sin rostro excedido.`
+        });
+        return session;
+      }
+      this.trackBlockManager?.updateBlockHistory?.(block.trackId, {
+        status: "eliminado",
+        statusLabel: "Eliminado (Sin Rostro ni Sesión)",
+        reason: `Presencia en silla sin rostro visible (${block.durationSeconds || 1}s, 0 fotos) y sin ninguna sesión activa previa en ${chairName} a la cual servir de puente.`
+      });
+      return null;
+    }
+
     if (session) {
       // Banco de Representantes por Posición (Multi-Pose Representative Bank)
       if (!session.representatives) {
@@ -302,25 +392,67 @@ export class VisitSessionService {
       let isVeto = false;
       let vetoReason = "";
 
-      if (hasHomologousComparison) {
+      const isProlongedVacancy = vacancyMs >= 30000;
+      if (isProlongedVacancy) {
+        // Tras >= 30s de silla vacía, exigir confirmación biométrica con la sesión previa (incluyendo pose homóloga si existe) para no unir al siguiente cliente tras un cambio de silla
+        const hasHomologousContradiction = hasHomologousComparison && maxHomologousSim < 0.22 && matchedHomologousCategory !== 'tilted';
+        const hasPostVacancyMatch = !hasHomologousContradiction && (
+          maxHomologousSim >= 0.42 ||
+          (maxHomologousSim >= 0.25 && centroidSim >= 0.40 && maxGallerySim >= 0.39) ||
+          (!hasHomologousComparison && centroidSim >= 0.42 && maxGallerySim >= 0.45) ||
+          (centroidSim >= 0.50 && maxGallerySim >= 0.55)
+        );
+        if (!hasPostVacancyMatch) {
+          isVeto = true;
+          vetoReason = `cambio de cliente o vacancia prolongada (${(vacancyMs / 1000).toFixed(1)}s >= 30s) sin confirmación biométrica fuerte (maxHomologousSim=${maxHomologousSim.toFixed(3)}, centroidSim=${centroidSim.toFixed(3)}, maxGallerySim=${maxGallerySim.toFixed(3)})`;
+        } else {
+          isVeto = false;
+          this.logVerbal(`🛡️ Retorno confirmado tras vacancia (${(vacancyMs / 1000).toFixed(1)}s) en ${chairName} (maxHomologousSim=${maxHomologousSim.toFixed(3)}, centroidSim=${centroidSim.toFixed(3)}, maxGallerySim=${maxGallerySim.toFixed(3)}).`, "process");
+        }
+      } else if (hasHomologousComparison) {
+        // Verificar si las poses homólogas comparadas son de alta confiabilidad (2 ojos visibles sin oclusión y pose erguida, NO tilted)
+        const matchedRepS = session.representatives[matchedHomologousCategory];
+        const matchedRepB = block.representatives[matchedHomologousCategory];
+        const isHomologousOccludedOrOneEye = (!matchedRepS?.hasTwoEyes || !matchedRepB?.hasTwoEyes || matchedHomologousCategory === 'tilted');
+        const isSmallIncomingBlock = (block.photos?.length || 0) <= 3;
+
         // Hay al menos una pareja homóloga disponible (frontal-frontal, left-left, right-right o tilted-tilted)
         if (maxHomologousSim >= 0.50) {
           // Identidad confirmada por correspondencia homóloga
           isVeto = false;
           this.logVerbal(`🛡️ Identidad confirmada en ${chairName} (maxHomologousSim=${maxHomologousSim.toFixed(3)} [${matchedHomologousCategory}], maxGallerySim=${maxGallerySim.toFixed(3)}, centroidSim=${centroidSim.toFixed(3)}): NO hay veto, extendiendo sesión de forma continua.`, "process");
         } else if (maxHomologousSim < 0.35) {
-          // Discrepancia real en la misma pose
-          if (isPhysicalContinuity && centroidSim >= 0.25) {
+          // Si hay correspondencia contundente en la galería acumulada o en centroides limpios,
+          // se preserva la identidad (la discrepancia en pose homóloga se debe a variación de cabeceo / pitch o iluminación dentro de la misma categoría)
+          const hasStrongBiometricEvidence = maxGallerySim >= 0.68 || (centroidSim >= 0.52 && maxGallerySim >= 0.58);
+
+          // Discrepancia severa en pose erguida homóloga sin evidencia biométrica contundente
+          // Excluir si hay continuidad física inmediata en la silla (isPhysicalContinuity) y soporte de centroide/galería
+          const isPhysicalSupported = isPhysicalContinuity && (centroidSim >= 0.38 || maxGallerySim >= 0.45);
+          const isSevereMismatch = maxHomologousSim < 0.25 && !hasStrongBiometricEvidence && matchedHomologousCategory !== 'tilted' && !isPhysicalSupported;
+
+          if (
+            !isSevereMismatch && (
+              hasStrongBiometricEvidence ||
+              isPhysicalSupported ||
+              (isHomologousOccludedOrOneEye && (isPhysicalContinuity || centroidSim >= 0.38 || maxGallerySim >= 0.48)) ||
+              (isSmallIncomingBlock && isPhysicalContinuity && centroidSim >= 0.35) ||
+              (isPhysicalContinuity && centroidSim >= 0.42 && maxGallerySim >= 0.50)
+            )
+          ) {
             isVeto = false;
-            this.logVerbal(`🛡️ Inercia de Silla en ${chairName} (vacancia=${(vacancyMs / 1000).toFixed(1)}s < 10s): Se descarta rotación por continuidad física activa (homologousSim=${maxHomologousSim.toFixed(3)}, centroidSim=${centroidSim.toFixed(3)}).`, "process");
+            this.logVerbal(`🛡️ Continuidad de Identidad en ${chairName} (vacancia=${(vacancyMs / 1000).toFixed(1)}s, centroidSim=${centroidSim.toFixed(3)}, maxGallerySim=${maxGallerySim.toFixed(3)}): Se descarta rotación por continuidad en silla / pose reclinada o lateral (homologousSim=${maxHomologousSim.toFixed(3)} [${matchedHomologousCategory}]).`, "process");
           } else {
             isVeto = true;
-            vetoReason = `discrepancia en pose homóloga (${matchedHomologousCategory}: sim=${maxHomologousSim.toFixed(3)} < 0.35, centroidSim=${centroidSim.toFixed(3)})`;
+            vetoReason = `discrepancia en pose homóloga (${matchedHomologousCategory}: sim=${maxHomologousSim.toFixed(3)} < 0.35, centroidSim=${centroidSim.toFixed(3)}, maxGallerySim=${maxGallerySim.toFixed(3)})`;
           }
         } else {
           // maxHomologousSim está en zona intermedia [0.35, 0.50)
-          const isValidIntermediate = (maxGallerySim >= 0.50 || centroidSim >= 0.40) ||
-            (isPhysicalContinuity && centroidSim >= 0.30);
+          const isValidIntermediate = (maxHomologousSim >= 0.40 && (centroidSim >= 0.32 || maxGallerySim >= 0.42)) ||
+            maxGallerySim >= 0.48 ||
+            centroidSim >= 0.38 ||
+            (isPhysicalContinuity && centroidSim >= 0.28) ||
+            (isHomologousOccludedOrOneEye && (centroidSim >= 0.30 || maxGallerySim >= 0.40));
           if (isValidIntermediate) {
             isVeto = false;
             this.logVerbal(`🛡️ Identidad confirmada por evidencia acumulada en ${chairName} (maxHomologousSim=${maxHomologousSim.toFixed(3)} [${matchedHomologousCategory}], maxGallerySim=${maxGallerySim.toFixed(3)}, centroidSim=${centroidSim.toFixed(3)}): extendiendo sesión.`, "process");
@@ -331,14 +463,16 @@ export class VisitSessionService {
         }
       } else {
         // NO hay poses homólogas compartidas (ej. session tiene left, block tiene right).
-        // Prohibido terminantemente que una discrepancia entre poses opuestas dispare un veto si no hay discrepancia en poses homólogas.
+        // Prohibido terminantemente que una discrepancia entre poses opuestas dispare un veto si hay evidencia mínima de centroide/galería,
+        // pero si ni el centroide ni la galería superan un mínimo biológico (centroidSim < 0.22 && maxGallerySim < 0.28) y el bloque previo tenía <= 2 fotos, no contaminar.
         const isAlternateMatch = maxGallerySim >= 0.50 || centroidSim >= 0.45;
-        if (isAlternateMatch || isPhysicalContinuity || centroidSim >= 0.30 || maxGallerySim >= 0.40) {
+        const isCompleteMismatchAgainstTinySession = (session.photos?.length || 0) <= 2 && centroidSim < 0.22 && maxGallerySim < 0.28;
+        if (!isCompleteMismatchAgainstTinySession && (isAlternateMatch || isPhysicalContinuity || centroidSim >= 0.30 || maxGallerySim >= 0.40)) {
           isVeto = false;
           this.logVerbal(`🛡️ Invarianza de poses opuestas en ${chairName}: No hay discrepancia en poses homólogas, veto omitido y nuevo nicho absorbido (alternateMatch=${isAlternateMatch}, vacancia=${(vacancyMs / 1000).toFixed(1)}s, centroidSim=${centroidSim.toFixed(3)}, maxGallerySim=${maxGallerySim.toFixed(3)}).`, "process");
         } else {
           isVeto = true;
-          vetoReason = `vacancia prolongada (${(vacancyMs / 1000).toFixed(1)}s >= 10s) sin poses homólogas ni coincidencia de galería (maxGallerySim=${maxGallerySim.toFixed(3)} < 0.40, centroidSim=${centroidSim.toFixed(3)} < 0.30)`;
+          vetoReason = `sin poses homólogas ni coincidencia mínima de galería (maxGallerySim=${maxGallerySim.toFixed(3)}, centroidSim=${centroidSim.toFixed(3)})`;
         }
       }
 
@@ -349,6 +483,7 @@ export class VisitSessionService {
 
       if (isRadicalMismatch) {
         isRotatedFromMismatch = true;
+        session._lastRotationVetoReason = vetoReason;
         await this.closeSession(chairId, {
           endedAtEpoch: block.startedAtEpoch || now
         });
@@ -356,36 +491,52 @@ export class VisitSessionService {
       } else {
         session.lastSeenEpoch = Math.max(session.lastSeenEpoch || 0, block.lastSeenEpoch || now);
         session.lastClientSeenEpoch = Math.max(session.lastClientSeenEpoch || 0, block.lastSeenEpoch || now);
+        session.lastFaceSeenEpoch = Math.max(session.lastFaceSeenEpoch || 0, block.lastSeenEpoch || now);
         session.emptySinceEpoch = null;
         if (session.status === "esperando_liberacion") {
           session.status = "en_corte";
         }
 
         if (block.photos && block.photos.length > 0) {
-          const repRef = repPrev?.vector ? repPrev : repBlock;
+          const prevPhotosCount = (session.photos || []).length;
+          const isInitialWeakAnchor = prevPhotosCount <= 2 || !repPrev?.hasFrontalAnchor;
+          const repRef = (!isInitialWeakAnchor && repPrev?.vector) ? repPrev : repBlock;
           const filteredBlockPhotos = [];
           const filteredBlockEmbeddings = [];
           for (let k = 0; k < (block.photos || []).length; k++) {
             const ph = block.photos[k];
             const emb = block.embeddings?.[k] || null;
             const v = isVector(emb) ? emb : (emb?.vector || null);
-            if (repRef?.vector && v) {
+            if (!isInitialWeakAnchor && repRef?.vector && v) {
               const isOpp = isOppositeSide(ph?.pose, repRef?.photo?.pose || repRef?.pose);
               if (!isOpp) {
                 const sim = computeCosineSimilarity(v, repRef.vector);
-                if (sim < 0.40) continue;
+                if (sim < 0.36) continue;
               }
             }
             filteredBlockPhotos.push(ph);
             filteredBlockEmbeddings.push(emb);
           }
+          // Si el filtro descartó todas las fotos pero el bloque entrante fue aceptado y tiene más evidencia que una sesión casi vacía, usar las fotos del bloque
+          const photosToMerge = filteredBlockPhotos.length > 0
+            ? filteredBlockPhotos
+            : (prevPhotosCount <= 3 ? block.photos : []);
+          const embeddingsToMerge = filteredBlockPhotos.length > 0
+            ? filteredBlockEmbeddings
+            : (prevPhotosCount <= 3 ? (block.embeddings || []) : []);
 
-          if (filteredBlockPhotos.length > 0) {
+          if (photosToMerge.length > 0) {
+            // Si la sesión previa solo tenía 1-2 fotos y el nuevo bloque trae >= 4 fotos sólidas cuya similitud con las iniciales es baja (ej. cola del cliente previo o sombra), reemplazar las fotos iniciales
+            const shouldReplaceInitialWeakPhotos = prevPhotosCount <= 2 &&
+              photosToMerge.length >= 4 &&
+              (filteredBlockPhotos.length === 0 || (centroidSim > 0 && centroidSim < 0.35 && maxGallerySim < 0.42));
+            const basePhotos = shouldReplaceInitialWeakPhotos ? [] : (session.photos || []);
+            const baseEmbeddings = shouldReplaceInitialWeakPhotos ? [] : (session.embeddings || []);
             const merged = mergePhotosAndEmbeddings(
-              session.photos || [],
-              filteredBlockPhotos,
-              session.embeddings || [],
-              filteredBlockEmbeddings
+              basePhotos,
+              photosToMerge,
+              baseEmbeddings,
+              embeddingsToMerge
             );
             const deduped = deduplicateSessionPhotos(merged.photos, merged.embeddings, 20);
             session.photos = deduped.photos;
@@ -418,11 +569,27 @@ export class VisitSessionService {
           }
         }
 
+        const anchorTrackId = session.initialTrackId || session.trackId;
+        if (!session.initialTrackId) session.initialTrackId = anchorTrackId;
+        if (!session.allSessionTrackIds) session.allSessionTrackIds = [anchorTrackId];
+        if (block.trackId && !session.allSessionTrackIds.includes(block.trackId)) {
+          session.allSessionTrackIds.push(block.trackId);
+        }
+
         if (block.trackId && block.trackId !== session.trackId) {
           this.activeSessions.delete(session.trackId);
           session.trackId = block.trackId;
           this.activeSessions.set(block.trackId, session);
         }
+
+        this.trackBlockManager?.updateBlockHistory?.(block.trackId, {
+          status: "fusionado",
+          statusLabel: `Fusionado con #${anchorTrackId}`,
+          sessionId: session.id,
+          mergedWithTrackId: anchorTrackId,
+          mergedWithLabel: `#${anchorTrackId} (${session.clientName || "En corte"})`,
+          reason: `Unido a la sesión activa en ${chairName} (#${anchorTrackId}): continuidad confirmada (centroidSim=${centroidSim.toFixed(3)}, maxGallerySim=${maxGallerySim.toFixed(3)}${hasHomologousComparison ? `, maxHomologousSim=${maxHomologousSim.toFixed(3)} [${matchedHomologousCategory}]` : ""}, vacancia=${(vacancyMs / 1000).toFixed(1)}s).`
+        });
 
         if (this.customerService && session.personId) {
           const cust = this.customerService.getCustomerData(session.personId);
@@ -443,6 +610,21 @@ export class VisitSessionService {
           if (session.boxes.length > 100) session.boxes = session.boxes.slice(-100);
         }
 
+        if (!session.confirmedBlocks) session.confirmedBlocks = [];
+        const existingIdx = session.confirmedBlocks.findIndex(cb => cb.trackId === block.trackId);
+        const blockSummary = {
+          trackId: block.trackId,
+          photosCount: block.photos?.length || block.crops?.length || 0,
+          durationSeconds: block.durationSeconds || Math.max(1, Math.round(((block.lastSeenEpoch || now) - (block.startedAtEpoch || now)) / 1000)),
+          bestFaceScore: block.bestFaceScore || 0,
+          poses: block.photos ? Array.from(new Set(block.photos.map(p => p.pose).filter(Boolean))) : []
+        };
+        if (existingIdx >= 0) {
+          session.confirmedBlocks[existingIdx] = blockSummary;
+        } else {
+          session.confirmedBlocks.push(blockSummary);
+        }
+
         this.logVerbal(`🔄 Sesión en ${chairName} extendida con bloque #${block.trackId} (${block.photos?.length || 0} fotos, total: ${session.photos?.length || 0}).`, "info");
         return session;
       }
@@ -461,6 +643,8 @@ export class VisitSessionService {
       visitId,
       appointmentId: visitId,
       trackId: block.trackId,
+      initialTrackId: block.trackId,
+      allSessionTrackIds: [block.trackId],
       chairId,
       chairName,
       chairZone: block.chairZone || null,
@@ -468,6 +652,7 @@ export class VisitSessionService {
       startedAtEpoch: startedAt,
       lastSeenEpoch: block.lastSeenEpoch || now,
       lastClientSeenEpoch: block.lastSeenEpoch || now,
+      lastFaceSeenEpoch: block.lastSeenEpoch || now,
       lastMatchedClientFaceEpoch: block.lastSeenEpoch || now,
       emptySinceEpoch: null,
       pendingRotationSplitEpoch: null,
@@ -497,12 +682,28 @@ export class VisitSessionService {
         tilted:  block.representatives?.tilted ? { ...block.representatives.tilted } : null
       },
       boxes: block.boxes ? [...block.boxes] : (block.crops ? block.crops.map(c => c.box).filter(Boolean) : []),
-      topFaces: []
+      topFaces: [],
+      confirmedBlocks: [{
+        trackId: block.trackId,
+        photosCount: deduped.photos?.length || block.photos?.length || 0,
+        durationSeconds: block.durationSeconds || Math.max(1, Math.round(((block.lastSeenEpoch || now) - (block.startedAtEpoch || now)) / 1000)),
+        bestFaceScore: block.bestFaceScore || 0,
+        poses: (block.photos || deduped.photos) ? Array.from(new Set((block.photos || deduped.photos).map(p => p.pose).filter(Boolean))) : []
+      }]
     };
 
     this.activeSessions.set(chairId, newSession);
     this.activeSessions.set(block.trackId, newSession);
     if (this.stats) this.stats.sessionsOpened++;
+
+    this.trackBlockManager?.updateBlockHistory?.(block.trackId, {
+      status: "confirmado",
+      statusLabel: isRotatedFromMismatch ? `Nueva Sesión (#${block.trackId})` : `Abrió Sesión (#${block.trackId})`,
+      sessionId: visitId,
+      reason: isRotatedFromMismatch
+        ? `Rotación de cliente confirmada en ${chairName}: abrió nueva atención #${block.trackId} (${deduped.photos.length} fotos).`
+        : `Bloque inicial que abrió nueva atención en ${chairName} (#${block.trackId}, ${deduped.photos.length} fotos anatómicas).`
+    });
 
     this.logVerbal(`💺 Nueva sesión iniciada en ${chairName} para bloque confirmado #${block.trackId} (${deduped.photos.length} fotos).`, "process");
 
@@ -669,6 +870,7 @@ export class VisitSessionService {
       db: this.db,
       bucket: this.bucket,
       stats: this.stats,
+      trackBlockManager: this.trackBlockManager,
       closeSession: (id, opts) => this.closeSession(id, opts),
       matchSessionAgainstClients: (embs) => this.matchSessionAgainstClients(embs),
       logVerbal: (txt, type) => this.logVerbal(txt, type)
@@ -735,5 +937,211 @@ export class VisitSessionService {
    */
   getActiveSessions() {
     return Array.from(new Set(this.activeSessions.values()));
+  }
+
+  /**
+   * Obtiene la telemetría dinámica enriquecida de las sillas activas para visualización en tiempo real.
+   * @param {number} [overrideNow] - Timestamp actual (real o simulado)
+   * @param {Object} [trackBlockManager] - Instancia activa de TrackBlockManager
+   * @param {Array<Object>} [activeTracks] - Pistas activas de YOLO
+   * @returns {Array<Object>}
+   */
+  getActiveChairSessionsTelemetry(overrideNow, trackBlockManager = null, activeTracks = []) {
+    const now = this.getNow(overrideNow);
+    const blockMgr = trackBlockManager || this.trackBlockManager;
+    const result = [];
+    const processedChairs = new Set();
+
+    // 1. Sesiones de atención formalizadas o en corte
+    for (const session of this.getActiveSessions()) {
+      if (!session || !session.chairId) continue;
+      processedChairs.add(session.chairId);
+
+      const elapsedMs = Math.max(0, now - (session.startedAtEpoch || now));
+      const elapsedMinutes = Math.floor(elapsedMs / 60000);
+      const isVerified = Boolean(
+        session.status !== "to_verify" &&
+        session.clientName &&
+        !session.clientName.toLowerCase().includes("por verificar") &&
+        !session.clientName.toLowerCase().includes("confirmación")
+      );
+
+      // Bloques confirmados acumulados en la sesión
+      const confirmedBlocks = Array.isArray(session.confirmedBlocks)
+        ? session.confirmedBlocks.map(cb => ({ ...cb }))
+        : [];
+
+      // Si trackBlockManager tiene bloques completados para esta silla, sincronizar
+      if (blockMgr?.completedBlocks) {
+        for (const cb of blockMgr.completedBlocks) {
+          if (cb.chairId === session.chairId && !confirmedBlocks.some(b => b.trackId === cb.trackId)) {
+            confirmedBlocks.push({
+              trackId: cb.trackId,
+              photosCount: cb.photosCount ?? cb.photos?.length ?? cb.crops?.length ?? 0,
+              durationSeconds: cb.durationSeconds || Math.max(1, Math.round(((cb.lastSeenEpoch || now) - (cb.startedAtEpoch || now)) / 1000)),
+              bestFaceScore: cb.bestFaceScore || 0,
+              poses: cb.photos ? Array.from(new Set(cb.photos.map(p => p.pose).filter(Boolean))) : []
+            });
+          }
+        }
+      }
+
+      // Bloque actualmente en análisis en esta silla
+      let currentBlockInAnalysis = null;
+      if (blockMgr?.activeBlocks) {
+        for (const b of blockMgr.activeBlocks.values()) {
+          if (b.chairId === session.chairId || b.trackId === session.trackId) {
+            const latestCrop = b.crops && b.crops.length > 0 ? b.crops[b.crops.length - 1] : null;
+            const currentPose = latestCrop?.faceData?.pose || b.bestAnatomicalFace?.pose || (b.photos && b.photos.length > 0 ? b.photos[b.photos.length - 1].pose : "frontal");
+            currentBlockInAnalysis = {
+              trackId: b.trackId,
+              frameCount: b.totalFrames || 0,
+              seatedFrames: b.seatedFrames || 0,
+              standingFrames: b.standingFrames || 0,
+              candidatePhotos: b.crops?.length || b.photos?.length || 0,
+              anatomicalCount: b.anatomicalFacesCount || 0,
+              pose: currentPose,
+              sharpnessScore: Number((b.bestFaceScore || 0).toFixed(1)),
+              durationSeconds: Math.max(0, Math.round((now - b.startedAtEpoch) / 1000)),
+              maxStaffSim: Number((b.maxStaffSim || 0).toFixed(3)),
+          ...this._buildBlockInsight(b, blockMgr, now),
+              ...this._buildBlockInsight(b, blockMgr, now),
+              thumbnailBase64: b.bestFaceThumbnail || (b.photos && b.photos[0]?.thumbnailBase64) || null
+            };
+            break;
+          }
+        }
+      }
+
+      // Fallback si no hay bloque en activeBlocks pero hay un track de YOLO en la silla
+      if (!currentBlockInAnalysis && Array.isArray(activeTracks)) {
+        const chairTrack = activeTracks.find(t =>
+          (t.currentQuadrant?.id === session.chairId || t.currentQuadrant?.name === session.chairName) &&
+          !t.isStaffHint
+        );
+        if (chairTrack) {
+          currentBlockInAnalysis = {
+            trackId: chairTrack.trackId,
+            frameCount: chairTrack.framesInChair || 1,
+            candidatePhotos: chairTrack.latestFace ? 1 : 0,
+            anatomicalCount: 1,
+            pose: chairTrack.latestFace?.pose || "frontal",
+            sharpnessScore: Number((chairTrack.sharpnessScore || 0).toFixed(1)),
+            durationSeconds: Math.max(1, Math.round(elapsedMs / 1000)),
+            maxStaffSim: 0,
+            thumbnailBase64: chairTrack.latestFace?.thumbnailBase64 || null
+          };
+        }
+      }
+
+      const repPhoto = session.thumbnailBase64 ||
+        (session.photos && session.photos.length > 0 ? session.photos[0].thumbnailBase64 : null) ||
+        currentBlockInAnalysis?.thumbnailBase64 ||
+        null;
+
+      result.push({
+        chairId: session.chairId,
+        chairName: session.chairName || session.chairZone?.label || session.chairId,
+        clientName: session.clientName || session.personName || "Cliente (Por verificar)",
+        personId: session.personId || session.tempClientId || session.clientId || null,
+        isVerified,
+        isConfirmed: isVerified,
+        startTime: session.startedAt || new Date(session.startedAtEpoch || now).toISOString(),
+        elapsedMinutes,
+        photosCount: session.photos?.length || 0,
+        confirmedBlocks,
+        currentBlockInAnalysis,
+        representativePhoto: repPhoto,
+        latestCropUrl: session.bestFaceStoragePath || null
+      });
+    }
+
+    // 2. Sillas con bloques activos en TrackBlockManager que aún no formalizaron una sesión
+    if (blockMgr?.activeBlocks) {
+      for (const b of blockMgr.activeBlocks.values()) {
+        if (!b.chairId || processedChairs.has(b.chairId) || b.isStaffConfirmed) continue;
+        processedChairs.add(b.chairId);
+
+        const elapsedMs = Math.max(0, now - (b.startedAtEpoch || now));
+        const elapsedMinutes = Math.floor(elapsedMs / 60000);
+        const latestCrop = b.crops && b.crops.length > 0 ? b.crops[b.crops.length - 1] : null;
+        const currentPose = latestCrop?.faceData?.pose || b.bestAnatomicalFace?.pose || (b.photos && b.photos.length > 0 ? b.photos[b.photos.length - 1].pose : "frontal");
+
+        const currentBlockInAnalysis = {
+          trackId: b.trackId,
+          frameCount: b.totalFrames || 0,
+          seatedFrames: b.seatedFrames || 0,
+          standingFrames: b.standingFrames || 0,
+          candidatePhotos: b.crops?.length || b.photos?.length || 0,
+          anatomicalCount: b.anatomicalFacesCount || 0,
+          pose: currentPose,
+          sharpnessScore: Number((b.bestFaceScore || 0).toFixed(1)),
+          durationSeconds: Math.max(0, Math.round(elapsedMs / 1000)),
+          maxStaffSim: Number((b.maxStaffSim || 0).toFixed(3)),
+          thumbnailBase64: b.bestFaceThumbnail || (b.photos && b.photos[0]?.thumbnailBase64) || null
+        };
+
+        const repPhoto = b.bestFaceThumbnail ||
+          (b.photos && b.photos.length > 0 ? b.photos[0].thumbnailBase64 : null) ||
+          null;
+
+        result.push({
+          chairId: b.chairId,
+          chairName: b.chairName || b.chairId,
+          clientName: "Cliente (Por verificar)",
+          personId: `temp_${b.trackId}`,
+          isVerified: false,
+          isConfirmed: false,
+          startTime: new Date(b.startedAtEpoch || now).toISOString(),
+          elapsedMinutes,
+          photosCount: b.photos?.length || b.crops?.length || 0,
+          confirmedBlocks: [],
+          currentBlockInAnalysis,
+          representativePhoto: repPhoto,
+          latestCropUrl: null
+        });
+      }
+    }
+
+    // 3. Pistas activas de YOLO en sillas de corte no cubiertas por las anteriores
+    if (Array.isArray(activeTracks)) {
+      for (const track of activeTracks) {
+        if (!track || track.isStaffHint) continue;
+        const chairId = track.currentQuadrant?.type === "barber_chair" ? track.currentQuadrant.id : null;
+        if (!chairId || processedChairs.has(chairId)) continue;
+        processedChairs.add(chairId);
+
+        const chairName = track.currentQuadrant?.label || track.currentQuadrant?.name || chairId;
+        const elapsedMinutes = Math.floor(((track.framesInChair || 1) * 2) / 60);
+
+        result.push({
+          chairId,
+          chairName,
+          clientName: track.identity?.name || "Cliente (Por verificar)",
+          personId: `temp_${track.trackId}`,
+          isVerified: Boolean(track.identity?.name && !track.identity.name.toLowerCase().includes("por verificar")),
+          isConfirmed: Boolean(track.identity?.name && !track.identity.name.toLowerCase().includes("por verificar")),
+          startTime: new Date(now).toISOString(),
+          elapsedMinutes,
+          photosCount: track.latestFace ? 1 : 0,
+          confirmedBlocks: [],
+          currentBlockInAnalysis: {
+            trackId: track.trackId,
+            frameCount: track.framesInChair || 1,
+            candidatePhotos: track.latestFace ? 1 : 0,
+            anatomicalCount: 1,
+            pose: track.latestFace?.pose || "frontal",
+            sharpnessScore: Number((track.sharpnessScore || 0).toFixed(1)),
+            durationSeconds: Math.max(1, (track.framesInChair || 1) * 2),
+            maxStaffSim: 0,
+            thumbnailBase64: track.latestFace?.thumbnailBase64 || null
+          },
+          representativePhoto: track.latestFace?.thumbnailBase64 || null,
+          latestCropUrl: null
+        });
+      }
+    }
+
+    return result;
   }
 }

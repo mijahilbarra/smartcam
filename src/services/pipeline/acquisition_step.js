@@ -22,6 +22,9 @@ export async function acquireFrame({
 
   let buffer = null;
   if (isRealtime) {
+    if (streamServer?.isPaused || streamServer?.mockVideoEnded) {
+      return null;
+    }
     buffer = streamServer?.getLatestFrame?.();
     if (!buffer) {
       return null;

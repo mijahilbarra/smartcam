@@ -243,6 +243,8 @@ export function createProcessAccumulator() {
   return new ProcessMetricsAccumulator();
 }
 
+let lastTrackBlocksEmitEpoch = 0;
+
 /**
  * Pipeline principal de ejecución: orquesta el flujo paso a paso
  * de manera lineal, limpia y declarativa (< 90 líneas).
@@ -320,6 +322,7 @@ export async function runProcessCycle(context = {}, options = {}) {
   const {
     db, bucket, tomlPath, streamServer, tracker, visitService, localOutputPath, trackBlockManager
   } = context;
+  const blockMgr = trackBlockManager || visitService?.trackBlockManager;
 
   const triggerSource = options.triggerSource || "manual";
   const isRealtime = triggerSource === "realtime";
@@ -350,8 +353,11 @@ export async function runProcessCycle(context = {}, options = {}) {
   const immediateOccupancy = computeOccupancy({
     quadrants: mlResult.quadrants, identifiedPeople: [], rawDetections: mlResult.rawDetections
   });
+  const earlyChairSessions = visitService?.getActiveChairSessionsTelemetry
+    ? visitService.getActiveChairSessionsTelemetry(virtualNow, blockMgr, activeTracks)
+    : [];
   broadcastTelemetry({
-    docId, mlResult, activeTracks, identifiedPeople: null, occupancy: immediateOccupancy
+    docId, mlResult, activeTracks, identifiedPeople: null, occupancy: immediateOccupancy, activeChairSessions: earlyChairSessions
   });
 
   // 4b. Enriquecimiento reactivo de recortes con Stream Clear de alta resolución
@@ -360,11 +366,16 @@ export async function runProcessCycle(context = {}, options = {}) {
   });
 
   // 5. Recortes y re-identificación biométrica facial gobernada por sesión
+  // Si la escena es estática (skippedDueToNoChange), reutilizar detección sin re-correr RFB-320 + ArcFace sobre el mismo recorte idéntico
   const activeSessions = visitService?.getActiveSessions?.() || [];
-  const clientRecords = await extractClientCrops({ bucket, clientCrops: mlResult.clientCrops, docId, isManual });
-  const identifiedPeople = await reidentifyPeople({
-    db, clientRecords, clientCrops: mlResult.clientCrops, activeSessions, isRealtime, backgroundSync: options.backgroundSync, nowEpoch: virtualNow
-  });
+  let clientRecords = [];
+  let identifiedPeople = [];
+  if (!mlResult.skippedDueToNoChange) {
+    clientRecords = await extractClientCrops({ bucket, clientCrops: mlResult.clientCrops, docId, isManual });
+    identifiedPeople = await reidentifyPeople({
+      db, clientRecords, clientCrops: mlResult.clientCrops, activeSessions, isRealtime, backgroundSync: options.backgroundSync, nowEpoch: virtualNow
+    });
+  }
 
   // 6. Asociación de identidades y caras nítidas a tracks vía IoU
   matchIdentitiesToTracks({ tracker, activeTracks, identifiedPeople, now: virtualNow });
@@ -378,7 +389,19 @@ export async function runProcessCycle(context = {}, options = {}) {
   });
 
   // 9. Emisión de telemetría enriquecida en tiempo real por SSE
-  broadcastTelemetry({ docId, mlResult, activeTracks, identifiedPeople, occupancy });
+  const activeChairSessions = visitService?.getActiveChairSessionsTelemetry
+    ? visitService.getActiveChairSessionsTelemetry(virtualNow, blockMgr, activeTracks)
+    : [];
+  let allTrackBlocks = undefined;
+  const nowWall = Date.now();
+  const isFastForward = process.env.STREAM_FAST_FORWARD === "true";
+  if (isFastForward || (nowWall - lastTrackBlocksEmitEpoch >= 250)) {
+    lastTrackBlocksEmitEpoch = nowWall;
+    allTrackBlocks = blockMgr?.getAllTrackBlocksSnapshot
+      ? blockMgr.getAllTrackBlocksSnapshot(virtualNow)
+      : [];
+  }
+  broadcastTelemetry({ docId, mlResult, activeTracks, identifiedPeople, occupancy, activeChairSessions, allTrackBlocks });
 
   // 10. Persistencia atómica y reporte de estado (SSE / Firestore)
   const persistResult = await persistCycleData({
