@@ -29,7 +29,7 @@ function getVideoDuration(filePath) {
 }
 
 const VIDEO_PATH = process.argv[2] || process.env.MOCK_VIDEO_PATH || 'data/recordings/barberia_stream_10h.mp4';
-const SIM_FPS = Number(process.env.STREAM_FPS) || 1;
+const SIM_FPS = Number(process.env.STREAM_FPS) || 10;
 const START_SS = process.env.MOCK_VIDEO_START_SS ? Number(process.env.MOCK_VIDEO_START_SS) : 0;
 const detectedDuration = getVideoDuration(VIDEO_PATH);
 const TOTAL_DURATION = detectedDuration ? Math.round(detectedDuration) : (VIDEO_PATH.includes('7h') ? 20076 : 33939);

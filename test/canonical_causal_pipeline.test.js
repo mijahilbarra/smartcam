@@ -202,4 +202,50 @@ describe("Pipeline Causal Canónico Componible (canonical_causal_pipeline.js)", 
     assert.strictEqual(mgr.activeBlocks.size, 0);
     assert.strictEqual(closedSessionsCount, 1);
   });
+
+  test("evaluateInactiveBlocksStep y flushCausalPipeline extraen pendingConfirmedBlocks salvados", async () => {
+    const mgr = new TrackBlockManager();
+    const salvagedBlock = {
+      trackId: 505,
+      chairId: "chair_1",
+      startedAtEpoch: 1000,
+      lastSeenEpoch: 100000,
+      seatedFrames: 25,
+      crops: [{ isStaffMatch: false }]
+    };
+    mgr.pendingConfirmedBlocks.push(salvagedBlock);
+
+    // evaluateInactiveBlocksStep debe vaciar pendingConfirmedBlocks
+    const confirmed = evaluateInactiveBlocksStep({
+      trackBlockManager: mgr,
+      timestampEpoch: 105000
+    });
+
+    assert.strictEqual(confirmed.length, 1);
+    assert.strictEqual(confirmed[0].trackId, 505);
+    assert.strictEqual(mgr.pendingConfirmedBlocks.length, 0);
+
+    // flushCausalPipeline también debe despachar pendingConfirmedBlocks si existiesen remanentes
+    const processed = [];
+    const mockVisitService = {
+      activeSessions: new Map(),
+      checkChairTimeouts: async () => [],
+      processConfirmedBlock: async (b) => {
+        processed.push(b);
+        return { id: "appt_salvaged" };
+      },
+      closeSession: async () => {}
+    };
+
+    mgr.pendingConfirmedBlocks.push({ trackId: 606, chairId: "chair_1" });
+    await flushCausalPipeline({
+      lastTimestamp: 200000,
+      trackBlockManager: mgr,
+      visitService: mockVisitService
+    });
+
+    assert.strictEqual(processed.length, 1);
+    assert.strictEqual(processed[0].trackId, 606);
+    assert.strictEqual(mgr.pendingConfirmedBlocks.length, 0);
+  });
 });

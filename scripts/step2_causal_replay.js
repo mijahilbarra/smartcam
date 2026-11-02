@@ -25,6 +25,7 @@ import { VisitSessionService } from "../src/services/visit_session_service.js";
 import { SQLiteClient, blobToVector, vectorToBlob } from "../src/infrastructure/storage/sqlite_client.js";
 import { validateSpatialChairAnchor } from "../src/services/pipeline/closure_rules.js";
 import { setCustomQuadrants } from "../src/detector.js";
+import { emitBlockDecision } from "../src/services/pipeline/decision_feed.js";
 import {
   runProcessCycle,
   flushProcessPipeline,
@@ -250,13 +251,22 @@ const visitService = new VisitSessionService({
 });
 
 // Instanciar TrackBlockManager para ciclo de vida atómico por trackId
+const verboseBlocks = args.includes("--verbose-blocks");
 const trackBlockManager = new TrackBlockManager({
   staffProfiles: staffEmbeddings,
   staffThreshold: PIPELINE_CONFIG.staffFilter.staffExclusionThreshold || 0.46,
   quadrants: loadedQuadrants,
   width: videoWidth,
-  height: videoHeight
+  height: videoHeight,
+  onBlockDecided: (decision) => {
+    emitBlockDecision(decision);
+    if (verboseBlocks) {
+      const icon = decision.valid ? "✅" : (decision.isSeatedPresenceOnly ? "🪑" : "⚠️");
+      console.log(`[TrackBlock] ${icon} #${decision.block?.trackId} en ${decision.block?.chairId}: ${decision.verdict} - ${decision.reason}`);
+    }
+  }
 });
+visitService.trackBlockManager = trackBlockManager;
 
 // Cargar todas las filas cosechadas en orden cronológico puro
 let query = "SELECT * FROM harvested_crops WHERE video_file = ?";
@@ -441,7 +451,8 @@ await generateProcessReport({
   trackedClosures,
   mermaidTree,
   contactSheetPath,
-  baseVideoEpoch
+  baseVideoEpoch,
+  allTrackBlocks: trackBlockManager.allTrackBlocks
 });
 
 try {
@@ -493,6 +504,15 @@ console.log(`🧱 Bloques confirmados:  ${(trackBlockManager.totalConfirmedBlock
 console.log(`👥 Citas finales:        ${completedAppts.length}`);
 console.log(`📑 Reporte Markdown:     ${reportPath}`);
 if (contactSheetPath) console.log(`🖼️ Hoja de Contacto:     ${contactSheetPath}`);
+
+const verdictCounts = {};
+for (const b of (trackBlockManager.allTrackBlocks || [])) {
+  verdictCounts[b.verdict] = (verdictCounts[b.verdict] || 0) + 1;
+}
+console.log(`\n🧱 Desglose de TrackBlocks evaluados (${trackBlockManager.allTrackBlocks?.length || 0} total):`);
+for (const [verdict, count] of Object.entries(verdictCounts)) {
+  console.log(`   - ${verdict}: ${count}`);
+}
 console.log(`===============================================================\n`);
 
 // Aserciones biométricas causales (Argon 4)

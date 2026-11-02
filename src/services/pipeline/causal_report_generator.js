@@ -315,7 +315,8 @@ export async function generateFunnelReportMarkdown({
   trackedClosures = [],
   mermaidTree,
   contactSheetPath = null,
-  baseVideoEpoch = 0
+  baseVideoEpoch = 0,
+  allTrackBlocks = []
 }) {
   const now = new Date();
   const spatialApproved = trackedClosures.filter(t => t.spatialCheck?.isValid !== false);
@@ -426,6 +427,33 @@ ${mermaidTree}
       }
       md += `---\n\n`;
     }
+  }
+
+  if (Array.isArray(allTrackBlocks) && allTrackBlocks.length > 0) {
+    md += `\n## 🧱 Historial de Segmentación de Bloques (TrackBlocks Timeline)\n\n`;
+    md += `Total de bloques evaluados por TrackBlockManager: **${allTrackBlocks.length}**\n\n`;
+    md += `| # | TrackId | Silla | Duración | Veredicto | Poses | Standing% | StaffSim | Decisión / Razón |\n`;
+    md += `|---|---------|-------|----------|-----------|-------|-----------|----------|------------------|\n`;
+
+    const displayBlocks = allTrackBlocks.length > 120
+      ? allTrackBlocks.filter(b => b.status === "confirmado" || b.status === "puente_presencia" || b.verdict === "CONFIRMED_CLIENT_BLOCK").concat(allTrackBlocks.slice(-30))
+      : allTrackBlocks;
+
+    const seenIds = new Set();
+    let idx = 0;
+    for (const b of displayBlocks) {
+      if (seenIds.has(b.id || `${b.trackId}_${b.startedAtEpoch}`)) continue;
+      seenIds.add(b.id || `${b.trackId}_${b.startedAtEpoch}`);
+      idx++;
+      const durStr = b.durationSeconds >= 60 ? `${b.durationMinutes}m (${b.durationSeconds}s)` : `${b.durationSeconds}s`;
+      const verdictIcon = b.status === "confirmado" ? "✅" : (b.status === "puente_presencia" ? "🪑" : "⚠️");
+      const posesStr = (b.poses && b.poses.length > 0) ? b.poses.join(", ") : "-";
+      const standingStr = `${Math.round((b.standingRatio || 0) * 100)}%`;
+      const staffSimStr = b.maxStaffSim ? b.maxStaffSim.toFixed(3) : "0.000";
+      const reasonStr = (b.reason || "").replace(/\|/g, "\\|");
+      md += `| ${idx} | #${b.trackId} | ${b.chairName || b.chairId || "Silla"} | ${durStr} | ${verdictIcon} \`${b.verdict}\` | ${posesStr} | ${standingStr} | ${staffSimStr} | ${reasonStr} |\n`;
+    }
+    md += `\n`;
   }
 
   const reportDir = path.dirname(reportPath);
