@@ -143,7 +143,12 @@ export async function captureSnapshotFromRtsp({
   timeoutMs = 15000
 }) {
   const cmd = `ffmpeg -y -rtsp_transport tcp -analyzeduration 15000000 -probesize 1000000 -i "${rtspUrl}" -vframes 1 -f image2 "${localOutputPath}"`;
-  await execPromise(cmd, { timeout: timeoutMs, killSignal: "SIGKILL" });
+  try {
+    await execPromise(cmd, { timeout: timeoutMs, killSignal: "SIGKILL" });
+  } catch (err) {
+    try { await execPromise(`pkill -9 -f "${localOutputPath}" 2>/dev/null || true`); } catch (_) {}
+    throw err;
+  }
   const buffer = await fs.readFile(localOutputPath);
   try {
     await fs.unlink(localOutputPath);

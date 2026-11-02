@@ -12,14 +12,22 @@ export function setClearStreamDisabledUntil(timestamp) {
   clearStreamDisabledUntil = timestamp;
 }
 
+export function resolveMainRtspUrl(subUrl = process.env.RTSP_STREAM_URL) {
+  if (process.env.RTSP_MAIN_STREAM_URL) return process.env.RTSP_MAIN_STREAM_URL;
+  if (!subUrl) return "rtsp://127.0.0.1:8554/barberia/main";
+  if (subUrl.includes("/sub")) return subUrl.replace(/\/sub(Stream|stream)?\/?$/, "/main");
+  if (!subUrl.endsWith("/main")) return `${subUrl.replace(/\/+$/, "")}/main`;
+  return subUrl;
+}
+
 /**
  * Adquisición bajo demanda del fotograma en alta resolución (Stream Clear / Mainstream 2560x1440).
  * Utiliza captureSnapshotFromRtsp sobre el stream RTSP principal.
  */
 export async function acquireClearFrame({
   localOutputPath,
-  rtspUrl = process.env.RTSP_STREAM_URL ? process.env.RTSP_STREAM_URL.replace(/\/sub$/, '/main') : "rtsp://127.0.0.1:8554/barberia/main",
-  timeoutMs = 1500
+  rtspUrl = resolveMainRtspUrl(),
+  timeoutMs = 3500
 } = {}) {
   if (process.env.ENABLE_MAIN_STREAM === "false") {
     return null;
@@ -27,12 +35,13 @@ export async function acquireClearFrame({
   if (Date.now() < clearStreamDisabledUntil) {
     return null;
   }
+  const effectiveRtspUrl = resolveMainRtspUrl(rtspUrl);
   const outputPath = localOutputPath || `/tmp/snap_clear_${Date.now()}.jpeg`;
   try {
-    return await captureSnapshotFromRtsp({ rtspUrl, localOutputPath: outputPath, timeoutMs });
+    return await captureSnapshotFromRtsp({ rtspUrl: effectiveRtspUrl, localOutputPath: outputPath, timeoutMs });
   } catch (err) {
-    clearStreamDisabledUntil = Date.now() + 60000; // 60 segundos de enfriamiento si falla la conexión RTSP
-    console.warn(`[ClearStream] Aviso al capturar fotograma de alta resolución (${rtspUrl}). Cooldown 60s activado:`, err.message);
+    clearStreamDisabledUntil = Date.now() + 30000; // 30 segundos de enfriamiento si falla la conexión RTSP
+    console.warn(`[ClearStream] Aviso al capturar fotograma de alta resolución (${effectiveRtspUrl}). Cooldown 30s activado:`, err.message);
     return null;
   }
 }
@@ -55,13 +64,11 @@ export async function enrichCropsWithClearStream({
     return;
   }
   const acquireClearFn = options.acquireClearFrame || context.acquireClearFrame || acquireClearFrame;
-  const defaultClearRtspUrl = process.env.RTSP_STREAM_URL
-    ? process.env.RTSP_STREAM_URL.replace(/\/sub$/, '/main')
-    : "rtsp://127.0.0.1:8554/barberia/main";
-  const clearRtspUrl = options.rtspUrl || (context.rtspUrl ? context.rtspUrl.replace(/\/sub$/, '/main') : defaultClearRtspUrl);
+  const defaultClearRtspUrl = resolveMainRtspUrl();
+  const clearRtspUrl = options.rtspUrl || (context.rtspUrl ? resolveMainRtspUrl(context.rtspUrl) : defaultClearRtspUrl);
   const effectiveLocalOutputPath = localOutputPath || context.localOutputPath;
   const now = Date.now();
-  const CLEAR_COOLDOWN_MS = 12000; // 12 segundos de enfriamiento por track
+  const CLEAR_COOLDOWN_MS = 20000; // 20 segundos de enfriamiento por track
 
   const tracksNeedingClear = (!isCustomAcquire && now < clearStreamDisabledUntil) ? [] : activeTracks.filter(track => {
     if (track.isStaffHint || track.role === "staff") return false;
@@ -170,6 +177,9 @@ export async function enrichCropsWithClearStream({
                 buffer: highResCropBuffer
               });
               console.log(`[ClearStream] Nuevo recorte de alta resolución generado para Track #${track.trackId}.`);
+            }
+            if (mlResult.skippedDueToNoChange) {
+              mlResult.skippedDueToNoChange = false;
             }
           }
         }
