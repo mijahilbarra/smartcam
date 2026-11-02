@@ -1,4 +1,4 @@
-name: Deploy to GCP VM (Camera Catcher)
+name: Deploy to Production VM (Camera Catcher)
 
 on:
   push:
@@ -7,14 +7,16 @@ on:
     paths:
       - 'src/**'
       - 'scripts/**'
+      - 'config/**'
       - 'neolink.toml'
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/deploy-vm.yml'
+  workflow_dispatch:
 
 jobs:
   deploy:
-    name: Sync Code to Compute Engine e2-micro
+    name: Sync Code to Production VM (OVHcloud)
     runs-on: ubuntu-latest
 
     steps:
@@ -37,8 +39,10 @@ jobs:
             --exclude '.git' \
             --exclude '.package-lock.hash' \
             --exclude '.env' \
+            --exclude 'service-account.json' \
+            --exclude 'data' \
             --exclude 'daemon.log' \
-            src scripts package.json package-lock.json neolink.toml \
+            src scripts config package.json package-lock.json neolink.toml \
             ${{ secrets.VM_USER || 'deploy' }}@${{ secrets.VM_HOST }}:/opt/camera-catcher/
 
       - name: Install Dependencies & Restart Service
