@@ -103,6 +103,19 @@ describe("Herramienta CLI: Descarga y Fusión Diaria (Timezone Perú UTC-5)", ()
       assert.strictEqual(matched[1].name, "chunk_20261024_203305.mp4");
       assert.strictEqual(matched[2].name, "chunk_20261025_011333.mp4");
     });
+
+    it("desduplica chunks con el mismo nombre en Drive prefiriendo el de mayor tamaño", () => {
+      const files = [
+        { id: "dup1", name: "chunk_20261024_160005.mp4", size: 1000 },
+        { id: "dup2", name: "chunk_20261024_160005.mp4", size: 5000 },
+        { id: "dup3", name: "chunk_20261024_160005.mp4", size: 2000 }
+      ];
+
+      const matched = filterAndSortDayChunks(files, "2026-10-24", "America/Lima");
+      assert.strictEqual(matched.length, 1);
+      assert.strictEqual(matched[0].id, "dup2");
+      assert.strictEqual(matched[0].size, 5000);
+    });
   });
 
   describe("2. Parseo de Argumentos CLI y Utilidades de Formato", () => {
