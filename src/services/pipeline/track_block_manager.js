@@ -202,6 +202,85 @@ export class TrackBlockManager {
         isSampleStaff = Boolean(staffRes.isStaffMatch ?? staffRes.isStaff);
       }
 
+      // Validación espacial del rostro respecto a la silla de Firebase (Firestore / quadrants)
+      let parsedBoxForFace = box;
+      if (typeof parsedBoxForFace === "string") {
+        try { parsedBoxForFace = JSON.parse(parsedBoxForFace); } catch (_) {}
+      }
+
+      let fcx = null;
+      let fcy = null;
+      if (Array.isArray(parsedBoxForFace) && parsedBoxForFace.length >= 4) {
+        const isBoxNorm = parsedBoxForFace.every(v => v >= 0 && v <= 1.05);
+        const bx1 = isBoxNorm ? parsedBoxForFace[0] * this.width : parsedBoxForFace[0];
+        const by1 = isBoxNorm ? parsedBoxForFace[1] * this.height : parsedBoxForFace[1];
+        const bx2 = isBoxNorm ? parsedBoxForFace[2] * this.width : parsedBoxForFace[2];
+        const by2 = isBoxNorm ? parsedBoxForFace[3] * this.height : parsedBoxForFace[3];
+        const bw = bx2 - bx1;
+        const bh = by2 - by1;
+
+        if (faceData.boxNorm && Array.isArray(faceData.boxNorm) && faceData.boxNorm.length >= 4) {
+          // faceData.boxNorm es [ymin, xmin, ymax, xmax] normalizado al crop
+          const [ymin, xmin, ymax, xmax] = faceData.boxNorm;
+          fcx = bx1 + ((xmin + xmax) / 2) * bw;
+          fcy = by1 + ((ymin + ymax) / 2) * bh;
+        } else if (faceData.landmarks && Array.isArray(faceData.landmarks) && faceData.landmarks.length >= 3) {
+          const lx = faceData.landmarks[2][0];
+          const ly = faceData.landmarks[2][1];
+          if (lx <= 1.05 && bw > 2) {
+            fcx = bx1 + lx * bw;
+          } else {
+            fcx = lx <= 1.05 ? lx * this.width : lx;
+          }
+          if (ly <= 1.05 && bh > 2) {
+            fcy = by1 + ly * bh;
+          } else {
+            fcy = ly <= 1.05 ? ly * this.height : ly;
+          }
+        } else if (faceData.box && Array.isArray(faceData.box) && faceData.box.length >= 4) {
+          const isFNorm = faceData.box.every(v => v >= 0 && v <= 1.05);
+          const fx1 = isFNorm ? faceData.box[0] * this.width : faceData.box[0];
+          const fy1 = isFNorm ? faceData.box[1] * this.height : faceData.box[1];
+          const fx2 = isFNorm ? faceData.box[2] * this.width : faceData.box[2];
+          const fy2 = isFNorm ? faceData.box[3] * this.height : faceData.box[3];
+          fcx = (fx1 + fx2) / 2;
+          fcy = (fy1 + fy2) / 2;
+        }
+
+        const fcxNorm = fcx !== null ? (fcx / this.width) : null;
+        const fcyNorm = fcy !== null ? (fcy / this.height) : null;
+
+        const chairZone = chairId ? resolveChairZone(chairId, this.quadrants) : null;
+        if (chairZone && fcxNorm !== null && fcyNorm !== null) {
+          let cxmin = 0.34, cxmax = 0.74, cymin = 0.48, cymax = 1.0;
+          if (chairZone.boxNorm && Array.isArray(chairZone.boxNorm) && chairZone.boxNorm.length === 4) {
+            [cymin, cxmin, cymax, cxmax] = chairZone.boxNorm;
+          } else if (chairZone.polygonNorm && Array.isArray(chairZone.polygonNorm) && chairZone.polygonNorm.length >= 3) {
+            const xs = chairZone.polygonNorm.map(p => (typeof p.x === 'number' ? p.x : p[0]));
+            const ys = chairZone.polygonNorm.map(p => (typeof p.y === 'number' ? p.y : p[1]));
+            cxmin = Math.min(...xs);
+            cxmax = Math.max(...xs);
+            cymin = Math.min(...ys);
+            cymax = Math.max(...ys);
+          } else if (chairZone.box && Array.isArray(chairZone.box) && chairZone.box.length >= 4) {
+            const isCBoxNorm = chairZone.box.every(v => v >= 0 && v <= 1.05);
+            cxmin = isCBoxNorm ? chairZone.box[0] : chairZone.box[0] / this.width;
+            cymin = isCBoxNorm ? chairZone.box[1] : chairZone.box[1] / this.height;
+            cxmax = isCBoxNorm ? chairZone.box[2] : chairZone.box[2] / this.width;
+            cymax = isCBoxNorm ? chairZone.box[3] : chairZone.box[3] / this.height;
+          }
+
+          const isOutsideChairColumn = fcxNorm < (cxmin - 0.04) || fcxNorm > (cxmax + 0.04);
+          const isBodyStanding = (by1 < 220) || (bh > 480) || isStandingPosture(parsedBoxForFace, this.height);
+
+          if (isOutsideChairColumn || fcxNorm < 0.30) {
+            isSampleStaff = true;
+          } else if (isBodyStanding && (fcyNorm < 0.48 || fcy < 350)) {
+            isSampleStaff = true;
+          }
+        }
+      }
+
       if (sampleStaffSim > block.maxStaffSim) {
         block.maxStaffSim = sampleStaffSim;
       }

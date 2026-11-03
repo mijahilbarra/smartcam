@@ -168,6 +168,65 @@ describe("Validación Espacial de Caja Humano vs Caja de la Silla de Firebase", 
       assert.strictEqual(strictFail.isValid, false);
       assert.strictEqual(strictFail.reason, "fuera_de_caja_silla_firebase");
     });
+
+    it("descarta sesión del barbero de pie con rostro erguido por encima del plano de la silla (fcy < 330)", () => {
+      // Barbero de pie junto a la silla: caja grande y2=680, pero rostro a y=220 (muy alto para un cliente sentado)
+      const barberSession = {
+        chairId: "silla_barbero_puesto2",
+        crops: [
+          {
+            box: [450, 150, 750, 680],
+            faceData: {
+              boxNorm: [0.10, 0.20, 0.25, 0.50] // fcy ~ 150 + 0.175 * 530 = 242px (< 340px)
+            }
+          }
+        ]
+      };
+
+      const result = validateSpatialChairAnchor(barberSession, firebaseChairZone, { width: 1280, height: 720 });
+      assert.strictEqual(result.isValid, false);
+      assert.strictEqual(result.insideCount, 0);
+      assert.strictEqual(result.reason, "fuera_de_caja_silla_firebase");
+    });
+
+    it("descarta detección con rostro fuera de la columna horizontal de la silla (fcx < cx1 - 40)", () => {
+      // Persona en pasillo x=250 (fuera de la columna de la silla cx1=435)
+      const hallwayFaceSession = {
+        chairId: "silla_barbero_puesto2",
+        crops: [
+          {
+            box: [200, 320, 360, 680],
+            faceData: {
+              landmarks: [[270, 380], [290, 380], [280, 400], [270, 420], [290, 420]] // fcx=280 < 435 - 40
+            }
+          }
+        ]
+      };
+
+      const result = validateSpatialChairAnchor(hallwayFaceSession, firebaseChairZone, { width: 1280, height: 720 });
+      assert.strictEqual(result.isValid, false);
+      assert.strictEqual(result.insideCount, 0);
+      assert.strictEqual(result.reason, "fuera_de_caja_silla_firebase");
+    });
+
+    it("aprueba cliente sentado con rostro dentro de la columna y altura de la silla (fcx en columna, fcy >= 340)", () => {
+      const clientSession = {
+        chairId: "silla_barbero_puesto2",
+        crops: [
+          {
+            box: [550, 240, 700, 620],
+            faceData: {
+              boxNorm: [0.25, 0.30, 0.55, 0.70] // fcy ~ 240 + 0.40 * 380 = 392px (>= 340px), fcx ~ 550 + 0.50 * 150 = 625px
+            }
+          }
+        ]
+      };
+
+      const result = validateSpatialChairAnchor(clientSession, firebaseChairZone, { width: 1280, height: 720 });
+      assert.strictEqual(result.isValid, true);
+      assert.strictEqual(result.insideCount, 1);
+      assert.strictEqual(result.reason, "dentro_de_caja_silla");
+    });
   });
 
   describe("Integración con prepareAndFilterSessionForClosure", () => {

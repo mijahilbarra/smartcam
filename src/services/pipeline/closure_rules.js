@@ -94,46 +94,96 @@ export function validateSpatialChairAnchor(sessionOrBlock, chairZone = null, opt
     return { isValid: false, reason: "fuera_de_caja_silla_firebase", insideCount: 0, totalBoxes: 0, overlapRatio: 0, avgInsideRatio: 0, avgY2: 0 };
   }
 
-  // 1. Extraer todas las cajas humanas registradas con sus metadatos (ej. faceCenterY)
+  // 1. Extraer todas las cajas humanas registradas con sus metadatos (ej. faceCenterY, faceCenterX)
   const rawItems = [];
   if (Array.isArray(sessionOrBlock.boxes) && sessionOrBlock.boxes.length > 0) {
-    for (const b of sessionOrBlock.boxes) rawItems.push({ box: b, faceCenterY: null });
+    for (const b of sessionOrBlock.boxes) rawItems.push({ box: b, faceCenterY: null, faceCenterX: null });
   }
   if (Array.isArray(sessionOrBlock.crops)) {
     for (const c of sessionOrBlock.crops) {
       const b = c?.box || c?.faceData?.box;
       let fcy = null;
-      if (c?.faceData?.boxNorm && b && Array.isArray(b)) {
+      let fcx = null;
+      if (c?.faceData?.boxNorm && b && Array.isArray(b) && b.length >= 4) {
+        const w = b[2] - b[0];
         const h = b[3] - b[1];
+        fcx = b[0] + ((c.faceData.boxNorm[1] + c.faceData.boxNorm[3]) / 2) * w;
         fcy = b[1] + ((c.faceData.boxNorm[0] + c.faceData.boxNorm[2]) / 2) * h;
       } else if (c?.faceData?.landmarks && Array.isArray(c.faceData.landmarks) && c.faceData.landmarks.length >= 3) {
-        fcy = c.faceData.landmarks[2][1];
+        const lx = c.faceData.landmarks[2][0];
+        const ly = c.faceData.landmarks[2][1];
+        if (b && Array.isArray(b) && b.length >= 4 && lx <= 1.05 && (b[2] - b[0]) > 2) {
+          fcx = b[0] + lx * (b[2] - b[0]);
+        } else {
+          fcx = lx;
+        }
+        if (b && Array.isArray(b) && b.length >= 4 && ly <= 1.05 && (b[3] - b[1]) > 2) {
+          fcy = b[1] + ly * (b[3] - b[1]);
+        } else {
+          fcy = ly;
+        }
       }
-      if (b) rawItems.push({ box: b, faceCenterY: fcy });
+      if (b) rawItems.push({ box: b, faceCenterY: fcy, faceCenterX: fcx });
     }
   }
   if (Array.isArray(sessionOrBlock.photos)) {
     for (const p of sessionOrBlock.photos) {
       const b = p?.box || p?.bodyBox;
       let fcy = null;
+      let fcx = null;
       if (p?.landmarks && Array.isArray(p.landmarks) && p.landmarks.length >= 3) {
-        fcy = p.landmarks[2][1];
+        const lx = p.landmarks[2][0];
+        const ly = p.landmarks[2][1];
+        if (b && Array.isArray(b) && b.length >= 4 && lx <= 1.05 && (b[2] - b[0]) > 2) {
+          fcx = b[0] + lx * (b[2] - b[0]);
+        } else {
+          fcx = lx;
+        }
+        if (b && Array.isArray(b) && b.length >= 4 && ly <= 1.05 && (b[3] - b[1]) > 2) {
+          fcy = b[1] + ly * (b[3] - b[1]);
+        } else {
+          fcy = ly;
+        }
       }
-      if (b) rawItems.push({ box: b, faceCenterY: fcy });
+      if (p?.boxNorm && b && Array.isArray(b) && b.length >= 4) {
+        const w = b[2] - b[0];
+        const h = b[3] - b[1];
+        fcx = b[0] + ((p.boxNorm[1] + p.boxNorm[3]) / 2) * w;
+        fcy = b[1] + ((p.boxNorm[0] + p.boxNorm[2]) / 2) * h;
+      }
+      if (b) rawItems.push({ box: b, faceCenterY: fcy, faceCenterX: fcx });
     }
   }
   if (Array.isArray(sessionOrBlock.photosBeforeClose)) {
     for (const p of sessionOrBlock.photosBeforeClose) {
       const b = p?.box || p?.bodyBox;
       let fcy = null;
+      let fcx = null;
       if (p?.landmarks && Array.isArray(p.landmarks) && p.landmarks.length >= 3) {
-        fcy = p.landmarks[2][1];
+        const lx = p.landmarks[2][0];
+        const ly = p.landmarks[2][1];
+        if (b && Array.isArray(b) && b.length >= 4 && lx <= 1.05 && (b[2] - b[0]) > 2) {
+          fcx = b[0] + lx * (b[2] - b[0]);
+        } else {
+          fcx = lx;
+        }
+        if (b && Array.isArray(b) && b.length >= 4 && ly <= 1.05 && (b[3] - b[1]) > 2) {
+          fcy = b[1] + ly * (b[3] - b[1]);
+        } else {
+          fcy = ly;
+        }
       }
-      if (b) rawItems.push({ box: b, faceCenterY: fcy });
+      if (p?.boxNorm && b && Array.isArray(b) && b.length >= 4) {
+        const w = b[2] - b[0];
+        const h = b[3] - b[1];
+        fcx = b[0] + ((p.boxNorm[1] + p.boxNorm[3]) / 2) * w;
+        fcy = b[1] + ((p.boxNorm[0] + p.boxNorm[2]) / 2) * h;
+      }
+      if (b) rawItems.push({ box: b, faceCenterY: fcy, faceCenterX: fcx });
     }
   }
-  if (sessionOrBlock.box) rawItems.push({ box: sessionOrBlock.box, faceCenterY: null });
-  if (sessionOrBlock.lastBox) rawItems.push({ box: sessionOrBlock.lastBox, faceCenterY: null });
+  if (sessionOrBlock.box) rawItems.push({ box: sessionOrBlock.box, faceCenterY: null, faceCenterX: null });
+  if (sessionOrBlock.lastBox) rawItems.push({ box: sessionOrBlock.lastBox, faceCenterY: null, faceCenterX: null });
 
   // Normalizar formato de cajas: parsear strings JSON y asegurar arrays válidos de 4 números
   const validItems = [];
@@ -143,7 +193,7 @@ export function validateSpatialChairAnchor(sessionOrBlock, chairZone = null, opt
       try { parsed = JSON.parse(parsed); } catch (_) { continue; }
     }
     if (Array.isArray(parsed) && parsed.length >= 4 && parsed.slice(0, 4).every(v => typeof v === "number" && Number.isFinite(v))) {
-      validItems.push({ box: parsed.slice(0, 4), faceCenterY: item.faceCenterY });
+      validItems.push({ box: parsed.slice(0, 4), faceCenterY: item.faceCenterY, faceCenterX: item.faceCenterX });
     }
   }
 
@@ -179,6 +229,29 @@ export function validateSpatialChairAnchor(sessionOrBlock, chairZone = null, opt
   const minOverlapRatio = options.minInsideRatio ?? options.minOverlapRatio ?? 0.50;
   const minY2 = options.minY2 ?? 550;
 
+  // Extraer límites espaciales de la silla en coordenadas de fotograma
+  let cx1 = 0, cy1 = 0, cx2 = frameWidth, cy2 = frameHeight;
+  if (targetChair.box && Array.isArray(targetChair.box) && targetChair.box.length >= 4) {
+    const isChairNorm = targetChair.box.every(v => v >= 0 && v <= 1.05);
+    cx1 = isChairNorm ? targetChair.box[0] * frameWidth : targetChair.box[0];
+    cy1 = isChairNorm ? targetChair.box[1] * frameHeight : targetChair.box[1];
+    cx2 = isChairNorm ? targetChair.box[2] * frameWidth : targetChair.box[2];
+    cy2 = isChairNorm ? targetChair.box[3] * frameHeight : targetChair.box[3];
+  } else if (targetChair.boxNorm && Array.isArray(targetChair.boxNorm) && targetChair.boxNorm.length === 4) {
+    const [cymin, cxmin, cymax, cxmax] = targetChair.boxNorm;
+    cx1 = cxmin * frameWidth;
+    cy1 = cymin * frameHeight;
+    cx2 = cxmax * frameWidth;
+    cy2 = cymax * frameHeight;
+  } else if (targetChair.polygonNorm && Array.isArray(targetChair.polygonNorm) && targetChair.polygonNorm.length >= 3) {
+    const xs = targetChair.polygonNorm.map(p => (typeof p.x === 'number' ? p.x : p[0]));
+    const ys = targetChair.polygonNorm.map(p => (typeof p.y === 'number' ? p.y : p[1]));
+    cx1 = Math.min(...xs) * frameWidth;
+    cx2 = Math.max(...xs) * frameWidth;
+    cy1 = Math.min(...ys) * frameHeight;
+    cy2 = Math.max(...ys) * frameHeight;
+  }
+
   // 3. Evaluar solapamiento de cada caja con el encuadre de la silla
   let insideCount = 0;
   let totalInsideRatio = 0;
@@ -200,19 +273,38 @@ export function validateSpatialChairAnchor(sessionOrBlock, chairZone = null, opt
     const y2 = isNorm ? b[3] * frameHeight : b[3];
     totalY2 += y2;
 
+    const fcx = item.faceCenterX !== null
+      ? (item.faceCenterX <= 1.05 ? item.faceCenterX * frameWidth : item.faceCenterX)
+      : null;
     const fcy = item.faceCenterY !== null
-      ? (isNorm ? item.faceCenterY * frameHeight : item.faceCenterY)
+      ? (item.faceCenterY <= 1.05 ? item.faceCenterY * frameHeight : item.faceCenterY)
       : null;
 
     // Regla de Aprobación individual:
     // 1. insideRatio >= 0.50 (o >= 0.22 cuando el cuerpo está anclado a la base de la silla y2 >= 612 y el barbero ensancha la caja de YOLO)
     // 2. y2 >= 550 (o y2 / frameHeight >= 0.75)
-    // 3. Cabeza: si el cuerpo está sentado en la silla (isY2Ok), NO descartar si la cabeza sobresale por arriba (y1 < 200, personas altas o erguidas).
+    // 3. Validación de rostro y postura de cabeza:
+    //    - Si fcx !== null: debe caer dentro de la columna horizontal de la silla con margen razonable (cx1 - 40 <= fcx <= cx2 + 40).
+    //    - Si el cuerpo tiene proporciones de persona de pie (y1 < 220 o (y2 - y1) > 480):
+    //      NO aprobar ciegamente solo porque los pies tocan el suelo (isY2Ok).
+    //      Si hay rostro (fcy !== null), este debe caer a la altura de un cliente sentado (fcy >= 340 o fcy >= cy1),
+    //      y no a la altura del barbero erguido (fcy < 330 o fcy < cy1).
     const isAnchoredAtChairBase = y2 >= 612 || (y2 / frameHeight >= 0.85);
     const effectiveMinRatio = (hasConfirmedClientFaces && isAnchoredAtChairBase) ? Math.min(minOverlapRatio, 0.22) : minOverlapRatio;
     const isRatioOk = ratio >= effectiveMinRatio;
     const isY2Ok = y2 >= minY2 || (y2 / frameHeight >= 0.75);
-    const isHeadOk = isY2Ok || (y1 >= 240) || (fcy !== null ? fcy >= 320 : y1 >= 200);
+
+    const isFaceXOk = fcx === null || (fcx >= (cx1 - 40) && fcx <= (cx2 + 40));
+    const minSeatedFaceY = cy1 > 0 ? Math.min(340, cy1) : 340;
+
+    let isHeadOk = false;
+    if (fcy !== null) {
+      const isFaceSeatedHeight = fcy >= minSeatedFaceY;
+      isHeadOk = isFaceXOk && isFaceSeatedHeight;
+    } else {
+      const isStandingProportion = (y1 < 220 && (y2 - y1) > 450) || (y2 - y1) > 500 || y1 < 180;
+      isHeadOk = !isStandingProportion && (y1 >= 200 || (y2 - y1) <= 420);
+    }
 
     if (isRatioOk && isY2Ok && isHeadOk) {
       insideCount++;

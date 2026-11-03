@@ -32,6 +32,22 @@ describe("Pipeline Causal Canónico Componible (canonical_causal_pipeline.js)", 
     assert.ok(res.stage >= 1);
   });
 
+  test("evaluateCropStep detecta isStanding: true y rechaza recorte de barbero parado al lado de la silla", () => {
+    const standingBarberCrop = {
+      chairId: "silla_barbero_puesto2",
+      box: [450, 140, 750, 680], // de pie junto a la silla: y1=140 < 220, h=540 > 480
+      faceDetected: true,
+      sharpnessScore: 85,
+      pose: "frontal",
+      vector: new Array(512).fill(0.05),
+      hasTwoEyes: true
+    };
+    const res = evaluateCropStep(standingBarberCrop);
+    assert.strictEqual(res.passed, false);
+    assert.strictEqual(res.isStanding, true);
+    assert.strictEqual(res.reason, "postura_de_pie_excluida_de_silla");
+  });
+
   test("ingestSampleStep ingesta una muestra atómica en TrackBlockManager", () => {
     const mgr = new TrackBlockManager();
     const block = ingestSampleStep({

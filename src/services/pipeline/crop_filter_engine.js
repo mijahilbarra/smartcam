@@ -127,10 +127,24 @@ export function evaluateCrop7Stages(cropInput, options = {}) {
 
   // Etapa 1: Postura Física y Anclaje Espacial
   const isChairZone = Boolean(norm.chairId && (norm.chairId.includes('silla') || norm.chairId.includes('chair')));
-  const isStanding = isChairZone ? false : (norm.box ? isStandingPosture(norm.box, imgHeight) : false);
+  let isStanding = false;
+  if (norm.box && Array.isArray(norm.box) && norm.box.length >= 4) {
+    const isPostureStanding = isStandingPosture(norm.box, imgHeight);
+    const isNorm = norm.box.every(v => v >= 0 && v <= 1.05);
+    const boxTopPx = isNorm ? norm.box[1] * imgHeight : norm.box[1];
+    const boxHPx = isNorm ? (norm.box[3] - norm.box[1]) * imgHeight : (norm.box[3] - norm.box[1]);
+    if (isChairZone) {
+      // En zona de silla, no forzar ciegamente isStanding = false:
+      // Si el cuerpo tiene postura de pie (ej. boxTop < 200 y altura > 480 o isStandingPosture),
+      // una persona parada al lado o detrás de la silla debe registrarse con isStanding: true
+      isStanding = Boolean(isPostureStanding && (boxTopPx < 220 || boxHPx > 480));
+    } else {
+      isStanding = Boolean(isPostureStanding);
+    }
+  }
 
   // Filtro de transeúntes de fondo (en puerta o calle exterior)
-  if (norm.box && Array.isArray(norm.box) && norm.box.length >= 4) {
+  if (!isChairZone && norm.box && Array.isArray(norm.box) && norm.box.length >= 4) {
     const boxTop = norm.box[1];
     const boxH = norm.box[3] - norm.box[1];
     const boxW = norm.box[2] - norm.box[0];
