@@ -154,7 +154,7 @@ export function parseChunkTimestamp(fileName) {
  */
 export function filterAndSortDayChunks(files, dateStr, tz = "America/Lima") {
   const { startOfDay, endOfDay } = calculateDateRange(dateStr, tz);
-  const matched = [];
+  const byName = new Map();
 
   for (const file of files) {
     const parsed = parseChunkTimestamp(file.name);
@@ -165,14 +165,25 @@ export function filterAndSortDayChunks(files, dateStr, tz = "America/Lima") {
         timeZone: tz,
         hour12: true
       });
-      matched.push({
+      const candidate = {
         ...file,
         epoch: parsed.epoch,
         localTime
-      });
+      };
+
+      if (!byName.has(file.name)) {
+        byName.set(file.name, candidate);
+      } else {
+        // En caso de duplicados en Drive con el mismo nombre, preferir el de mayor tamaño
+        const existing = byName.get(file.name);
+        if ((candidate.size || 0) > (existing.size || 0)) {
+          byName.set(file.name, candidate);
+        }
+      }
     }
   }
 
+  const matched = Array.from(byName.values());
   matched.sort((a, b) => a.epoch - b.epoch);
   return matched;
 }

@@ -344,4 +344,69 @@ test("TrackBlockManager - Bloques de TrackId", async (t) => {
       `El bloque residual del barbero debe ser descartado (fue: ${finalDecision.verdict})`
     );
   });
+
+  await t.test("Filtra rostro del barbero de pie en cuadrante de silla: no lo asigna como bestFaceThumbnail ni como cliente", () => {
+    const quadrantsFixture = [
+      {
+        id: "silla_barbero_puesto2",
+        name: "Silla de barbero (Frente)",
+        type: "barber_chair",
+        boxNorm: [0.48, 0.34, 1.0, 0.74]
+      }
+    ];
+
+    const manager = new TrackBlockManager({
+      quadrants: quadrantsFixture,
+      width: 1280,
+      height: 720
+    });
+
+    const trackId = 888;
+    // 1. Muestra con cuerpo de pie y rostro del barbero (fcy < 350 / fcyNorm < 0.48)
+    manager.ingestTrackSample({
+      trackId,
+      chairId: "silla_barbero_puesto2",
+      timestampEpoch: 100000,
+      videoSecond: 100,
+      box: [450, 140, 750, 680], // de pie: y1=140 < 220, h=540 > 480
+      faceData: {
+        boxNorm: [0.10, 0.20, 0.25, 0.50], // fcy ~ 140 + 0.175 * 540 = 234px (< 350px)
+        vector: new Array(512).fill(0.9),
+        sharpnessScore: 98, // Muy nítido pero es el barbero
+        pose: "frontal",
+        hasTwoEyes: true,
+        thumbnailBase64: "data:image/jpeg;base64,barber_thumbnail"
+      }
+    });
+
+    const block = manager.activeBlocks.get(trackId);
+    assert.ok(block, "El bloque debe existir en activeBlocks");
+    assert.equal(block.clientFacesCount, 0, "No debe contabilizar el rostro del barbero como cliente");
+    assert.equal(block.staffFacesCount, 1, "Debe tratar el rostro del barbero de pie como staff");
+    assert.equal(block.bestFaceThumbnail, null, "NO debe asignar la foto del barbero como bestFaceThumbnail");
+    assert.equal(block.bestAnatomicalFace, null, "NO debe asignar la cara del barbero como bestAnatomicalFace");
+    assert.equal(block.representatives.frontal, null, "NO debe asignar la cara del barbero como representante");
+
+    // 2. Muestra con cliente sentado y rostro a altura de silla (fcy >= 350)
+    manager.ingestTrackSample({
+      trackId,
+      chairId: "silla_barbero_puesto2",
+      timestampEpoch: 105000,
+      videoSecond: 105,
+      box: [550, 240, 700, 620], // sentado: y1=240 >= 220, h=380 <= 480
+      faceData: {
+        boxNorm: [0.25, 0.30, 0.55, 0.70], // fcy ~ 240 + 0.40 * 380 = 392px (>= 350px)
+        vector: new Array(512).fill(0.1),
+        sharpnessScore: 72,
+        pose: "frontal",
+        hasTwoEyes: true,
+        thumbnailBase64: "data:image/jpeg;base64,client_thumbnail"
+      }
+    });
+
+    assert.equal(block.clientFacesCount, 1, "Debe contabilizar el rostro del cliente sentado");
+    assert.equal(block.bestFaceThumbnail, "data:image/jpeg;base64,client_thumbnail", "Debe asignar la foto del cliente como bestFaceThumbnail");
+    assert.ok(block.bestAnatomicalFace, "Debe registrar bestAnatomicalFace para el cliente");
+    assert.equal(block.representatives.frontal.thumbnailBase64, "data:image/jpeg;base64,client_thumbnail", "Representante frontal debe ser el cliente");
+  });
 });
