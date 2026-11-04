@@ -97,6 +97,8 @@ export function evaluateCausalConsolidation({
   prevSameChairAppt,
   pastAppointments = [],
   staffProfiles = [],
+  customerService = null,
+  sqliteClient = null,
   logVerbal = console.log
 }) {
   if (
@@ -129,21 +131,47 @@ export function evaluateCausalConsolidation({
     return { shouldMerge: false, reason: `gap_out_of_bounds_${Math.round(rawGapMs / 1000)}s`, metrics: { gapMs }, repA: null, repB: null };
   }
 
-  // Vectores y fotos de la cita previa
-  const prevVecs = (prevSameChairAppt.embeddings || [])
+  // Vectores y fotos de la cita previa (enriquecidos con base histórica completa si está disponible)
+  let prevVecs = (prevSameChairAppt.embeddings || [])
     .map(e => isVector(e) ? e : e?.vector)
     .filter(Boolean);
   const prevPhotos = prevSameChairAppt.photos || [];
+
+  if (prevSameChairAppt.clientId && (customerService || sqliteClient)) {
+    const prevCust = customerService?.getCustomerData?.(prevSameChairAppt.clientId) ||
+                     sqliteClient?.getCustomerById?.(prevSameChairAppt.clientId);
+    if (prevCust?.embeddings && Array.isArray(prevCust.embeddings)) {
+      for (const ce of prevCust.embeddings) {
+        const vec = isVector(ce) ? ce : ce?.vector;
+        if (vec && !prevVecs.includes(vec)) {
+          prevVecs.push(vec);
+        }
+      }
+    }
+  }
 
   if (prevVecs.length === 0) {
     return { shouldMerge: false, reason: "prev_session_has_no_vectors", metrics: {}, repA: null, repB: null };
   }
 
   // Vectores y fotos de la sesión actual
-  const sessionVecs = (session.embeddings || [])
+  let sessionVecs = (session.embeddings || [])
     .map(e => isVector(e) ? e : e?.vector)
     .filter(Boolean);
   const sessionPhotos = session.photos || [];
+
+  if (session.clientId && (customerService || sqliteClient)) {
+    const sessCust = customerService?.getCustomerData?.(session.clientId) ||
+                     sqliteClient?.getCustomerById?.(session.clientId);
+    if (sessCust?.embeddings && Array.isArray(sessCust.embeddings)) {
+      for (const ce of sessCust.embeddings) {
+        const vec = isVector(ce) ? ce : ce?.vector;
+        if (vec && !sessionVecs.includes(vec)) {
+          sessionVecs.push(vec);
+        }
+      }
+    }
+  }
 
   if (sessionVecs.length === 0) {
     return { shouldMerge: false, reason: "current_session_has_no_vectors", metrics: {}, repA: null, repB: null };
@@ -233,19 +261,18 @@ export function evaluateCausalConsolidation({
   const isMicroGapSameChair = rawGapMs <= 3000 && rawGapMs >= minMergeGap;
   const isContinuousSameChair = rawGapMs <= 10000 && rawGapMs > 3000;
 
-  const isBiometricallyIncompatible = isContinuousSameChair
-    ? (centroidSim < 0.48 && maxGallerySim < 0.48)
-    : (isFinishingPhase
-      ? (centroidSim < 0.35 && maxGallerySim < 0.42)
-      : (isMicroGapSameChair
-        ? (centroidSim < 0.05 && maxGallerySim < 0.12)
-        : (centroidSim < 0.48 && maxGallerySim < 0.48)));
+  // CANDADO BIOMÉTRICO UNIVERSAL (Argon 4):
+  // Si no hay compatibilidad biométrica demostrada, la fusión está TERMINANTEMENTE PROHIBIDA.
+  // Protege contra micro-gaps espurios y artefactos de streaming.
+  const isBiometricallyIncompatible = isFinishingPhase
+    ? (centroidSim < 0.35 && maxGallerySim < 0.42)
+    : (centroidSim < 0.48 && maxGallerySim < 0.48);
 
   if (isBiometricallyIncompatible) {
-    logVerbal(`[CausalConsolidator] 🛑 Incompatibilidad biométrica evidente (centroidSim=${centroidSim.toFixed(3)} < ${isContinuousSameChair ? '0.48' : (isFinishingPhase ? '0.35' : (isMicroGapSameChair ? '0.05' : '0.48'))} && maxGallerySim=${maxGallerySim.toFixed(3)} < ${isContinuousSameChair ? '0.48' : (isFinishingPhase ? '0.42' : (isMicroGapSameChair ? '0.12' : '0.48'))}). No se consolida.`);
+    logVerbal(`[CausalConsolidator] 🛑 Veto Biométrico Universal: incompatibilidad biométrica (centroidSim=${centroidSim.toFixed(3)} < ${isFinishingPhase ? '0.35' : '0.48'} && maxGallerySim=${maxGallerySim.toFixed(3)} < ${isFinishingPhase ? '0.42' : '0.48'}). Fusión PROHIBIDA.`);
     return {
       shouldMerge: false,
-      reason: "incompatibilidad_biometrica_evidente",
+      reason: "universal_biometric_veto",
       metrics: { repSim, robustSim, centroidSim, sNorm, contrastRatio, gapMs, maxGallerySim },
       repA,
       repB
@@ -341,18 +368,38 @@ export function evaluateCausalConsolidation({
     ? (process.env.SAME_POSE_THRESHOLD ? parseFloat(process.env.SAME_POSE_THRESHOLD) : 0.58)
     : (process.env.CROSS_POSE_THRESHOLD ? parseFloat(process.env.CROSS_POSE_THRESHOLD) : 0.48);
 
-  const isHomologousDifferentPerson = isSamePoseRep &&
+  const isHomologousDifferentPerson = !isMicroGapSameChair &&
+    isSamePoseRep &&
     scoreA >= 60 && scoreB >= 60 &&
     repSim !== null && repSim < 0.50 &&
     contrastRatio < 1.30 &&
     centroidSim < 0.45 &&
-    robustSim < 0.45;
+    robustSim < 0.45 &&
+    maxGallerySim < 0.48;
 
   let isSamePerson = false;
   let mergeReason = '';
 
-  // Regla de Ventana de Transición de Acabado (Finishing Phase)
-  if (isFinishingPhase && (
+  // Medida 1 (Argon 4): Consolidación por Manifold de Galería Robusta
+  // Si la galería limpia y el centroide demuestran identidad contundente (>= 0.48),
+  // la disparidad de una pose representativa cosmética (repSim) por giro antipodal (semi_right vs semi_left) queda ANULADA.
+  const hasRobustGalleryIdentity = (
+    centroidSim >= 0.48 &&
+    maxGallerySim >= 0.48 &&
+    (metrics.top3AvgSim || 0) >= 0.48
+  );
+
+  if (hasRobustGalleryIdentity) {
+    isSamePerson = true;
+    mergeReason = `galleryManifoldIdentity (centroid=${centroidSim.toFixed(3)}, maxGallery=${maxGallerySim.toFixed(3)}, top3Avg=${(metrics.top3AvgSim || 0).toFixed(3)} >= 0.48)`;
+  } else if (
+    maxGallerySim >= 0.65 ||
+    (maxBiometric >= 0.65 && (maxGallerySim >= 0.48 || centroidSim >= 0.45)) ||
+    (maxGallerySim >= 0.48 && centroidSim >= 0.40)
+  ) {
+    isSamePerson = true;
+    mergeReason = `highConfidenceGalleryIdentity (maxGallery=${maxGallerySim.toFixed(3)}, centroid=${centroidSim.toFixed(3)} >= 0.40)`;
+  } else if (isFinishingPhase && (
     (centroidSim >= 0.48 && maxGallerySim >= 0.55) ||
     maxHomologousSim >= 0.52
   )) {
@@ -391,9 +438,9 @@ export function evaluateCausalConsolidation({
       (isContinuousSameChair && (centroidSim >= 0.48 || maxGallerySim >= 0.48)) ||
       (sNorm >= 1.8 && contrastRatio >= 1.20);
 
-    if (isMicroGapSameChair) {
+    if (isMicroGapSameChair && (maxGallerySim >= 0.48 || centroidSim >= 0.48)) {
       isSamePerson = true;
-      mergeReason = `microGapContinuity (rawGap=${Math.round(rawGapMs / 1000)}s <= 3s)`;
+      mergeReason = `microGapContinuity (rawGap=${Math.round(rawGapMs / 1000)}s <= 3s, maxGallery=${maxGallerySim.toFixed(3)})`;
     } else {
       const isDirectContinuity = !isPrevLongService ? (maxBiometric >= 0.65) : (maxBiometric >= 0.65 && centroidSim >= 0.52 && robustSim >= 0.44);
 
@@ -468,6 +515,8 @@ export async function consolidateChairAppointment({
     prevSameChairAppt,
     pastAppointments,
     staffProfiles,
+    customerService,
+    sqliteClient,
     logVerbal
   });
 

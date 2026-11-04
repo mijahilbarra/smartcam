@@ -186,12 +186,20 @@ async function main() {
   console.log(`[StreamTest] 🎬 Modo: ${isLoop ? "Bucle continuo (--loop)" : "Una sola pasada (SIN BUCLE). El video correrá una vez y quedará pausado al finalizar."}`);
   console.log(`[StreamTest] ⏱️ Cadencia: ${isRealtime ? "Tiempo Real (~180ms inferencia, 10 FPS video)" : "Avance Rápido (FAST_FORWARD, 0ms intervalo)"}`);
 
+  const targetDateStr = typeof args.date === "string" ? args.date : todayInLima();
+  // Anclar el inicio comercial de la prueba a las 10:00:00 AM hora local de Lima (UTC-5)
+  const baseLocal10Am = new Date(`${targetDateStr}T10:00:00.000-05:00`);
+  const seekOffsetSec = parseInt(typeof args.start === "string" ? args.start : "2420", 10) || 0;
+  const mockStartEpoch = baseLocal10Am.getTime() + (seekOffsetSec * 1000);
+  console.log(`[StreamTest] 🕒 Reloj virtual anclado en: ${baseLocal10Am.toLocaleString("es-PE", { timeZone: TZ })} (Seek: ${seekOffsetSec}s -> inicio a las ${new Date(mockStartEpoch).toLocaleTimeString("es-PE", { timeZone: TZ })}).`);
+
   const env = {
     ...process.env,
     USE_FIREBASE: "true",
     FIRESTORE_DATABASE_ID: "test",
     STORAGE_BUCKET: "skip-bigotes-test",
     IS_LOCAL_SIMULATOR: "true",
+    STREAM_START_EPOCH: String(mockStartEpoch),
     MOCK_VIDEO_PATH: typeof args.video === "string" ? args.video : "data/recordings/barberia_stream_7h.mp4",
     MOCK_VIDEO_START_SS: typeof args.start === "string" ? args.start : "2420",
     MOCK_VIDEO_DURATION_SS: typeof args.duration === "string" ? args.duration : (process.env.MOCK_VIDEO_DURATION_SS || ""),

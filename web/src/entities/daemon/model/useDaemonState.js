@@ -36,6 +36,9 @@ export function useDaemonState() {
   let unsubscribeDaemon = null;
   let unsubscribeVisits = null;
   let sseEventSource = null;
+  let reconnectTimer = null;
+  let healthCheckTimer = null;
+  let isCheckingHealth = false;
 
   // URL base activa del backend / túnel
   const activeBackendUrl = computed(() => {
@@ -280,15 +283,94 @@ export function useDaemonState() {
     return combined.slice(0, 40);
   });
 
+  // Programar reconexión automática tras caída de SSE
+  const scheduleReconnect = (delayMs = 2500) => {
+    if (reconnectTimer) return;
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      if (!isConnected.value || !isYoloStreaming.value) {
+        if (yoloStreamUrl.value) {
+          console.log('[YOLO Stream] Intentando reconectar SSE tras intervalo...');
+          connectYoloStream();
+        }
+      }
+    }, delayMs);
+  };
+
+  // Sondeo liviano de presencia/salud del backend (/api/health)
+  const checkBackendHealth = async () => {
+    const backendUrl = activeBackendUrl.value;
+    if (!backendUrl || isCheckingHealth) return;
+    isCheckingHealth = true;
+    try {
+      const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      const timeoutId = controller ? setTimeout(() => controller.abort(), 2000) : null;
+
+      let res = null;
+      try {
+        res = await fetch(`${backendUrl}/api/health`, {
+          signal: controller ? controller.signal : undefined,
+          cache: 'no-store'
+        });
+      } catch (_) {
+        res = null;
+      } finally {
+        if (timeoutId) clearTimeout(timeoutId);
+      }
+
+      // Si /api/health retornase 404 en backend antiguo, probar '/'
+      if (res && res.status === 404) {
+        try {
+          res = await fetch(`${backendUrl}/`, { cache: 'no-store' });
+        } catch (_) {
+          res = null;
+        }
+      }
+
+      if (res && res.ok) {
+        if (!isConnected.value || !isYoloStreaming.value) {
+          console.log('[useDaemonState] Backend activo detectado en health check (200 OK). Conectando telemetría SSE...');
+          isConnected.value = true;
+          connectYoloStream();
+        }
+      }
+    } catch (_) {
+      // Backend temporalmente fuera de línea
+    } finally {
+      isCheckingHealth = false;
+    }
+  };
+
+  const startHealthCheckLoop = () => {
+    if (healthCheckTimer) return;
+    healthCheckTimer = setInterval(() => {
+      if (!isConnected.value || !isYoloStreaming.value) {
+        checkBackendHealth();
+      }
+    }, 2500);
+  };
+
+  const stopHealthCheckLoop = () => {
+    if (healthCheckTimer) {
+      clearInterval(healthCheckTimer);
+      healthCheckTimer = null;
+    }
+  };
+
   // Conexión directa SSE al servidor de telemetría YOLO (Latencia < 20ms)
   const connectYoloStream = () => {
     if (typeof window === 'undefined' || !window.EventSource) return;
     const url = yoloStreamUrl.value;
 
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+
     // Si no hay URL válida (ej. cloud sin túnel configurado), cerramos SSE y evitamos bucles de reconexión
     if (!url) {
       if (sseEventSource) {
-        sseEventSource.close();
+        try { sseEventSource.close(); } catch (_) {}
         sseEventSource = null;
       }
       isYoloStreaming.value = false;
@@ -298,7 +380,7 @@ export function useDaemonState() {
 
     try {
       if (sseEventSource) {
-        sseEventSource.close();
+        try { sseEventSource.close(); } catch (_) {}
         sseEventSource = null;
       }
       if (activeBackendUrl.value) {
@@ -318,6 +400,10 @@ export function useDaemonState() {
       sseEventSource.onopen = () => {
         isYoloStreaming.value = true;
         isConnected.value = true;
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
         console.log('[YOLO Stream] Flujo SSE conectado exitosamente.');
       };
 
@@ -384,9 +470,17 @@ export function useDaemonState() {
       sseEventSource.onerror = () => {
         isYoloStreaming.value = false;
         isConnected.value = false;
+        try {
+          if (sseEventSource) {
+            sseEventSource.close();
+            sseEventSource = null;
+          }
+        } catch (_) {}
+        scheduleReconnect(2500);
       };
     } catch (err) {
       console.warn('[YOLO Stream] Error iniciando SSE:', err);
+      scheduleReconnect(3000);
     }
   };
 
@@ -395,6 +489,16 @@ export function useDaemonState() {
     if (newUrl !== oldUrl) {
       console.log(`[YOLO Stream] URL de telemetría actualizada: ${newUrl || 'desconectada'}`);
       connectYoloStream();
+      if (!isConnected.value) {
+        checkBackendHealth();
+      }
+    }
+  });
+
+  // Reaccionar al cambio o activación de la URL base del backend
+  watch(activeBackendUrl, (newBackend) => {
+    if (newBackend && (!isConnected.value || !isYoloStreaming.value)) {
+      checkBackendHealth();
     }
   });
 
@@ -446,6 +550,12 @@ export function useDaemonState() {
 
     // 2. Conexión directa SSE con el daemon
     connectYoloStream();
+
+    // 3. Iniciar sondeo periódico de presencia/salud del backend
+    startHealthCheckLoop();
+    if (!isConnected.value) {
+      checkBackendHealth();
+    }
   };
 
   onMounted(() => {
@@ -456,9 +566,14 @@ export function useDaemonState() {
     if (unsubscribePrompt) unsubscribePrompt();
     if (unsubscribeDaemon) unsubscribeDaemon();
     if (sseEventSource) {
-      sseEventSource.close();
+      try { sseEventSource.close(); } catch (_) {}
       sseEventSource = null;
     }
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    stopHealthCheckLoop();
   });
 
   return {
@@ -480,6 +595,8 @@ export function useDaemonState() {
     totalHumans,
     occupancyKpis,
     logs,
-    addLog
+    addLog,
+    checkBackendHealth,
+    connectYoloStream
   };
 }

@@ -173,11 +173,26 @@ export function getRepresentativeFace(photos = [], embeddings = []) {
   }
 
   // 1. Jerarquía de selección de foto representativa orientada a Medoide:
-  // Nivel A: Foto erguida con dos ojos visibles (frontal, semi_left, semi_right) ordenada por medoidScore.
-  //          SIEMPRE gana sobre cualquier cara reclinada/tilted aunque la reclinada tenga mayor nitidez.
-  // Nivel B: Foto con dos ojos visibles aunque sea reclinada/tilted.
-  // Nivel C: Cualquier foto válida restante (perfiles o 1 ojo).
-  const isUprightWithTwoEyes = (c) => c.hasTwoEyes && ['frontal', 'semi_left', 'semi_right'].includes(c.pose);
+  // Tier 1: Foto frontal pura con dos ojos visibles (frontal) ordenada por medoidScore.
+  // Tier 2: Foto semi-lateral erguida con dos ojos visibles (semi_left, semi_right).
+  // Tier 3: Foto con dos ojos visibles reclinada/tilted.
+  // Prohibición estricta: Jamás coronar fotos monoculares o de 1 solo ojo.
+  const isFrontalWithTwoEyes = (c) => c.hasTwoEyes && c.pose === 'frontal';
+  const frontalCandidates = candidates.filter(isFrontalWithTwoEyes);
+  if (frontalCandidates.length > 0) {
+    frontalCandidates.sort((a, b) => b.medoidScore - a.medoidScore || b.compositeScore - a.compositeScore);
+    const best = frontalCandidates[0];
+    return {
+      photo: best.photo,
+      vector: best.vector,
+      score: best.score,
+      frontalityScore: best.frontalityScore,
+      centrality: best.centrality,
+      hasFrontalAnchor: true
+    };
+  }
+
+  const isUprightWithTwoEyes = (c) => c.hasTwoEyes && ['semi_left', 'semi_right'].includes(c.pose);
   const uprightCandidates = candidates.filter(isUprightWithTwoEyes);
   const twoEyesCandidates = candidates.filter(c => c.hasTwoEyes);
 
@@ -455,15 +470,13 @@ export async function finalizeCustomerAndAppointment({
 
   let bestSessionPhotoThumb = repApptThumbnail || (session.bestFaceHasTwoEyes ? session.thumbnailBase64 : null);
   if (!bestSessionPhotoThumb && Array.isArray(session.photos) && session.photos.length > 0) {
-    let maxSharp = -1;
-    for (const ph of session.photos) {
-      if (ph?.hasTwoEyes && ph?.thumbnailBase64) {
-        const s = Number(ph?.sharpnessScore || 0);
-        if (s > maxSharp) {
-          maxSharp = s;
-          bestSessionPhotoThumb = ph.thumbnailBase64;
-        }
-      }
+    const twoEyesPhotos = session.photos.filter(ph => ph?.hasTwoEyes && ph?.thumbnailBase64);
+    if (twoEyesPhotos.length > 0) {
+      const frontalPhoto = twoEyesPhotos.find(ph => ph.pose === 'frontal');
+      const semiPhoto = twoEyesPhotos.find(ph => ['semi_left', 'semi_right'].includes(ph.pose));
+      bestSessionPhotoThumb = (frontalPhoto || semiPhoto || twoEyesPhotos[0])?.thumbnailBase64;
+    } else {
+      bestSessionPhotoThumb = session.photos[0]?.thumbnailBase64 || null;
     }
   }
 
@@ -490,7 +503,7 @@ export async function finalizeCustomerAndAppointment({
     bestFaceStoragePath: session.bestFaceStoragePath,
     bestFaceScore: repApptScore || session.bestFaceScore || 0,
     thumbnailPath: session.bestFaceStoragePath || null,
-    thumbnailBase64: bestSessionPhotoThumb || session.photos[0]?.thumbnailBase64 || null,
+    thumbnailBase64: bestSessionPhotoThumb || null,
     photos: session.photos,
     embeddings: session.embeddings || [],
     representatives: sessionBank,
@@ -672,13 +685,13 @@ export async function executeSessionClosurePipeline({
 
   // Consolidación cronológica causal (Capa 13 con Cirugía Argon 4)
   // Evalúa la cita inmediata previa en la misma silla; si no consolida con ella únicamente porque fue un tramo corto
-  // o de pocas fotos (<= 4 fotos o <= 5 min, ej. cliente ocluido o inclinado), permite evaluar puente con la penúltima cita
+  // o de pocas fotos (<= 8 fotos o <= 6 min, ej. cliente ocluido o inclinado), permite evaluar puente con la penúltima cita
   // siempre que la cita intermedia NO sea una atención larga de otro cliente confirmado.
   const targetCandidateAppts = [];
   if (candidatePrevAppts.length > 0) {
     targetCandidateAppts.push(candidatePrevAppts[0]);
     const immediatePrev = candidatePrevAppts[0];
-    const isInterveningBridgeable = (immediatePrev.photos?.length || 0) <= 4 || (immediatePrev.durationMinutes || 0) <= 5;
+    const isInterveningBridgeable = (immediatePrev.photos?.length || 0) <= 8 || (immediatePrev.durationMinutes || 0) <= 6;
     if (candidatePrevAppts.length > 1 && isInterveningBridgeable) {
       targetCandidateAppts.push(candidatePrevAppts[1]);
     }
@@ -704,7 +717,7 @@ export async function executeSessionClosurePipeline({
     if (consolidatedAppt) {
       if (cIdx > 0 && targetCandidateAppts[0]) {
         const interAppt = targetCandidateAppts[0];
-        if ((interAppt.photos?.length || 0) <= 6 && (interAppt.durationMinutes || 0) <= 6) {
+        if ((interAppt.photos?.length || 0) <= 10 && (interAppt.durationMinutes || 0) <= 8) {
           bridgedInterveningAppt = interAppt;
         }
       }
@@ -742,6 +755,83 @@ export async function executeSessionClosurePipeline({
         reason: `Cita intermedia corta (${bridgedInterveningAppt.durationMinutes} min, ${bridgedInterveningAppt.photos?.length || 0} fotos) puenteada y absorbida dentro de ${consolidatedAppt.clientName} (#${consolidatedAppt.trackId}).`
       });
       logVerbal(`🧹 Cita intermedia ${bridgedInterveningAppt.id} (${bridgedInterveningAppt.durationMinutes} min, ${bridgedInterveningAppt.photos?.length || 0} fotos) absorbida y purgada tras puente de consolidación en ${session.chairName}.`, "info");
+    }
+
+    // Retroactive Chain Consolidation on Chair (Argon 4 - Módulo 2):
+    // Tras enriquecer consolidatedAppt con nuevas fotos/vectores, evaluar si ahora puede
+    // consolidarse retrospectivamente con la cita previa en la misma silla (ej. C8 o C7)
+    let keepCheckingChain = true;
+    while (keepCheckingChain) {
+      keepCheckingChain = false;
+      const curStartEpoch = consolidatedAppt.startedAtEpoch || (consolidatedAppt.startedAt ? new Date(consolidatedAppt.startedAt).getTime() : 0);
+      const precedingSameChairAppts = completedAppointments.filter(a =>
+        a.chairId === consolidatedAppt.chairId &&
+        a.id !== consolidatedAppt.id &&
+        (a.endedAtEpoch || (a.endedAt ? new Date(a.endedAt).getTime() : 0)) <= curStartEpoch
+      );
+      if (precedingSameChairAppts.length === 0) break;
+
+      const prevCandidate = precedingSameChairAppts[precedingSameChairAppts.length - 1];
+      const prevEndEpoch = prevCandidate.endedAtEpoch || (prevCandidate.endedAt ? new Date(prevCandidate.endedAt).getTime() : 0);
+      const gapToPrev = curStartEpoch - prevEndEpoch;
+
+      // Evaluar si la brecha es admisible en la misma silla (hasta 20 minutos / 1200s)
+      if (gapToPrev > 1200000 || gapToPrev < minMergeGap) break;
+
+      const chainEval = evaluateCausalConsolidation({
+        session: consolidatedAppt,
+        prevSameChairAppt: prevCandidate,
+        pastAppointments: completedAppointments,
+        customerService,
+        sqliteClient,
+        logVerbal
+      });
+
+      if (chainEval && chainEval.shouldMerge && (chainEval.metrics?.maxGallerySim >= 0.48 || chainEval.metrics?.centroidSim >= 0.48)) {
+        logVerbal(`🔗 [ChainConsolidation] Fusión en cadena exitosa en ${consolidatedAppt.chairId}: ${consolidatedAppt.id} (${consolidatedAppt.durationMinutes} min) se unifica retrospectivamente con ${prevCandidate.id} (${prevCandidate.durationMinutes} min, motivo: ${chainEval.reason}).`, "success");
+        const chained = await consolidateChairAppointment({
+          session: consolidatedAppt,
+          prevSameChairAppt: prevCandidate,
+          pastAppointments: completedAppointments,
+          durationMinutes: consolidatedAppt.durationMinutes,
+          now,
+          customerService,
+          sqliteClient,
+          db,
+          bucket,
+          logVerbal,
+          stats
+        });
+        if (chained) {
+          const oldId = consolidatedAppt.id;
+          const idx = completedAppointments.findIndex(a => a.id === oldId);
+          if (idx !== -1) completedAppointments.splice(idx, 1);
+          const vIdx = completedVisits.findIndex(a => a.id === oldId);
+          if (vIdx !== -1) completedVisits.splice(vIdx, 1);
+          if (sqliteClient?.deleteAppointment) {
+            try { sqliteClient.deleteAppointment(oldId); } catch (_) {}
+          } else if (customerService?.sqliteClient?.deleteAppointment) {
+            try { customerService.sqliteClient.deleteAppointment(oldId); } catch (_) {}
+          }
+          if (db) {
+            try { await db.doc(`camera_catcher_appointments/${oldId}`).delete(); } catch (_) {}
+          }
+          if (consolidatedAppt.clientId && consolidatedAppt.clientId !== chained.clientId && !String(consolidatedAppt.clientId).startsWith("staff_")) {
+            await customerService?.deleteCustomer?.(consolidatedAppt.clientId, { db });
+          }
+          trackBlockManager?.updateBlocksBySession?.({ id: oldId }, {
+            status: "fusionado",
+            statusLabel: `Absorbido en ${chained.clientName} (#${chained.trackId})`,
+            appointmentId: chained.id,
+            clientName: chained.clientName,
+            mergedWithTrackId: chained.trackId,
+            mergedWithLabel: `${chained.clientName} (#${chained.trackId})`,
+            reason: `Unificación en cadena retrospectiva: cita previa en silla absorbida dentro de ${chained.clientName} (#${chained.trackId}, total ${chained.durationMinutes} min).`
+          });
+          consolidatedAppt = chained;
+          keepCheckingChain = true;
+        }
+      }
     }
     const m = consolidatedAppt._lastMergeMetrics || {};
     const mergeReasonText = consolidatedAppt._lastMergeReason || "continuidad biométrica";

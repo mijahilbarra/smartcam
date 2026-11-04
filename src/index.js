@@ -118,7 +118,7 @@ app.use((req, res, next) => {
   next();
 });
 
-app.get("/", (req, res) => {
+app.get(["/", "/api/health", "/health"], (req, res) => {
   res.json({
     status: "ok",
     service: "iot-camera-catcher",

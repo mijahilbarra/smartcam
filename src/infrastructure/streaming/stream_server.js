@@ -365,7 +365,9 @@ export class StreamServer {
       }
 
       this.framesEmitted = 0;
-      this.streamStartEpoch = Date.now() + (seekOffset * 1000);
+      this.streamStartEpoch = process.env.STREAM_START_EPOCH
+        ? parseInt(process.env.STREAM_START_EPOCH, 10)
+        : (Date.now() + (seekOffset * 1000));
       this.streamEndedAt = null;
       this.isFramePendingConsumption = false;
       this.ffmpegProcess = spawn("ffmpeg", args, { stdio: ["ignore", "pipe", "pipe"] });

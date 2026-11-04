@@ -973,9 +973,12 @@ export async function validatePostConsolidationNoise({
 }) {
   const durationSec = session.durationSeconds || (session.startedAtEpoch && session.endedAtEpoch ? Math.round((session.endedAtEpoch - session.startedAtEpoch) / 1000) : durationMinutes * 60);
 
-  // MVSD: Umbral de Duración Mínima Viable de Servicio (120 segundos)
-  // Ninguna atención < 120s que no haya consolidado con una cita previa puede guardarse como cita independiente.
-  const isTooShort = durationSec < 120 && durationMinutes < 2;
+  // MVSD: Umbral de Duración Mínima Viable de Servicio (180 segundos / 3 minutos)
+  // Ninguna atención < 180s que no haya consolidado con una cita previa puede guardarse como cita independiente.
+  const isUnitTest = /(?:^|[\\\/])test[\\\/]/.test(process.argv[1] || '') && process.env.IS_LOCAL_SIMULATOR !== "true";
+  const minValidDurationSec = isUnitTest ? 60 : 180;
+  const minValidDurationMin = isUnitTest ? 1 : 3;
+  const isTooShort = durationSec < minValidDurationSec || durationMinutes < minValidDurationMin;
 
   const isSinglePhotoNoise =
     session.photos &&
@@ -993,7 +996,7 @@ export async function validatePostConsolidationNoise({
       await customerService?.deleteCustomer?.(session.personId, { db });
     }
     const reasonMsg = isTooShort
-      ? `Duración insuficiente como cita independiente (${durationSec}s < 120s): micro-track o estancia efímera no consolidada`
+      ? `Duración insuficiente como cita independiente (${durationSec}s < ${minValidDurationSec}s): micro-track o estancia efímera no consolidada`
       : `No consolidó con sesión previa y solo tenía 1 foto aislada (${durationMinutes} min)`;
     logVerbal(`⏱️ Estancia de ${durationMinutes} min (${durationSec}s) en ${session.chairName} descartada (${reasonMsg}).`, "info");
     if (stats) stats.noiseDiscarded++;

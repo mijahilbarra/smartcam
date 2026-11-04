@@ -142,7 +142,7 @@ export async function captureSnapshotFromRtsp({
   localOutputPath,
   timeoutMs = 15000
 }) {
-  const cmd = `ffmpeg -y -rtsp_transport tcp -analyzeduration 15000000 -probesize 1000000 -i "${rtspUrl}" -vframes 1 -f image2 "${localOutputPath}"`;
+  const cmd = `ffmpeg -y -rtsp_transport tcp -analyzeduration 10000000 -probesize 1000000 -i "${rtspUrl}" -an -vframes 1 -q:v 2 -f image2 "${localOutputPath}"`;
   try {
     await execPromise(cmd, { timeout: timeoutMs, killSignal: "SIGKILL" });
   } catch (err) {
@@ -158,9 +158,9 @@ export async function captureSnapshotFromRtsp({
 
 /**
  * Estrategia de captura adaptativa: Intenta RTSP local rápido (< 300ms);
- * si el daemon no está listo, recurre a contenedor efímero.
+ * si el daemon no está listo o falla, recurre a contenedor efímero Neolink image.
  */
-export async function captureSnapshotAdaptive(options) {
+export async function captureSnapshotAdaptive(options = {}) {
   try {
     return await captureSnapshotFromRtsp(options);
   } catch (err) {
@@ -184,7 +184,7 @@ export async function captureSnapshotAdaptive(options) {
  * @returns {Promise<Buffer>}
  */
 export async function captureSnapshotWithDocker({
-  tomlPath,
+  tomlPath = process.env.TOML_PATH || "/opt/camera-catcher/neolink.toml",
   localOutputPath,
   containerName = DEFAULT_CONTAINER_NAME,
   timeoutMs = 45000,
@@ -193,25 +193,35 @@ export async function captureSnapshotWithDocker({
   await killCaptureContainer(containerName);
 
   const filename = localOutputPath.split("/").pop();
-  const cmd = `docker run --rm --name ${containerName} --init --stop-timeout 5 -v "${tomlPath}":/etc/neolink.toml -v /tmp:/out quantumentangledandy/neolink:latest neolink image -c /etc/neolink.toml --use-stream -f /out/${filename} ${cameraName}`;
+  const baseName = filename.replace(/\.(jpg|jpeg)$/i, "");
+  const cmd = `docker run --rm --name ${containerName} --init --stop-timeout 5 -v "${tomlPath}":/etc/neolink.toml -v /tmp:/out quantumentangledandy/neolink:latest neolink image -c /etc/neolink.toml --use-stream -f /out/${baseName}.jpeg ${cameraName}`;
 
   try {
     await execPromise(cmd, { timeout: timeoutMs });
   } catch (err) {
     await killCaptureContainer(containerName);
-    try {
-      await fs.stat(localOutputPath);
-    } catch (_) {
-      throw new Error(`Neolink capture failed: ${err.message}`);
-    }
   }
 
-  const buffer = await fs.readFile(localOutputPath);
+  // Verificar si existe como .jpeg o .jpg
+  let buffer = null;
+  const possiblePaths = [
+    localOutputPath,
+    `/tmp/${baseName}.jpeg`,
+    `/tmp/${baseName}.jpg`,
+    `/tmp/${filename}`
+  ];
 
-  // Limpiar archivo temporal en disco
-  try {
-    await fs.unlink(localOutputPath);
-  } catch (_) {}
+  for (const p of possiblePaths) {
+    try {
+      buffer = await fs.readFile(p);
+      try { await fs.unlink(p); } catch (_) {}
+      break;
+    } catch (_) {}
+  }
+
+  if (!buffer) {
+    throw new Error(`Neolink capture failed: output file not found in ${possiblePaths.join(", ")}`);
+  }
 
   return buffer;
 }

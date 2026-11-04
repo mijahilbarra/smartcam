@@ -276,16 +276,17 @@ export function hasTwoEyesVisible(landmarks, boxNorm = null, pose = null) {
     const minEyeX = Math.min(leftEye[0], rightEye[0]);
     const maxEyeX = Math.max(leftEye[0], rightEye[0]);
     const eyeSpan = maxEyeX - minEyeX;
-    if (eyeSpan < 0.02 * boxW) return false;
+    if (eyeSpan < 0.035 * boxW) return false;
 
     const dxL = Math.abs(nose[0] - leftEye[0]);
     const dxR = Math.abs(rightEye[0] - nose[0]);
 
     // Verificación anatómica: la nariz DEBE estar horizontalmente entre ambos ojos
     // y ambos ojos deben tener distancia mínima respecto a la nariz.
-    // En un perfil estricto de 1 solo ojo (90°), la nariz sobresale fuera del eje o se colapsa contra el ojo lejano.
-    const isNoseBetween = (nose[0] > minEyeX + 0.06 * eyeSpan) && (nose[0] < maxEyeX - 0.06 * eyeSpan);
-    const hasBothEyesSeparated = (dxL >= 0.06 * eyeSpan) && (dxR >= 0.06 * eyeSpan);
+    // En un perfil estricto de 1 solo ojo o giro extremo donde un ojo está ocluido o en el borde,
+    // la nariz sobresale fuera del eje o se colapsa contra el ojo lejano (dx < 0.10 * eyeSpan).
+    const isNoseBetween = (nose[0] > minEyeX + 0.10 * eyeSpan) && (nose[0] < maxEyeX - 0.10 * eyeSpan);
+    const hasBothEyesSeparated = (dxL >= 0.10 * eyeSpan) && (dxR >= 0.10 * eyeSpan);
 
     // Verificación de proporción vertical ojos-nariz-boca (Anti-oclusión de frente/ojos por mano del barbero):
     // Si la mano del barbero cubre la frente/ojos, los landmarks oculares se desplazan artificialmente hacia la punta de la nariz
