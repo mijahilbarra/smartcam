@@ -341,12 +341,14 @@ export function evaluateCausalConsolidation({
     ? (process.env.SAME_POSE_THRESHOLD ? parseFloat(process.env.SAME_POSE_THRESHOLD) : 0.58)
     : (process.env.CROSS_POSE_THRESHOLD ? parseFloat(process.env.CROSS_POSE_THRESHOLD) : 0.48);
 
-  const isHomologousDifferentPerson = isSamePoseRep &&
+  const isHomologousDifferentPerson = !isMicroGapSameChair &&
+    isSamePoseRep &&
     scoreA >= 60 && scoreB >= 60 &&
     repSim !== null && repSim < 0.50 &&
     contrastRatio < 1.30 &&
     centroidSim < 0.45 &&
-    robustSim < 0.45;
+    robustSim < 0.45 &&
+    maxGallerySim < 0.48;
 
   let isSamePerson = false;
   let mergeReason = '';
@@ -363,6 +365,9 @@ export function evaluateCausalConsolidation({
   if (hasRobustGalleryIdentity) {
     isSamePerson = true;
     mergeReason = `galleryManifoldIdentity (centroid=${centroidSim.toFixed(3)}, maxGallery=${maxGallerySim.toFixed(3)}, top3Avg=${(metrics.top3AvgSim || 0).toFixed(3)} >= 0.48)`;
+  } else if (maxGallerySim >= 0.65 || (maxBiometric >= 0.65 && (maxGallerySim >= 0.48 || centroidSim >= 0.45))) {
+    isSamePerson = true;
+    mergeReason = `highConfidenceGalleryIdentity (maxGallery=${maxGallerySim.toFixed(3)}, maxBiometric=${maxBiometric.toFixed(3)} >= 0.65)`;
   } else if (isFinishingPhase && (
     (centroidSim >= 0.48 && maxGallerySim >= 0.55) ||
     maxHomologousSim >= 0.52

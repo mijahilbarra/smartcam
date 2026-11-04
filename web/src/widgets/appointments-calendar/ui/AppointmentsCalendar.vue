@@ -19,6 +19,17 @@ const { workingHours } = useSettings();
 // Altura visual por hora en la cuadrícula (px por hora, ~1.2px por minuto)
 const HOUR_HEIGHT = 72;
 
+// Helper para obtener YYYY-MM-DD en fecha local real (evita desfase UTC de toISOString)
+const getLocalDateString = (val) => {
+  if (!val) return '';
+  const d = new Date(val);
+  if (isNaN(d.getTime())) return '';
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+
 // Control de semana actual (fecha base de la semana seleccionada)
 const currentWeekBase = ref(new Date());
 
@@ -42,13 +53,13 @@ const weekDays = computed(() => {
       dateObj: d,
       name: dayNames[i],
       dateFormatted: `${d.getDate()}/${d.getMonth() + 1}`,
-      isoDate: d.toISOString().split('T')[0]
+      isoDate: getLocalDateString(d)
     });
   }
   return days;
 });
 
-const todayIso = computed(() => new Date().toISOString().split('T')[0]);
+const todayIso = computed(() => getLocalDateString(new Date()));
 
 const weekRangeLabel = computed(() => {
   if (weekDays.value.length === 0) return '';
@@ -89,7 +100,7 @@ const filteredAppointments = computed(() => {
 
   return appointments.value.filter((apt) => {
     if (!apt.startTime) return false;
-    const aptDateStr = apt.startTime.split('T')[0];
+    const aptDateStr = getLocalDateString(apt.startTime);
 
     // Filtro por rango semanal
     if (aptDateStr < startIso || aptDateStr > endIso) return false;
@@ -338,7 +349,7 @@ const positionedAppointmentsByDay = computed(() => {
   });
 
   filteredAppointments.value.forEach((apt) => {
-    const dStr = apt.startTime.split('T')[0];
+    const dStr = getLocalDateString(apt.startTime);
     if (map[dStr]) {
       map[dStr].push(apt);
     }
