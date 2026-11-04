@@ -46,9 +46,12 @@ const showBiometry = ref(true);
 const streamKey = ref(Date.now());
 const streamActive = ref(true);
 const streamLoaded = ref(false);
+const streamLoadingTimeout = ref(false);
 const currentLoadedImage = ref(null);
 let snapshotIntervalId = null;
+let watchdogIntervalId = null;
 let isFetchingSnapshot = false;
+let lastStreamReloadTimestamp = Date.now();
 
 const fetchSnapshotFallback = async () => {
   const backend = activeBackendUrl.value;
@@ -70,6 +73,10 @@ const fetchSnapshotFallback = async () => {
     });
     currentLoadedImage.value = img;
     renderCanvas();
+    // Si snapshot respondió, el backend está emitiendo imágenes. Si el stream no estaba cargado, forzar streamActive.
+    if (!streamActive.value && streamUrl.value) {
+      streamActive.value = true;
+    }
   } catch (err) {
     // Continuar polling silenciosamente si el backend aún no responde
   } finally {
@@ -97,20 +104,23 @@ const stopSnapshotFallback = () => {
 const onStreamLoad = () => {
   streamLoaded.value = true;
   streamActive.value = true;
+  streamLoadingTimeout.value = false;
   renderCanvas();
 };
 
 const reloadStream = () => {
   if (!streamUrl.value) return;
+  lastStreamReloadTimestamp = Date.now();
   streamLoaded.value = false;
   streamActive.value = false;
+  streamLoadingTimeout.value = false;
   streamKey.value = Date.now();
   fetchSnapshotFallback();
   setTimeout(() => {
     if (streamUrl.value) {
       streamActive.value = true;
     }
-  }, 150);
+  }, 100);
 };
 
 const onStreamError = () => {
@@ -119,21 +129,74 @@ const onStreamError = () => {
   // El fallback de snapshot toma el relevo inmediatamente
   fetchSnapshotFallback();
   if (!streamUrl.value) return;
-  console.info('[LiveStream] Reconectando flujo MJPEG...');
+  console.info('[DaemonLiveMonitor] Corte o error en flujo MJPEG. Programando reconexión...');
   setTimeout(() => {
-    if (streamUrl.value) {
-      streamKey.value = Date.now();
-      streamActive.value = true;
+    if (streamUrl.value && (!streamActive.value || !streamLoaded.value)) {
+      reloadStream();
     }
-  }, 2500);
+  }, 2000);
 };
+
+// Watchdog en el cliente para supervisar y autorecuperar el stream de video
+const checkStreamWatchdog = () => {
+  const now = Date.now();
+  if (!streamUrl.value) return;
+
+  // 1. Si streamActive es true pero lleva más de 5 segundos sin cargar el stream
+  if (streamActive.value && !streamLoaded.value) {
+    if (now - lastStreamReloadTimestamp > 5000) {
+      console.warn('[DaemonLiveMonitor Watchdog] Stream activo sin fotogramas cargados tras 5s. Refrescando stream...');
+      streamLoadingTimeout.value = true;
+      reloadStream();
+      return;
+    }
+  }
+
+  // 2. Si el backend o SSE están activos pero el stream MJPEG no ha cargado o quedó inactivo
+  if ((isConnected.value || isYoloStreaming.value) && (!streamLoaded.value || !streamActive.value)) {
+    if (now - lastStreamReloadTimestamp > 3000) {
+      console.log('[DaemonLiveMonitor Watchdog] Backend detectado pero stream desconectado. Forzando re-enganche de video...');
+      reloadStream();
+      return;
+    }
+  }
+};
+
+const startWatchdog = () => {
+  if (watchdogIntervalId) return;
+  watchdogIntervalId = setInterval(checkStreamWatchdog, 2500);
+};
+
+const stopWatchdog = () => {
+  if (watchdogIntervalId) {
+    clearInterval(watchdogIntervalId);
+    watchdogIntervalId = null;
+  }
+};
+
+// Re-enganche inmediato de video cuando el backend o SSE vuelven a la vida
+watch([isConnected, isYoloStreaming], ([newConn, newYolo], [oldConn, oldYolo]) => {
+  const becameConnected = (!oldConn && newConn) || (!oldYolo && newYolo);
+  if (becameConnected || ((newConn || newYolo) && !streamLoaded.value)) {
+    console.log('[DaemonLiveMonitor] Backend o telemetría activa detectada. Re-enganchando transmisión de video...');
+    reloadStream();
+  }
+});
+
+// Si llega telemetría fresca (nuevo docId o frame) pero el stream de video no está cargado
+watch(() => canvasImageData.value.docId, (newDocId, oldDocId) => {
+  if (newDocId && newDocId !== oldDocId) {
+    if (!streamLoaded.value || !streamActive.value) {
+      console.log(`[DaemonLiveMonitor] Telemetría fresca detectada (${newDocId}). Forzando refresco de video...`);
+      reloadStream();
+    }
+  }
+});
 
 // Reconectar y reactivar el stream automáticamente cuando streamUrl cambie
 watch(streamUrl, (newUrl) => {
   if (newUrl) {
-    streamActive.value = true;
-    streamLoaded.value = false;
-    streamKey.value = Date.now();
+    reloadStream();
     startSnapshotFallback();
   } else {
     streamActive.value = false;
@@ -576,11 +639,16 @@ watch(() => canvasImageData.value, (newData) => {
 onMounted(() => {
   startAnimationLoop();
   startSnapshotFallback();
+  startWatchdog();
+  if (isConnected.value || isYoloStreaming.value) {
+    reloadStream();
+  }
 });
 
 onUnmounted(() => {
   stopAnimationLoop();
   stopSnapshotFallback();
+  stopWatchdog();
 });
 </script>
 
@@ -681,10 +749,10 @@ onUnmounted(() => {
         <!-- Viewport Toolbar -->
         <div class="flex flex-wrap items-center justify-between gap-3 bg-slate-950/80 border border-slate-800 rounded-xl px-3 py-2 text-xs">
           <div class="flex items-center gap-2 text-slate-300">
-            <span class="live-dot-pulse-red"></span>
+            <span :class="streamActive && streamLoaded ? 'live-dot-pulse-red' : 'w-2 h-2 rounded-full bg-amber-400 animate-pulse'"></span>
             <span class="font-medium text-white">Transmisión en Vivo</span>
             <span class="text-slate-500">•</span>
-            <span class="font-mono text-slate-400">{{ streamActive && streamLoaded ? 'Stream MJPEG' : 'Fotograma Continuo (Snapshot)' }}</span>
+            <span class="font-mono text-slate-400">{{ streamActive && streamLoaded ? 'Stream MJPEG' : (currentLoadedImage ? 'Fotograma Continuo (Snapshot)' : (isConnected ? 'Sincronizando...' : 'Reconectando...')) }}</span>
             <span class="text-slate-500">•</span>
             <div class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-mono bg-emerald-950/70 text-emerald-400 border border-emerald-500/30 select-none">
               <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
@@ -753,6 +821,17 @@ onUnmounted(() => {
             class="absolute inset-0 w-full h-full object-contain pointer-events-none z-10"
           ></canvas>
 
+          <!-- Indicador flotante sutil mientras se sincroniza el stream o se reconecta -->
+          <div
+            v-if="(!streamLoaded || !streamActive) && (streamUrl || activeBackendUrl)"
+            class="absolute top-3 left-3 z-20 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-950/85 border border-amber-500/30 text-amber-300 text-xs shadow-md backdrop-blur-sm pointer-events-none"
+          >
+            <span class="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span>
+            <span class="font-medium">
+              {{ isConnected || isYoloStreaming ? 'Sincronizando señal de video...' : 'Reconectando transmisión...' }}
+            </span>
+          </div>
+
           <!-- Estado informativo: Túnel HTTPS no configurado en entorno cloud -->
           <div
             v-if="!activeBackendUrl && !IS_LOCAL_ENV"
@@ -779,18 +858,33 @@ onUnmounted(() => {
             </AppButton>
           </div>
 
-          <!-- Fallback when stream is inactive and no image is loaded yet -->
+          <!-- Fallback cuando no hay stream cargado NI snapshot previo disponible -->
           <div
-            v-else-if="!streamActive && !currentLoadedImage && !canvasImageData.imageUrl"
-            class="absolute inset-0 flex flex-col items-center justify-center text-center p-6 bg-slate-950/85 text-slate-400 gap-2 z-20"
+            v-else-if="!streamLoaded && !currentLoadedImage && (activeBackendUrl || IS_LOCAL_ENV)"
+            class="absolute inset-0 flex flex-col items-center justify-center text-center p-6 bg-slate-950/90 text-slate-400 gap-3 z-20"
           >
-            <div class="p-3 bg-slate-900 rounded-full border border-slate-800 text-slate-400">
-              <AppIcon name="videocam" :size="32" />
+            <div class="relative flex items-center justify-center">
+              <div class="w-12 h-12 rounded-full border-2 border-slate-800 border-t-amber-500 animate-spin"></div>
+              <div class="absolute inset-0 flex items-center justify-center text-amber-400">
+                <AppIcon name="videocam" :size="22" />
+              </div>
             </div>
-            <h3 class="text-base font-semibold text-slate-200">Reconectando Transmisión</h3>
-            <p class="text-xs max-w-md text-slate-400">
-              Sincronizando flujo de video en vivo del Daemon...
-            </p>
+            <div class="flex flex-col gap-1 items-center max-w-xs">
+              <h3 class="text-sm font-semibold text-slate-200">
+                {{ isConnected || isYoloStreaming ? 'Detectando flujo de video...' : 'Reconectando Transmisión' }}
+              </h3>
+              <p class="text-xs text-slate-400">
+                {{ isConnected || isYoloStreaming ? 'Daemon en línea. Esperando cuadros de la cámara...' : 'Buscando señal del servidor de streaming...' }}
+              </p>
+            </div>
+            <button
+              type="button"
+              @click="reloadStream"
+              class="mt-1 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium border border-slate-700 transition flex items-center gap-1.5 cursor-pointer"
+            >
+              <AppIcon name="refresh" :size="14" />
+              <span>Reintentar ahora</span>
+            </button>
           </div>
         </div>
 
@@ -798,8 +892,8 @@ onUnmounted(() => {
         <div class="flex flex-wrap items-center gap-2 pt-1">
           <StatPill
             label="Transmisión"
-            :value="!streamUrl && !IS_LOCAL_ENV ? 'Sin Túnel' : (streamActive && streamLoaded ? 'En Vivo' : 'Fotograma Continuo')"
-            :value-class="!streamUrl && !IS_LOCAL_ENV ? 'text-amber-400 font-medium' : (streamActive && streamLoaded ? 'text-red-400 font-bold' : 'text-emerald-400 font-medium')"
+            :value="!streamUrl && !IS_LOCAL_ENV ? 'Sin Túnel' : (streamActive && streamLoaded ? 'En Vivo' : (currentLoadedImage ? 'Fotograma Continuo' : (isConnected ? 'Sincronizando...' : 'Reconectando...')))"
+            :value-class="!streamUrl && !IS_LOCAL_ENV ? 'text-amber-400 font-medium' : (streamActive && streamLoaded ? 'text-red-400 font-bold' : (currentLoadedImage ? 'text-emerald-400 font-medium' : 'text-amber-400 font-medium'))"
           />
           <StatPill
             label="YOLO Streaming"
