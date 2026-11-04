@@ -190,7 +190,7 @@ export async function heartbeatStep({
           const spatialRes = validateSpatialChairAnchor(b, b.chairId || trackBlockManager.chairZone, {
             quadrants: trackBlockManager.quadrants,
             minInsideRatio: 0.50,
-            minY2: 550,
+            minY2: 495,
             allowEmptyBoxes: true
           });
           isInsideChair = spatialRes.isValid;

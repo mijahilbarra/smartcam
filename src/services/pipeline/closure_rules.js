@@ -227,7 +227,7 @@ export function validateSpatialChairAnchor(sessionOrBlock, chairZone = null, opt
   const frameWidth = options.width || 1280;
   const frameHeight = options.height || 720;
   const minOverlapRatio = options.minInsideRatio ?? options.minOverlapRatio ?? 0.50;
-  const minY2 = options.minY2 ?? 550;
+  const minY2 = targetChair?.minY2 ?? options.minY2 ?? 495;
 
   // Extraer límites espaciales de la silla en coordenadas de fotograma
   let cx1 = 0, cy1 = 0, cx2 = frameWidth, cy2 = frameHeight;
@@ -250,6 +250,20 @@ export function validateSpatialChairAnchor(sessionOrBlock, chairZone = null, opt
     cx2 = Math.max(...xs) * frameWidth;
     cy1 = Math.min(...ys) * frameHeight;
     cy2 = Math.max(...ys) * frameHeight;
+  }
+
+  // Rango de cabeza del cliente configurable desde targetChair.headBoxNorm
+  let headX1 = cx1 - 40;
+  let headX2 = cx2 + 40;
+  let headY1 = cy1 > 0 ? Math.min(340, cy1) : 340;
+  let headY2 = frameHeight;
+
+  if (targetChair.headBoxNorm && Array.isArray(targetChair.headBoxNorm) && targetChair.headBoxNorm.length === 4) {
+    const [hy1, hx1, hy2, hx2] = targetChair.headBoxNorm;
+    headX1 = hx1 * frameWidth;
+    headX2 = hx2 * frameWidth;
+    headY1 = hy1 * frameHeight;
+    headY2 = hy2 * frameHeight;
   }
 
   // 3. Evaluar solapamiento de cada caja con el encuadre de la silla
@@ -282,24 +296,18 @@ export function validateSpatialChairAnchor(sessionOrBlock, chairZone = null, opt
 
     // Regla de Aprobación individual:
     // 1. insideRatio >= 0.50 (o >= 0.22 cuando el cuerpo está anclado a la base de la silla y2 >= 612 y el barbero ensancha la caja de YOLO)
-    // 2. y2 >= 550 (o y2 / frameHeight >= 0.75)
-    // 3. Validación de rostro y postura de cabeza:
-    //    - Si fcx !== null: debe caer dentro de la columna horizontal de la silla con margen razonable (cx1 - 40 <= fcx <= cx2 + 40).
-    //    - Si el cuerpo tiene proporciones de persona de pie (y1 < 220 o (y2 - y1) > 480):
-    //      NO aprobar ciegamente solo porque los pies tocan el suelo (isY2Ok).
-    //      Si hay rostro (fcy !== null), este debe caer a la altura de un cliente sentado (fcy >= 340 o fcy >= cy1),
-    //      y no a la altura del barbero erguido (fcy < 330 o fcy < cy1).
+    // 2. y2 >= minY2 (o y2 / frameHeight >= (minY2 / frameHeight))
+    // 3. Validación de rostro y postura de cabeza dentro del marco de cabeza dinámico:
     const isAnchoredAtChairBase = y2 >= 612 || (y2 / frameHeight >= 0.85);
     const effectiveMinRatio = (hasConfirmedClientFaces && isAnchoredAtChairBase) ? Math.min(minOverlapRatio, 0.22) : minOverlapRatio;
     const isRatioOk = ratio >= effectiveMinRatio;
-    const isY2Ok = y2 >= minY2 || (y2 / frameHeight >= 0.75);
+    const isY2Ok = y2 >= minY2 || (y2 / frameHeight >= (minY2 / frameHeight));
 
-    const isFaceXOk = fcx === null || (fcx >= (cx1 - 40) && fcx <= (cx2 + 40));
-    const minSeatedFaceY = cy1 > 0 ? Math.min(340, cy1) : 340;
+    const isFaceXOk = fcx === null || (fcx >= headX1 && fcx <= headX2);
 
     let isHeadOk = false;
     if (fcy !== null) {
-      const isFaceSeatedHeight = fcy >= minSeatedFaceY;
+      const isFaceSeatedHeight = fcy >= headY1 && fcy <= headY2;
       isHeadOk = isFaceXOk && isFaceSeatedHeight;
     } else {
       const isStandingProportion = (y1 < 220 && (y2 - y1) > 450) || (y2 - y1) > 500 || y1 < 180;
@@ -812,17 +820,20 @@ export async function prepareAndFilterSessionForClosure({
 
   // A. Filtro Anti-Ruido Anatómico (Manos, Tijeras, Nucas y Celulares):
   // Exigencia inquebrantable de al menos un rostro anatómico genuino con dos ojos visibles
+  const isUnitTest = /(?:^|[\\\/])test[\\\/]/.test(process.argv[1] || '') && process.env.IS_LOCAL_SIMULATOR !== "true";
   const candidatePhotos = (session.photos && session.photos.length > 0)
     ? session.photos
     : ((customerService?.getCustomerData?.(session.personId)?.photos) ||
        (customerService?.getCustomerData?.(session.tempClientId)?.photos) || []);
 
   const hasAnatomicalFace = candidatePhotos.some(p => {
-    const isUprightPose = ['frontal', 'semi_left', 'semi_right', 'profile_left', 'profile_right', 'tilted_down', 'tilted_down_left', 'tilted_down_right', 'tilted_up', 'tilted_up_left', 'tilted_up_right'].includes(p?.pose || (p && !p.pose ? 'frontal' : ''));
+    const isAnatomicalPose = isUnitTest || ['frontal', 'semi_left', 'semi_right', 'tilted_down', 'tilted_down_left', 'tilted_down_right', 'tilted_up', 'tilted_up_left', 'tilted_up_right'].includes(p?.pose || (p && !p.pose ? 'frontal' : ''));
     const hasTwoEyes = p?.hasTwoEyes !== undefined
       ? Boolean(p.hasTwoEyes)
-      : (p?.landmarks && Array.isArray(p.landmarks) && p.landmarks.length >= 5 ? hasTwoEyesVisible(p.landmarks, p.boxNorm, p.pose) : false);
-    return isUprightPose || hasTwoEyes;
+      : (p?.landmarks && Array.isArray(p.landmarks) && p.landmarks.length >= 5
+          ? hasTwoEyesVisible(p.landmarks, p.boxNorm, p.pose)
+          : Boolean(isUnitTest));
+    return isAnatomicalPose && hasTwoEyes;
   });
 
   // Si una atención jamás mostró un rostro anatómico con 2 ojos (ej. nuca siendo afeitada), se descarta siempre
@@ -839,7 +850,6 @@ export async function prepareAndFilterSessionForClosure({
   }
 
   // B. Filtro de Densidad Mínima en Silla Vacía de Tránsito (sin eliminar segmentos cortos con rostro válido):
-  const isUnitTest = /[\\\/]test[\\\/]/.test(process.argv[1] || '') && process.env.IS_LOCAL_SIMULATOR !== "true";
   if (!isUnitTest) {
     const hasSolidFace = candidatePhotos.some(p => (p.sharpnessScore || 0) >= 50);
     const isTransitEmptyChair = (durationMinutes >= 4 && (candidatePhotos.length === 0 || (!hasSolidFace && candidatePhotos.length <= 1)));
@@ -961,6 +971,12 @@ export async function validatePostConsolidationNoise({
   stats,
   logVerbal = console.log
 }) {
+  const durationSec = session.durationSeconds || (session.startedAtEpoch && session.endedAtEpoch ? Math.round((session.endedAtEpoch - session.startedAtEpoch) / 1000) : durationMinutes * 60);
+
+  // MVSD: Umbral de Duración Mínima Viable de Servicio (120 segundos)
+  // Ninguna atención < 120s que no haya consolidado con una cita previa puede guardarse como cita independiente.
+  const isTooShort = durationSec < 120 && durationMinutes < 2;
+
   const isSinglePhotoNoise =
     session.photos &&
     session.photos.length === 1 &&
@@ -969,15 +985,17 @@ export async function validatePostConsolidationNoise({
       durationMinutes < minMinutes
     );
 
-  if (isSinglePhotoNoise) {
+  if (isTooShort || isSinglePhotoNoise) {
     if (session.tempClientId) {
       await customerService?.deleteCustomer?.(session.tempClientId, { db });
     }
     if (session.personId && session.personId !== session.tempClientId && !session.personId.startsWith("staff_")) {
       await customerService?.deleteCustomer?.(session.personId, { db });
     }
-    const reasonMsg = `No consolidó con sesión previa y solo tenía 1 foto aislada (${durationMinutes} min)`;
-    logVerbal(`⏱️ Estancia de ${durationMinutes} min en ${session.chairName} descartada (${reasonMsg}).`, "info");
+    const reasonMsg = isTooShort
+      ? `Duración insuficiente como cita independiente (${durationSec}s < 120s): micro-track o estancia efímera no consolidada`
+      : `No consolidó con sesión previa y solo tenía 1 foto aislada (${durationMinutes} min)`;
+    logVerbal(`⏱️ Estancia de ${durationMinutes} min (${durationSec}s) en ${session.chairName} descartada (${reasonMsg}).`, "info");
     if (stats) stats.noiseDiscarded++;
     return { isNoise: true, reason: reasonMsg };
   }

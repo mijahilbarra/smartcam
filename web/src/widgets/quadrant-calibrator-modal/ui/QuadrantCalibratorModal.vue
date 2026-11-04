@@ -135,6 +135,37 @@ const getCornerPoint = (q, cornerIdx) => {
   };
 };
 
+// Marco editable dinámico de cabeza de cliente para sillas
+const getHeadBox = (q) => {
+  if (!q.headBoxNorm || !Array.isArray(q.headBoxNorm) || q.headBoxNorm.length !== 4) {
+    const box = q.boxNorm || [0.48, 0.34, 1.0, 0.74];
+    q.headBoxNorm = [
+      Number(Math.max(0, box[0] - 0.05).toFixed(3)),
+      Number(Math.max(0, box[1] - 0.04).toFixed(3)),
+      Number(Math.min(1.0, box[0] + 0.38).toFixed(3)),
+      Number(Math.min(1.0, box[3] + 0.04).toFixed(3))
+    ];
+  }
+  return q.headBoxNorm;
+};
+
+const updateHeadBox = (q) => {
+  if (q.headBoxNorm && Array.isArray(q.headBoxNorm)) {
+    q.headBoxNorm = q.headBoxNorm.map(v => Number(Number(v).toFixed(3)));
+  }
+};
+
+const resetHeadBoxFromChair = (q) => {
+  const box = q.boxNorm || [0.48, 0.34, 1.0, 0.74];
+  q.headBoxNorm = [
+    Number(Math.max(0, box[0] - 0.05).toFixed(3)),
+    Number(Math.max(0, box[1] - 0.04).toFixed(3)),
+    Number(Math.min(1.0, box[0] + 0.38).toFixed(3)),
+    Number(Math.min(1.0, box[3] + 0.04).toFixed(3))
+  ];
+  q.minY2 = 495;
+};
+
 // Coordenadas normalizadas 0..1 para eventos de puntero
 const getStageCoords = (e) => {
   const rect = stageRef.value?.getBoundingClientRect();
@@ -362,6 +393,27 @@ const onPointerUp = () => {
                 </text>
               </g>
 
+              <!-- Head Range Sub-frame for Chair -->
+              <g v-if="q.headBoxNorm && (idx === selectedIndex || q.type === 'barber_chair')">
+                <rect
+                  :x="q.headBoxNorm[1] * 1000"
+                  :y="q.headBoxNorm[0] * 1000"
+                  :width="(q.headBoxNorm[3] - q.headBoxNorm[1]) * 1000"
+                  :height="(q.headBoxNorm[2] - q.headBoxNorm[0]) * 1000"
+                  fill="rgba(6, 182, 212, 0.12)"
+                  stroke="#06b6d4"
+                  :stroke-width="idx === selectedIndex ? 2.5 : 1.5"
+                  stroke-dasharray="5,4"
+                  rx="4"
+                />
+                <g :transform="`translate(${q.headBoxNorm[1] * 1000 + 6}, ${q.headBoxNorm[0] * 1000 + 14})`">
+                  <rect x="-2" y="-10" width="88" height="16" rx="3" fill="#083344" fill-opacity="0.9" stroke="#06b6d4" stroke-width="0.8" />
+                  <text x="3" y="1" fill="#22d3ee" font-family="Inter, sans-serif" font-size="9" font-weight="bold">
+                    👤 Rango Cabeza
+                  </text>
+                </g>
+              </g>
+
               <!-- Resize handles for selected quadrant -->
               <template v-if="idx === selectedIndex && currentMode === 'move'">
                 <!-- NW (Corner 0) -->
@@ -519,6 +571,49 @@ const onPointerUp = () => {
               <div class="flex flex-col gap-1">
                 <label class="text-[10px] text-slate-400">Etiqueta al ocuparse:</label>
                 <AppInput v-model="q.labelOnOccupied" placeholder="Ej: Cliente en corte" />
+              </div>
+
+              <!-- Calibración Dinámica de Rango de Cabeza y Base de Silla -->
+              <div v-if="q.type === 'barber_chair' || q.capturePerson !== false" class="col-span-2 flex flex-col gap-2 p-2.5 rounded-lg bg-slate-900/90 border border-cyan-800/40">
+                <div class="flex items-center justify-between">
+                  <span class="text-xs font-bold text-cyan-400 flex items-center gap-1.5">
+                    <AppIcon name="face" :size="16" />
+                    Rango Cabeza Cliente (Anti-Barbero)
+                  </span>
+                  <AppBadge variant="primary" class="text-[9px] bg-cyan-950 text-cyan-300 border border-cyan-800">
+                    Marco Dinámico
+                  </AppBadge>
+                </div>
+                <p class="text-[10px] text-slate-400 leading-tight">
+                  Delimita el rango admisible donde se ubica la cabeza del cliente sentado en la silla para evitar capturar al barbero erguido.
+                </p>
+                <div class="grid grid-cols-2 gap-2 text-[10px]">
+                  <div class="flex flex-col gap-0.5">
+                    <label class="text-slate-400">Y Mín (Sup. Cabeza):</label>
+                    <input type="number" step="0.01" min="0" max="1" v-model.number="getHeadBox(q)[0]" @input="updateHeadBox(q)" class="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200 text-xs font-mono" />
+                  </div>
+                  <div class="flex flex-col gap-0.5">
+                    <label class="text-slate-400">X Mín (Izq. Cabeza):</label>
+                    <input type="number" step="0.01" min="0" max="1" v-model.number="getHeadBox(q)[1]" @input="updateHeadBox(q)" class="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200 text-xs font-mono" />
+                  </div>
+                  <div class="flex flex-col gap-0.5">
+                    <label class="text-slate-400">Y Máx (Inf. Cabeza):</label>
+                    <input type="number" step="0.01" min="0" max="1" v-model.number="getHeadBox(q)[2]" @input="updateHeadBox(q)" class="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200 text-xs font-mono" />
+                  </div>
+                  <div class="flex flex-col gap-0.5">
+                    <label class="text-slate-400">X Máx (Der. Cabeza):</label>
+                    <input type="number" step="0.01" min="0" max="1" v-model.number="getHeadBox(q)[3]" @input="updateHeadBox(q)" class="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200 text-xs font-mono" />
+                  </div>
+                  <div class="col-span-2 flex items-center justify-between pt-1 border-t border-slate-800">
+                    <label class="text-slate-400">Base Silla Y2 Mín (px):</label>
+                    <input type="number" step="5" min="300" max="720" v-model.number="q.minY2" class="w-24 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200 text-xs font-mono text-right" placeholder="495" />
+                  </div>
+                </div>
+                <div class="flex items-center gap-2 pt-1">
+                  <button type="button" @click="resetHeadBoxFromChair(q)" class="text-[10px] text-cyan-400 hover:text-cyan-300 underline">
+                    Calibrar rango automáticamente desde la silla
+                  </button>
+                </div>
               </div>
 
               <div class="col-span-2 text-[10px] text-slate-500 font-mono pt-1">

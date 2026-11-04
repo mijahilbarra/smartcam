@@ -598,45 +598,65 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
         const isConsolidated = (p.embeddings && p.embeddings.length >= 3) || sessionDurationMs > 45000;
 
         // Anti-anclaje de captura errónea (Argon 4 Capa 3):
-        // Solo permitido en los primeros 45s del MISMO track si la captura inicial fue débil (busto/1 ojo).
-        // Una vez consolidado (>= 3 embeddings o > 45s), el re-anclaje queda permanentemente bloqueado.
-        const isWeakInitialSeed = !p.photos?.[0] || (p.photos[0].sharpnessScore || 0) < 45 || p.photos[0].hasTwoEyes === false;
+        // Si el perfil provisional no posee ninguna foto genuina de dos ojos (hasTwoEyes: true),
+        // no se considera consolidado y DEBE re-anclarse de inmediato ante el primer rostro frontal/semi de dos ojos.
+        const hasGenuineTwoEyes = (p.photos || []).some(ph => ph.hasTwoEyes === true);
+        const isWeakInitialSeed = !hasGenuineTwoEyes || !p.photos?.[0] || (p.photos[0].sharpnessScore || 0) < 45 || p.photos[0].hasTwoEyes === false;
         const canReAnchorProvisional = isProvisionalToVerify &&
-          !isConsolidated &&
-          isInitialGraceWindow &&
+          (!hasGenuineTwoEyes || (!isConsolidated && isInitialGraceWindow)) &&
           !isChairVacant &&
-          isSameTrack &&
+          (isSameTrack || !hasGenuineTwoEyes) &&
           isWeakInitialSeed &&
           (quality.sharpnessScore || 0) >= 45 &&
           ['frontal', 'semi_left', 'semi_right'].includes(quality.pose || '') &&
           quality.hasTwoEyes;
 
+        // Detección de Transición Antipodal (Giro de perfil izquierdo a derecho o viceversa):
+        // En un corte de pelo, cuando el barbero pasa al otro lado, el cliente gira 90-180 grados.
+        // La distancia coseno de ArcFace 512D entre perfiles opuestos cae naturalmente a 0.20-0.34.
+        const existingPoses = (p.photos || []).map(ph => ph.pose || 'frontal');
+        const hasOnlyLeft = existingPoses.length > 0 && existingPoses.every(pose => pose.includes('left'));
+        const hasOnlyRight = existingPoses.length > 0 && existingPoses.every(pose => pose.includes('right'));
+        const incomingPose = quality.pose || '';
+        const isAntipodalTransition =
+          (hasOnlyLeft && incomingPose.includes('right')) ||
+          (hasOnlyRight && incomingPose.includes('left'));
+
+        const minRequiredSim = isAntipodalTransition ? 0.22 : 0.40;
+
         // Validar que el rostro en la silla efectivamente corresponda al cliente de la sesión:
-        // Si la sesión ya tiene >= 2 vectores, exigir coherencia tanto en maxSim (>= 0.40) como en avgSim (>= 0.23) y anclas iniciales (>= 0.27)
-        // para impedir puentes ("chain contamination") cuando se sienta un nuevo cliente.
+        // Si la sesión ya tiene >= 2 vectores, exigir coherencia tanto en maxSim (>= 0.40 o >= 0.22 si es antipodal)
+        // como en avgSim y anclas iniciales para impedir puentes ("chain contamination").
         const isMatchToSessionClient = pVectors.length === 0 ||
           canReAnchorProvisional ||
-          (pVectors.length === 1 ? (canonicalSim >= 0.38 || maxSim >= 0.45) : (maxSim >= 0.40 && avgSim >= 0.23 && anchorMaxSim >= 0.27));
+          (pVectors.length === 1
+            ? (canonicalSim >= (isAntipodalTransition ? 0.22 : 0.38) || maxSim >= (isAntipodalTransition ? 0.22 : 0.45))
+            : (maxSim >= minRequiredSim && (isAntipodalTransition || (avgSim >= 0.23 && anchorMaxSim >= 0.27))));
 
         if (isMatchToSessionClient) {
           sessionMatched = true;
 
-          if (canReAnchorProvisional && (canonicalSim < 0.38 || anchorMaxSim < 0.38)) {
-            console.log(`[FaceRecognition] 🔄 Re-anclando perfil provisional "${p.name}" con rostro genuino de mayor nitidez (${quality.sharpnessScore} vs ${p.bestFaceScore || 0}, pose: ${quality.pose}).`);
+          if (canReAnchorProvisional && (!hasGenuineTwoEyes || canonicalSim < 0.38 || anchorMaxSim < 0.38)) {
+            console.log(`[FaceRecognition] 🔄 Re-anclando perfil provisional "${p.name}" con rostro genuino de 2 ojos (${quality.sharpnessScore} vs ${p.bestFaceScore || 0}, pose: ${quality.pose}).`);
             p.embedding = embedding;
             p.embeddings = [embedding];
             p.thumbnailBase64 = faceThumbnailBase64;
             p.bestFaceScore = quality.sharpnessScore;
+            p.bestFacePose = quality.pose;
+            p.bestFaceHasTwoEyes = true;
             p.photos = [{
               thumbnailBase64: faceThumbnailBase64,
               sharpnessScore: quality.sharpnessScore,
               capturedAt: new Date(options.nowEpoch || Date.now()).toISOString(),
               pose: quality.pose || 'frontal',
-              poseLabel: quality.poseLabel || 'Frontal'
+              poseLabel: quality.poseLabel || 'Frontal',
+              hasTwoEyes: true
             }];
             if (activeSession) {
               activeSession.thumbnailBase64 = faceThumbnailBase64;
               activeSession.bestFaceScore = quality.sharpnessScore;
+              activeSession.bestFacePose = quality.pose;
+              activeSession.bestFaceHasTwoEyes = true;
               activeSession.embeddings = [embedding];
               activeSession.photos = [...p.photos];
               activeSession.rotationCandidates = [];
@@ -664,13 +684,15 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
             const cadencePassed = timeSinceLastPhoto >= 2000;
             const canAddMorePhotos = pPhotosCount < 20 && (cadencePassed || pPhotosCount === 0);
 
-            const isNovelAngle = maxSim >= 0.45 && maxSim <= 0.88;
+            const isNovelAngle = isAntipodalTransition
+              ? (maxSim >= 0.20 && maxSim <= 0.88)
+              : (maxSim >= 0.45 && maxSim <= 0.88);
             const hasHigherSharpness = quality.sharpnessScore > (p.bestFaceScore || 0);
 
             const currentPoses = new Set((p.photos || []).map(ph => ph.pose || 'frontal'));
             const isUnrepresentedPose = quality.pose && !currentPoses.has(quality.pose);
 
-            if (canAddMorePhotos || isNovelAngle || hasHigherSharpness || hasMissingPhotos || isUnrepresentedPose) {
+            if (canAddMorePhotos || isNovelAngle || hasHigherSharpness || hasMissingPhotos || isUnrepresentedPose || isAntipodalTransition) {
               const enriched = enrichPersonAngles(p, {
                 embedding,
                 faceThumbnailBase64,
@@ -678,7 +700,11 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
                 pose: quality.pose,
                 poseLabel: quality.poseLabel,
                 nowEpoch
-              }, { minCanonicalSimilarity: 0.35, skipCanonicalCheck: true, enforceCooldown: !canAddMorePhotos && !hasMissingPhotos });
+              }, {
+                minCanonicalSimilarity: isAntipodalTransition ? 0.20 : 0.35,
+                skipCanonicalCheck: isAntipodalTransition,
+                enforceCooldown: !canAddMorePhotos && !hasMissingPhotos
+              });
 
               if (!enriched.rejected && !enriched.duplicate) {
                 p.lastPhotoAtEpoch = nowEpoch;
@@ -694,20 +720,48 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
               }
             }
 
+            const newHasTwo = Boolean(quality.hasTwoEyes);
+            const curHasTwo = p.bestFaceHasTwoEyes !== undefined
+              ? Boolean(p.bestFaceHasTwoEyes)
+              : (p.photos?.[0]?.hasTwoEyes !== undefined ? Boolean(p.photos[0].hasTwoEyes) : true);
+
+            const newPose = quality.pose || '';
+            const curPose = p.bestFacePose || p.photos?.[0]?.pose || '';
+            const newIsTilted = newPose.includes('tilted_down');
+            const curIsTilted = curPose.includes('tilted_down');
+
+            let shouldUpdateRep = false;
+            if (newHasTwo && !curHasTwo) {
+              shouldUpdateRep = true;
+            } else if (!newHasTwo && curHasTwo) {
+              shouldUpdateRep = false;
+            } else if (!newIsTilted && curIsTilted) {
+              shouldUpdateRep = true;
+            } else if (newIsTilted && !curIsTilted) {
+              shouldUpdateRep = false;
+            } else if ((quality.sharpnessScore || 0) > (p.bestFaceScore || 0)) {
+              shouldUpdateRep = true;
+            }
+
             if (!p.photos || p.photos.length === 0) {
               p.photos = [{
                 thumbnailBase64: faceThumbnailBase64,
                 sharpnessScore: quality.sharpnessScore || 0,
                 capturedAt: new Date(options.nowEpoch || Date.now()).toISOString(),
                 pose: quality.pose || 'frontal',
-                poseLabel: quality.poseLabel || 'Frontal'
+                poseLabel: quality.poseLabel || 'Frontal',
+                hasTwoEyes: newHasTwo
               }];
               p.bestFaceScore = quality.sharpnessScore;
+              p.bestFacePose = quality.pose;
+              p.bestFaceHasTwoEyes = newHasTwo;
               p.thumbnailBase64 = faceThumbnailBase64;
               p.embedding = embedding;
               galleryUpdated = true;
-            } else if (hasHigherSharpness) {
+            } else if (shouldUpdateRep) {
               p.bestFaceScore = quality.sharpnessScore;
+              p.bestFacePose = quality.pose;
+              p.bestFaceHasTwoEyes = newHasTwo;
               p.thumbnailBase64 = faceThumbnailBase64;
               p.embedding = embedding;
             }
@@ -841,20 +895,48 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
             }
           }
 
+          const newHasTwo = Boolean(quality.hasTwoEyes);
+          const curHasTwo = p.bestFaceHasTwoEyes !== undefined
+            ? Boolean(p.bestFaceHasTwoEyes)
+            : (p.photos?.[0]?.hasTwoEyes !== undefined ? Boolean(p.photos[0].hasTwoEyes) : true);
+
+          const newPose = quality.pose || '';
+          const curPose = p.bestFacePose || p.photos?.[0]?.pose || '';
+          const newIsTilted = newPose.includes('tilted_down');
+          const curIsTilted = curPose.includes('tilted_down');
+
+          let shouldUpdateRep = false;
+          if (newHasTwo && !curHasTwo) {
+            shouldUpdateRep = true;
+          } else if (!newHasTwo && curHasTwo) {
+            shouldUpdateRep = false;
+          } else if (!newIsTilted && curIsTilted) {
+            shouldUpdateRep = true;
+          } else if (newIsTilted && !curIsTilted) {
+            shouldUpdateRep = false;
+          } else if ((quality.sharpnessScore || 0) > (p.bestFaceScore || 0)) {
+            shouldUpdateRep = true;
+          }
+
           if (!p.photos || p.photos.length === 0) {
             p.photos = [{
               thumbnailBase64: faceThumbnailBase64,
               sharpnessScore: quality.sharpnessScore || 0,
               capturedAt: new Date(nowEpoch).toISOString(),
               pose: quality.pose || 'frontal',
-              poseLabel: quality.poseLabel || 'Frontal'
+              poseLabel: quality.poseLabel || 'Frontal',
+              hasTwoEyes: newHasTwo
             }];
             p.bestFaceScore = quality.sharpnessScore;
+            p.bestFacePose = quality.pose;
+            p.bestFaceHasTwoEyes = newHasTwo;
             p.thumbnailBase64 = faceThumbnailBase64;
             p.embedding = embedding;
             galleryUpdated = true;
-          } else if (hasHigherSharpness) {
+          } else if (shouldUpdateRep) {
             p.bestFaceScore = quality.sharpnessScore;
+            p.bestFacePose = quality.pose;
+            p.bestFaceHasTwoEyes = newHasTwo;
             p.thumbnailBase64 = faceThumbnailBase64;
             p.embedding = embedding;
           }

@@ -112,25 +112,52 @@ export async function evaluateChairRotation({
     return { rotated: false, shouldHold: false };
   }
 
+  const chairVacantMs = session.emptySinceEpoch ? (now - session.emptySinceEpoch) : 0;
+  const isPhysicallyContinuous = chairVacantMs <= 3000;
+
   if (session.status === "esperando_liberacion" || Boolean(session.pendingRotationSplitEpoch)) {
     consistentPeers = session.rotationCandidates.filter(
       c => computeCosineSimilarity(newEmbedding, c.embedding) >= 0.45
     );
-    shouldRotate = consistentPeers.length >= (session.status === "esperando_liberacion" ? 1 : 2);
+    // Invariante de tiempo (<= 3 segundos): No separar sesiones si la vacancia ha sido <= 3s
+    shouldRotate = !isPhysicallyContinuous && (consistentPeers.length >= (session.status === "esperando_liberacion" ? 1 : 2));
   } else {
     consistentPeers = session.rotationCandidates.filter(
       c => computeCosineSimilarity(newEmbedding, c.embedding) >= 0.45
     );
 
+    // Detección de Giro Antipodal (Left vs Right) en Silla de Barbero:
+    const sessionPoses = (session.photos || []).map(p => p.pose || 'frontal');
+    const hasOnlyLeft = sessionPoses.length > 0 && sessionPoses.every(p => p.includes('left'));
+    const hasOnlyRight = sessionPoses.length > 0 && sessionPoses.every(p => p.includes('right'));
+    const isAntipodalRotation = (hasOnlyLeft && incomingPose.includes('right')) || (hasOnlyRight && incomingPose.includes('left'));
+
+    const isPhysicalContinuity = chairVacantMs < 25000;
+
     // Criterio Biocéntrico y Multilateral de Rotación en Silla (Argon 4 Nivel 2):
     const hasCandidatePeer = Boolean(track?.identity?.isCandidate && (track.identity.candidateCount || 0) >= 4 && consistentPeers.length >= 2);
 
-    // Vía A (Cross-Track Transition con disyunción ortogonal):
-    // YOLO asigna un trackId diferente, el rostro es ortogonal (< 0.38) y existen al menos 2 muestras consistentes en el novelty buffer
-    const isCrossTrackRotation = !isSameTrack && consistentPeers.length >= 2 && maxSim < 0.38 && top3AvgSim < 0.38;
+    let isCrossTrackRotation = false;
+    let isOrthogonalDistinct = false;
 
-    // Vía B: Ortogonalidad indudable (< 0.35) entre tracklets distintos:
-    const isOrthogonalDistinct = !isSameTrack && maxSim < 0.35 && consistentPeers.length >= 2;
+    if (isPhysicallyContinuous) {
+      // Invariante temporal: Si el cliente está sentado continuo (vacancia <= 3s),
+      // no separar sesiones por cruce de barbero o cambio de ángulo en tiempo real.
+      isCrossTrackRotation = false;
+      isOrthogonalDistinct = false;
+    } else if (isAntipodalRotation && isPhysicalContinuity) {
+      // Giro anatómico antipodal con cliente sentado continuo: la similitud 0.20-0.34 es físicamente esperada.
+      // NO matar la sesión por giro de cabeza mientras la silla sigue ocupada.
+      isCrossTrackRotation = false;
+      isOrthogonalDistinct = !isSameTrack && maxSim < 0.15 && consistentPeers.length >= 4;
+    } else {
+      // Vía A (Cross-Track Transition con disyunción ortogonal):
+      // YOLO asigna un trackId diferente, el rostro es ortogonal (< 0.38) y existen al menos 2 muestras consistentes en el novelty buffer
+      isCrossTrackRotation = !isSameTrack && consistentPeers.length >= 2 && maxSim < 0.38 && top3AvgSim < 0.38;
+
+      // Vía B: Ortogonalidad indudable (< 0.35) entre tracklets distintos:
+      isOrthogonalDistinct = !isSameTrack && maxSim < 0.35 && consistentPeers.length >= 2;
+    }
 
     // Vía C: Respaldo por ventana de vacancia o face gap prolongado:
     const faceGapMs = now - (session.lastMatchedClientFaceEpoch || session.startedAtEpoch || now);
@@ -446,6 +473,24 @@ export async function evaluateChairTimeouts({
 
     if (trackInChair) {
       if (session.status === "esperando_liberacion") {
+        const emptyElapsed = session.emptySinceEpoch ? (now - session.emptySinceEpoch) : 0;
+        // Invariante Físico de Reanudación Inmediata (<= 3s):
+        // Si la silla estuvo esperando liberación por <= 3000 ms y se detecta una persona sentada,
+        // fue solo una oclusión momentánea del barbero o pérdida efímera de detección de YOLO.
+        // Reanudar la atención inmediatamente sin rotación de cliente ni cierre prematuro.
+        if (emptyElapsed <= 3000) {
+          session.status = "en_corte";
+          session.emptySinceEpoch = null;
+          session.pendingTransition = false;
+          session.pendingRotationSplitEpoch = null;
+          logVerbal(`🔄 Persona en ${session.chairName} detectada tras vacancia efímera (${emptyElapsed} ms <= 3s). Reanudando misma atención sin corte.`, "process");
+          session.lastSeenEpoch = now;
+          if (trackInChair.trackId === session.trackId || !trackInChair.trackId) {
+            session.lastClientSeenEpoch = now;
+          }
+          continue;
+        }
+
         let incomingFace = null;
         if (trackInChair.latestFace) {
           incomingFace = trackInChair.latestFace;

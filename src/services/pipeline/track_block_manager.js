@@ -270,12 +270,22 @@ export class TrackBlockManager {
             cymax = isCBoxNorm ? chairZone.box[3] : chairZone.box[3] / this.height;
           }
 
-          const isOutsideChairColumn = fcxNorm < (cxmin - 0.04) || fcxNorm > (cxmax + 0.04);
+          // Rango de cabeza del cliente configurable dinámicamente desde chairZone.headBoxNorm
+          let headYmin = Math.max(0, cymin - 0.05);
+          let headXmin = Math.max(0, cxmin - 0.04);
+          let headYmax = Math.min(1.0, cymax);
+          let headXmax = Math.min(1.0, cxmax + 0.04);
+
+          if (chairZone.headBoxNorm && Array.isArray(chairZone.headBoxNorm) && chairZone.headBoxNorm.length === 4) {
+            [headYmin, headXmin, headYmax, headXmax] = chairZone.headBoxNorm;
+          }
+
+          const isOutsideHeadRange = fcxNorm < headXmin || fcxNorm > headXmax || fcyNorm < headYmin || fcyNorm > headYmax;
           const isBodyStanding = (by1 < 220) || (bh > 480) || isStandingPosture(parsedBoxForFace, this.height);
 
-          if (isOutsideChairColumn || fcxNorm < 0.30) {
+          if (isOutsideHeadRange) {
             isSampleStaff = true;
-          } else if (isBodyStanding && (fcyNorm < 0.48 || fcy < 350)) {
+          } else if (isBodyStanding && (fcyNorm < headYmin || fcy < 340)) {
             isSampleStaff = true;
           }
         }
@@ -303,12 +313,28 @@ export class TrackBlockManager {
 
         const sharpness = Number(faceData.sharpnessScore || 0);
         const currentBestHasTwoEyes = Boolean(block.bestFaceHasTwoEyes);
-        const shouldUpdateBestFace = block.bestFaceScore === 0 ||
-          (hasTwoEyes && !currentBestHasTwoEyes) ||
-          (hasTwoEyes === currentBestHasTwoEyes && sharpness > block.bestFaceScore);
+        const currentBestPose = block.bestFacePose || '';
+        const incomingIsTilted = (faceData.pose || '').includes('tilted_down');
+        const currentIsTilted = currentBestPose.includes('tilted_down');
+
+        let shouldUpdateBestFace = block.bestFaceScore === 0;
+        if (!shouldUpdateBestFace) {
+          if (hasTwoEyes && !currentBestHasTwoEyes) {
+            shouldUpdateBestFace = true;
+          } else if (!hasTwoEyes && currentBestHasTwoEyes) {
+            shouldUpdateBestFace = false;
+          } else if (!incomingIsTilted && currentIsTilted) {
+            shouldUpdateBestFace = true;
+          } else if (incomingIsTilted && !currentIsTilted) {
+            shouldUpdateBestFace = false;
+          } else if (sharpness > block.bestFaceScore) {
+            shouldUpdateBestFace = true;
+          }
+        }
 
         if (shouldUpdateBestFace) {
           block.bestFaceScore = sharpness;
+          block.bestFacePose = faceData.pose;
           block.bestFaceHasTwoEyes = Boolean(hasTwoEyes);
           block.bestFaceThumbnail = faceData.thumbnailBase64 || null;
           block.bestFaceVector = faceData.vector || null;
