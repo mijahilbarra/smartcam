@@ -1,5 +1,5 @@
 import sharp from "sharp";
-import { captureSnapshotFromRtsp } from "../../infrastructure/camera/neolink_client.js";
+import { captureSnapshotAdaptive } from "../../infrastructure/camera/neolink_client.js";
 import { calculateIoU } from "../../core/geometry.js";
 
 let clearStreamDisabledUntil = 0;
@@ -21,13 +21,14 @@ export function resolveMainRtspUrl(subUrl = process.env.RTSP_STREAM_URL) {
 }
 
 /**
- * Adquisición bajo demanda del fotograma en alta resolución (Stream Clear / Mainstream 2560x1440).
- * Utiliza captureSnapshotFromRtsp sobre el stream RTSP principal.
+ * Adquisición bajo demanda del fotograma en alta resolución (Stream Clear / Mainstream 2560x1440 / 2304x1296).
+ * Utiliza captureSnapshotAdaptive sobre el stream RTSP principal con respaldo Docker.
  */
 export async function acquireClearFrame({
   localOutputPath,
   rtspUrl = resolveMainRtspUrl(),
-  timeoutMs = 3500
+  timeoutMs = Number(process.env.CLEAR_STREAM_TIMEOUT_MS) || 10000,
+  tomlPath = process.env.TOML_PATH || "/opt/camera-catcher/neolink.toml"
 } = {}) {
   if (process.env.ENABLE_MAIN_STREAM === "false") {
     return null;
@@ -38,10 +39,15 @@ export async function acquireClearFrame({
   const effectiveRtspUrl = resolveMainRtspUrl(rtspUrl);
   const outputPath = localOutputPath || `/tmp/snap_clear_${Date.now()}.jpeg`;
   try {
-    return await captureSnapshotFromRtsp({ rtspUrl: effectiveRtspUrl, localOutputPath: outputPath, timeoutMs });
+    return await captureSnapshotAdaptive({
+      rtspUrl: effectiveRtspUrl,
+      localOutputPath: outputPath,
+      timeoutMs,
+      tomlPath
+    });
   } catch (err) {
-    clearStreamDisabledUntil = Date.now() + 30000; // 30 segundos de enfriamiento si falla la conexión RTSP
-    console.warn(`[ClearStream] Aviso al capturar fotograma de alta resolución (${effectiveRtspUrl}). Cooldown 30s activado:`, err.message);
+    clearStreamDisabledUntil = Date.now() + 15000; // 15 segundos de enfriamiento si falla la conexión RTSP
+    console.warn(`[ClearStream] Aviso al capturar fotograma de alta resolución (${effectiveRtspUrl}). Cooldown 15s activado:`, err.message);
     return null;
   }
 }
@@ -105,7 +111,8 @@ export async function enrichCropsWithClearStream({
     try {
       const clearBuffer = await acquireClearFn({
         localOutputPath: effectiveLocalOutputPath ? `${effectiveLocalOutputPath}_clear.jpeg` : `/tmp/snap_clear_${docId || now}.jpeg`,
-        rtspUrl: clearRtspUrl
+        rtspUrl: clearRtspUrl,
+        tomlPath: context.tomlPath || options.tomlPath
       });
 
       if (clearBuffer) {

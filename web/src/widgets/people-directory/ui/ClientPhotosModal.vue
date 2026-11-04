@@ -361,8 +361,16 @@ const handleConfirmDeletePhoto = async () => {
               :alt="`Ángulo facial #${selectedPhotoIndex + 1}`"
               class="w-full h-full object-cover transition duration-200 group-hover:scale-105"
             />
-            <div class="absolute top-2 left-2 px-2 py-0.5 rounded-md text-[10px] font-bold bg-slate-900/90 text-sky-300 border border-sky-500/30">
-              Ángulo #{{ selectedPhotoIndex + 1 }}
+            <div class="absolute top-2 left-2 flex items-center gap-1.5 z-10">
+              <span class="px-2 py-0.5 rounded-md text-[10px] font-bold bg-slate-900/90 text-sky-300 border border-sky-500/30">
+                Ángulo #{{ selectedPhotoIndex + 1 }}
+              </span>
+              <span
+                v-if="selectedPhoto.isHighRes"
+                class="px-2 py-0.5 rounded-md text-[10px] font-bold bg-blue-600 text-white border border-blue-400/40 shadow font-mono"
+              >
+                HD
+              </span>
             </div>
             <!-- Pose Badge on Large Inspector Photo -->
             <div class="absolute bottom-2 left-2 inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold bg-slate-900/90 text-sky-300 border border-sky-500/40">
@@ -486,10 +494,19 @@ const handleConfirmDeletePhoto = async () => {
                   class="w-full h-full object-cover group-hover:scale-105 transition duration-150"
                 />
 
-                <!-- Angle badge -->
-                <span class="absolute top-1 left-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-950/85 text-slate-200 border border-slate-700 font-mono">
-                  #{{ index + 1 }}
-                </span>
+                <!-- Angle badge & HD badge -->
+                <div class="absolute top-1 left-1 flex items-center gap-1 z-10">
+                  <span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-950/85 text-slate-200 border border-slate-700 font-mono">
+                    #{{ index + 1 }}
+                  </span>
+                  <span
+                    v-if="photo.isHighRes"
+                    class="px-1 py-0.5 rounded text-[8px] font-bold bg-blue-600 text-white shadow font-mono"
+                    title="Alta Resolución HD"
+                  >
+                    HD
+                  </span>
+                </div>
 
                 <!-- Sharpness score badge -->
                 <span class="absolute top-1 right-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-950/85 text-emerald-400 border border-slate-700 font-mono">
