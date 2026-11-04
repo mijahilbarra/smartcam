@@ -279,7 +279,7 @@ export class VisitSessionService {
         if (session.status !== "esperando_liberacion") {
           const lastFaceMs = session.lastFaceSeenEpoch || session.startedAtEpoch || 0;
           const blockEndMs = block.lastSeenEpoch || now;
-          const maxPresenceBridgeMs = 300000;
+          const maxPresenceBridgeMs = 60000;
           if (blockEndMs - lastFaceMs <= maxPresenceBridgeMs) {
             session.lastSeenEpoch = Math.max(session.lastSeenEpoch || 0, blockEndMs);
             if (block.boxes && block.boxes.length > 0) {
@@ -392,8 +392,16 @@ export class VisitSessionService {
       let isVeto = false;
       let vetoReason = "";
 
+      // Jerarquía de Certeza Biocéntrica (Argon 4 Override Absoluto):
+      // Si el centroide o la galería demuestran coincidencia masiva (centroidSim >= 0.60 o maxGallerySim >= 0.65),
+      // se anula CUALQUIER veto por vacancia temporal o discrepancia homóloga sintética.
+      const hasOverwhelmingBiometricProof = (maxGallerySim >= 0.65 || centroidSim >= 0.60);
+
       const isProlongedVacancy = vacancyMs >= 30000;
-      if (isProlongedVacancy) {
+      if (hasOverwhelmingBiometricProof) {
+        isVeto = false;
+        this.logVerbal(`🛡️ Inmunidad Biocéntrica en ${chairName}: Coincidencia masiva (centroidSim=${centroidSim.toFixed(3)}, maxGallerySim=${maxGallerySim.toFixed(3)}). Veto homólogo por vacancia anulado.`, "process");
+      } else if (isProlongedVacancy) {
         // Tras >= 30s de silla vacía, exigir confirmación biométrica con la sesión previa (incluyendo pose homóloga si existe) para no unir al siguiente cliente tras un cambio de silla
         const hasHomologousContradiction = hasHomologousComparison && maxHomologousSim < 0.22 && matchedHomologousCategory !== 'tilted';
         const hasPostVacancyMatch = !hasHomologousContradiction && (
@@ -427,17 +435,17 @@ export class VisitSessionService {
           const hasStrongBiometricEvidence = maxGallerySim >= 0.68 || (centroidSim >= 0.52 && maxGallerySim >= 0.58);
 
           // Discrepancia severa en pose erguida homóloga sin evidencia biométrica contundente
-          // Excluir si hay continuidad física inmediata en la silla (isPhysicalContinuity) y soporte de centroide/galería
-          const isPhysicalSupported = isPhysicalContinuity && (centroidSim >= 0.38 || maxGallerySim >= 0.45);
-          const isSevereMismatch = maxHomologousSim < 0.25 && !hasStrongBiometricEvidence && matchedHomologousCategory !== 'tilted' && !isPhysicalSupported;
+          // Excluir si hay continuidad física inmediata en la silla (isPhysicalContinuity)
+          const isPhysicalSupported = isPhysicalContinuity;
+          const isSevereMismatch = !isPhysicalContinuity && maxHomologousSim < 0.25 && !hasStrongBiometricEvidence && matchedHomologousCategory !== 'tilted';
 
           if (
             !isSevereMismatch && (
+              isPhysicalContinuity ||
               hasStrongBiometricEvidence ||
-              isPhysicalSupported ||
               (isHomologousOccludedOrOneEye && (isPhysicalContinuity || centroidSim >= 0.38 || maxGallerySim >= 0.48)) ||
               (isSmallIncomingBlock && isPhysicalContinuity && centroidSim >= 0.35) ||
-              (isPhysicalContinuity && centroidSim >= 0.42 && maxGallerySim >= 0.50)
+              (centroidSim >= 0.42 && maxGallerySim >= 0.50)
             )
           ) {
             isVeto = false;
@@ -448,10 +456,10 @@ export class VisitSessionService {
           }
         } else {
           // maxHomologousSim está en zona intermedia [0.35, 0.50)
-          const isValidIntermediate = (maxHomologousSim >= 0.40 && (centroidSim >= 0.32 || maxGallerySim >= 0.42)) ||
+          const isValidIntermediate = isPhysicalContinuity ||
+            (maxHomologousSim >= 0.40 && (centroidSim >= 0.32 || maxGallerySim >= 0.42)) ||
             maxGallerySim >= 0.48 ||
             centroidSim >= 0.38 ||
-            (isPhysicalContinuity && centroidSim >= 0.28) ||
             (isHomologousOccludedOrOneEye && (centroidSim >= 0.30 || maxGallerySim >= 0.40));
           if (isValidIntermediate) {
             isVeto = false;

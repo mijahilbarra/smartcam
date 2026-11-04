@@ -142,6 +142,11 @@ export function normalizeQuadrants(quads) {
     const role = q.role || (resolvedType === 'barber_workstation' ? 'staff' : (isTransit ? 'visitor' : 'client'));
     const labelOnOccupied = q.labelOnOccupied || '';
 
+    const headBoxNorm = (Array.isArray(q.headBoxNorm) && q.headBoxNorm.length === 4)
+      ? q.headBoxNorm.map(v => Number(Number(v).toFixed(3)))
+      : null;
+    const minY2 = q.minY2 !== undefined ? Number(q.minY2) : 495;
+
     return {
       id: q.id || `quad_${idx + 1}`,
       name: q.name || `Zona ${idx + 1}`,
@@ -152,7 +157,9 @@ export function normalizeQuadrants(quads) {
       role,
       labelOnOccupied,
       polygonNorm,
-      boxNorm
+      boxNorm,
+      headBoxNorm,
+      minY2
     };
   });
 }
@@ -183,6 +190,11 @@ export function serializeQuadrantsForFirestore(quads) {
     const role = q.role || (resolvedType === 'barber_workstation' ? 'staff' : (isTransit ? 'visitor' : 'client'));
     const labelOnOccupied = q.labelOnOccupied || '';
 
+    const headBoxNorm = (Array.isArray(q.headBoxNorm) && q.headBoxNorm.length === 4)
+      ? q.headBoxNorm.map(v => Number(Number(v).toFixed(3)))
+      : null;
+    const minY2 = q.minY2 !== undefined ? Number(q.minY2) : 495;
+
     return {
       id: q.id,
       name: q.name || q.id,
@@ -193,7 +205,9 @@ export function serializeQuadrantsForFirestore(quads) {
       role,
       labelOnOccupied,
       boxNorm,
-      polygonNorm
+      polygonNorm,
+      headBoxNorm,
+      minY2
     };
   });
 }

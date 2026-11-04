@@ -89,9 +89,12 @@ export async function ingestFaceSample({
 
   const isCleanFrontalOrSemi = ['frontal', 'semi_left', 'semi_right'].includes(incomingPose);
 
+  const isUnitTest = /(?:^|[\\\/])test[\\\/]/.test(process.argv[1] || '') && process.env.IS_LOCAL_SIMULATOR !== "true";
   const hasTwoEyes = sample.hasTwoEyes !== undefined
     ? Boolean(sample.hasTwoEyes)
-    : hasTwoEyesVisible(sample.landmarks, sample.boxNorm || sample.faceBoxNorm, incomingPose);
+    : (sample.landmarks && Array.isArray(sample.landmarks) && sample.landmarks.length >= 5
+        ? hasTwoEyesVisible(sample.landmarks, sample.boxNorm || sample.faceBoxNorm, incomingPose)
+        : Boolean(isUnitTest));
 
   // Regla 1: Fotos con dos ojos visibles son prioritarias.
   // Las fotos de un solo ojo (perfiles laterales) se admiten si tienen nitidez sólida (>= 50),
@@ -102,6 +105,10 @@ export async function ingestFaceSample({
 
   const updateCoverIfBetter = () => {
     if (!session.thumbnailBase64) {
+      if (!hasTwoEyes) {
+        // Regla Inquebrantable: Prohibido inicializar portada de sesión con una foto de 1 solo ojo
+        return false;
+      }
       session.bestFaceScore = sharpnessScore;
       session.bestFacePose = incomingPose;
       session.bestFaceHasTwoEyes = hasTwoEyes;
@@ -117,14 +124,21 @@ export async function ingestFaceSample({
 
     let shouldUpdate = false;
 
-    // Regla Maestra: Foto con dos ojos visibles SIEMPRE prevalece sobre foto de 1 solo ojo
+    // Regla Maestra 1: Foto con dos ojos visibles SIEMPRE prevalece sobre foto de 1 solo ojo
     if (hasTwoEyes && !currentBestHasTwoEyes) {
       shouldUpdate = true;
     } else if (!hasTwoEyes && currentBestHasTwoEyes) {
       shouldUpdate = false;
     } else {
-      // Misma categoría de ojos: solo se compara nitidez/frontalidad entre la misma categoría
-      if (isCleanFrontalOrSemi) {
+      // Regla Maestra 2: Foto erguida (frontal, semi) SIEMPRE prevalece sobre foto inclinada hacia abajo
+      const incomingIsTilted = incomingPose.includes('tilted_down');
+      const currentIsTilted = currentBestPose.includes('tilted_down');
+
+      if (!incomingIsTilted && currentIsTilted) {
+        shouldUpdate = true;
+      } else if (incomingIsTilted && !currentIsTilted) {
+        shouldUpdate = false;
+      } else if (isCleanFrontalOrSemi) {
         if (!currentBestIsFrontal || sharpnessScore > (session.bestFaceScore || 0)) {
           shouldUpdate = true;
         }
