@@ -657,8 +657,8 @@ export class VisitSessionService {
 
       for (const tb of chairHistory) {
         const gap = cursorEpoch - (tb.endedAtEpoch || cursorEpoch);
-        // Continuidad sentada: brecha <= 90s (para tolerar reclinación de cabeza / capa en misma silla) y no descartado por ser staff/barbero
-        if (gap <= 90000 && gap >= -60000 && tb.verdict !== "DISCARDED_BARBER" && tb.verdict !== "DISCARDED_BARBER_STANDING") {
+        // Continuidad sentada: brecha <= 180s (para tolerar reclinación de cabeza / corte con tijera en misma silla) y no descartado por ser staff/barbero
+        if (gap <= 180000 && gap >= -60000 && tb.verdict !== "DISCARDED_BARBER" && tb.verdict !== "DISCARDED_BARBER_STANDING") {
           earliestPresenceEpoch = Math.min(earliestPresenceEpoch, tb.startedAtEpoch || cursorEpoch);
           cursorEpoch = tb.startedAtEpoch || cursorEpoch;
           absorbedTrackIds.push(tb.trackId);

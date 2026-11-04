@@ -775,17 +775,19 @@ export async function executeSessionClosurePipeline({
       const prevEndEpoch = prevCandidate.endedAtEpoch || (prevCandidate.endedAt ? new Date(prevCandidate.endedAt).getTime() : 0);
       const gapToPrev = curStartEpoch - prevEndEpoch;
 
-      // Evaluar si la brecha es admisible en la misma silla (hasta 15 minutos / 900s)
-      if (gapToPrev > 900000 || gapToPrev < minMergeGap) break;
+      // Evaluar si la brecha es admisible en la misma silla (hasta 20 minutos / 1200s)
+      if (gapToPrev > 1200000 || gapToPrev < minMergeGap) break;
 
       const chainEval = evaluateCausalConsolidation({
         session: consolidatedAppt,
         prevSameChairAppt: prevCandidate,
         pastAppointments: completedAppointments,
+        customerService,
+        sqliteClient,
         logVerbal
       });
 
-      if (chainEval && chainEval.shouldMerge) {
+      if (chainEval && chainEval.shouldMerge && (chainEval.metrics?.maxGallerySim >= 0.48 || chainEval.metrics?.centroidSim >= 0.48)) {
         logVerbal(`🔗 [ChainConsolidation] Fusión en cadena exitosa en ${consolidatedAppt.chairId}: ${consolidatedAppt.id} (${consolidatedAppt.durationMinutes} min) se unifica retrospectivamente con ${prevCandidate.id} (${prevCandidate.durationMinutes} min, motivo: ${chainEval.reason}).`, "success");
         const chained = await consolidateChairAppointment({
           session: consolidatedAppt,
