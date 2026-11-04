@@ -173,11 +173,26 @@ export function getRepresentativeFace(photos = [], embeddings = []) {
   }
 
   // 1. Jerarquía de selección de foto representativa orientada a Medoide:
-  // Nivel A: Foto erguida con dos ojos visibles (frontal, semi_left, semi_right) ordenada por medoidScore.
-  //          SIEMPRE gana sobre cualquier cara reclinada/tilted aunque la reclinada tenga mayor nitidez.
-  // Nivel B: Foto con dos ojos visibles aunque sea reclinada/tilted.
-  // Nivel C: Cualquier foto válida restante (perfiles o 1 ojo).
-  const isUprightWithTwoEyes = (c) => c.hasTwoEyes && ['frontal', 'semi_left', 'semi_right'].includes(c.pose);
+  // Tier 1: Foto frontal pura con dos ojos visibles (frontal) ordenada por medoidScore.
+  // Tier 2: Foto semi-lateral erguida con dos ojos visibles (semi_left, semi_right).
+  // Tier 3: Foto con dos ojos visibles reclinada/tilted.
+  // Prohibición estricta: Jamás coronar fotos monoculares o de 1 solo ojo.
+  const isFrontalWithTwoEyes = (c) => c.hasTwoEyes && c.pose === 'frontal';
+  const frontalCandidates = candidates.filter(isFrontalWithTwoEyes);
+  if (frontalCandidates.length > 0) {
+    frontalCandidates.sort((a, b) => b.medoidScore - a.medoidScore || b.compositeScore - a.compositeScore);
+    const best = frontalCandidates[0];
+    return {
+      photo: best.photo,
+      vector: best.vector,
+      score: best.score,
+      frontalityScore: best.frontalityScore,
+      centrality: best.centrality,
+      hasFrontalAnchor: true
+    };
+  }
+
+  const isUprightWithTwoEyes = (c) => c.hasTwoEyes && ['semi_left', 'semi_right'].includes(c.pose);
   const uprightCandidates = candidates.filter(isUprightWithTwoEyes);
   const twoEyesCandidates = candidates.filter(c => c.hasTwoEyes);
 
@@ -455,15 +470,13 @@ export async function finalizeCustomerAndAppointment({
 
   let bestSessionPhotoThumb = repApptThumbnail || (session.bestFaceHasTwoEyes ? session.thumbnailBase64 : null);
   if (!bestSessionPhotoThumb && Array.isArray(session.photos) && session.photos.length > 0) {
-    let maxSharp = -1;
-    for (const ph of session.photos) {
-      if (ph?.hasTwoEyes && ph?.thumbnailBase64) {
-        const s = Number(ph?.sharpnessScore || 0);
-        if (s > maxSharp) {
-          maxSharp = s;
-          bestSessionPhotoThumb = ph.thumbnailBase64;
-        }
-      }
+    const twoEyesPhotos = session.photos.filter(ph => ph?.hasTwoEyes && ph?.thumbnailBase64);
+    if (twoEyesPhotos.length > 0) {
+      const frontalPhoto = twoEyesPhotos.find(ph => ph.pose === 'frontal');
+      const semiPhoto = twoEyesPhotos.find(ph => ['semi_left', 'semi_right'].includes(ph.pose));
+      bestSessionPhotoThumb = (frontalPhoto || semiPhoto || twoEyesPhotos[0])?.thumbnailBase64;
+    } else {
+      bestSessionPhotoThumb = session.photos[0]?.thumbnailBase64 || null;
     }
   }
 
@@ -490,7 +503,7 @@ export async function finalizeCustomerAndAppointment({
     bestFaceStoragePath: session.bestFaceStoragePath,
     bestFaceScore: repApptScore || session.bestFaceScore || 0,
     thumbnailPath: session.bestFaceStoragePath || null,
-    thumbnailBase64: bestSessionPhotoThumb || session.photos[0]?.thumbnailBase64 || null,
+    thumbnailBase64: bestSessionPhotoThumb || null,
     photos: session.photos,
     embeddings: session.embeddings || [],
     representatives: sessionBank,

@@ -351,8 +351,19 @@ export function evaluateCausalConsolidation({
   let isSamePerson = false;
   let mergeReason = '';
 
-  // Regla de Ventana de Transición de Acabado (Finishing Phase)
-  if (isFinishingPhase && (
+  // Medida 1 (Argon 4): Consolidación por Manifold de Galería Robusta
+  // Si la galería limpia y el centroide demuestran identidad contundente (>= 0.48),
+  // la disparidad de una pose representativa cosmética (repSim) por giro antipodal (semi_right vs semi_left) queda ANULADA.
+  const hasRobustGalleryIdentity = (
+    centroidSim >= 0.48 &&
+    maxGallerySim >= 0.48 &&
+    (metrics.top3AvgSim || 0) >= 0.48
+  );
+
+  if (hasRobustGalleryIdentity) {
+    isSamePerson = true;
+    mergeReason = `galleryManifoldIdentity (centroid=${centroidSim.toFixed(3)}, maxGallery=${maxGallerySim.toFixed(3)}, top3Avg=${(metrics.top3AvgSim || 0).toFixed(3)} >= 0.48)`;
+  } else if (isFinishingPhase && (
     (centroidSim >= 0.48 && maxGallerySim >= 0.55) ||
     maxHomologousSim >= 0.52
   )) {

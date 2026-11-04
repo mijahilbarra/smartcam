@@ -638,7 +638,41 @@ export class VisitSessionService {
       }
     }
 
-    const startedAt = block.startedAtEpoch || now;
+    let startedAt = block.startedAtEpoch || now;
+    const absorbedTrackIds = [];
+
+    // Medida 3 (Argon 4): Absorción Retrospectiva de Presencia Sentada en la misma silla
+    // Si la silla física tuvo presencia sentada continua (SEATED_PRESENCE_BLOCK o bloques de presencia)
+    // inmediatamente antes de este bloque confirmado (sin vacancia prolongada > 45s y posterior a la última cita cerrada)
+    if (this.trackBlockManager?.allTrackBlocks && this.trackBlockManager.allTrackBlocks.length > 0) {
+      const lastClosedAppt = [...this.completedAppointments].reverse().find(a => a.chairId === chairId);
+      const minEpochAllowed = lastClosedAppt ? (lastClosedAppt.endedAtEpoch || new Date(lastClosedAppt.endedAt).getTime()) : 0;
+
+      const chairHistory = [...this.trackBlockManager.allTrackBlocks]
+        .filter(tb => tb.chairId === chairId && (tb.endedAtEpoch || 0) <= startedAt && (tb.startedAtEpoch || 0) >= minEpochAllowed)
+        .sort((a, b) => (b.endedAtEpoch || 0) - (a.endedAtEpoch || 0));
+
+      let cursorEpoch = startedAt;
+      let earliestPresenceEpoch = startedAt;
+
+      for (const tb of chairHistory) {
+        const gap = cursorEpoch - (tb.endedAtEpoch || cursorEpoch);
+        // Continuidad sentada: brecha <= 45s (timeout de vacancia de silla) y no descartado por ser staff/barbero
+        if (gap <= 45000 && gap >= -5000 && tb.verdict !== "DISCARDED_BARBER" && tb.verdict !== "DISCARDED_BARBER_STANDING") {
+          earliestPresenceEpoch = Math.min(earliestPresenceEpoch, tb.startedAtEpoch || cursorEpoch);
+          cursorEpoch = tb.startedAtEpoch || cursorEpoch;
+          absorbedTrackIds.push(tb.trackId);
+        } else {
+          break;
+        }
+      }
+
+      if (earliestPresenceEpoch < startedAt) {
+        this.logVerbal(`🪑 Absorción retrospectiva en ${chairName}: inicio ajustado de ${new Date(startedAt).toISOString()} a ${new Date(earliestPresenceEpoch).toISOString()} (${Math.round((startedAt - earliestPresenceEpoch) / 60000)} min absorbidos de presencia sentada, TBs: [${absorbedTrackIds.join(', ')}]).`, "process");
+        startedAt = earliestPresenceEpoch;
+      }
+    }
+
     const tempClientId = `person_${startedAt}_${block.trackId}`;
     const visitId = `appt_${startedAt}_${block.trackId}`;
 
@@ -652,7 +686,7 @@ export class VisitSessionService {
       appointmentId: visitId,
       trackId: block.trackId,
       initialTrackId: block.trackId,
-      allSessionTrackIds: [block.trackId],
+      allSessionTrackIds: [block.trackId, ...absorbedTrackIds],
       chairId,
       chairName,
       chairZone: block.chairZone || null,

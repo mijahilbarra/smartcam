@@ -294,6 +294,36 @@ export async function ingestFaceSample({
     return false;
   }
 
+  // Medida 4 (Argon 4): Cap Estricto de máximo 2 fotos para poses mirando al piso (tilted_down*)
+  // Evita que los cortes de nuca al final de la sesión canibalicen la galería o desplacen fotos frontales
+  const isTiltedDownPose = (p) => (p || '').includes('tilted_down');
+  const currentTiltedDownCount = session.photos.filter(p => isTiltedDownPose(p?.pose)).length;
+  if (isTiltedDownPose(incomingPose) && currentTiltedDownCount >= 2) {
+    let worstTiltedIdx = -1;
+    let worstTiltedScore = sharpnessScore;
+    for (let i = 0; i < session.photos.length; i++) {
+      if (isTiltedDownPose(session.photos[i]?.pose)) {
+        const score = session.photos[i]?.sharpnessScore || 0;
+        if (score < worstTiltedScore) {
+          worstTiltedScore = score;
+          worstTiltedIdx = i;
+        }
+      }
+    }
+    if (worstTiltedIdx !== -1) {
+      session.photos[worstTiltedIdx] = photoItem;
+      if (embedding && session.embeddings[worstTiltedIdx]) {
+        session.embeddings[worstTiltedIdx] = embedding;
+      }
+      session.lastPhotoAt = now;
+      session.lastMatchedClientFaceEpoch = now;
+      updateCoverIfBetter();
+      return true;
+    }
+    // Descartar fotos adicionales mirando al piso si no superan la nitidez de las 2 existentes
+    return false;
+  }
+
   if (session.photos.length < 20) {
     session.photos.push(photoItem);
     if (embedding) session.embeddings.push(embedding);
@@ -318,12 +348,17 @@ export async function ingestFaceSample({
         continue;
       }
 
+      // Blindaje anatómico: una foto mirando al suelo NUNCA puede expulsar a una frontal o semi-frontal
+      if (isTiltedDownPose(incomingPose) && isFrontalOrSemiPose(existingPose)) {
+        continue;
+      }
+
       // 1. Cuota máxima de 4 fotos para categoría reclinada (tilted_up*)
       if (incomingIsReclined && currentReclinedCount >= 4 && !isReclinedPose(existingPose)) {
         continue;
       }
-      // 3. Reserva protegida frontal/semi-frontal
-      if (!incomingIsFrontalOrSemi && isFrontalOrSemiPose(existingPose) && currentFrontalOrSemiCount <= 6) {
+      // 3. Reserva protegida frontal/semi-frontal (mínimo 10 slots protegidos)
+      if (!incomingIsFrontalOrSemi && isFrontalOrSemiPose(existingPose) && currentFrontalOrSemiCount <= 10) {
         continue;
       }
 
