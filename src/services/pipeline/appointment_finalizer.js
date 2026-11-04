@@ -630,15 +630,16 @@ export async function executeSessionClosurePipeline({
 
   session.status = "to_verify";
 
-  // Regla Estricta Causal Atemporal: Al cerrarse la sesión en la silla C, se evalúan las citas históricas
-  // previas en la misma silla (t_prev < t_actual, sin límite rígido de tiempo)
+  // Regla Estricta Causal con Techo Temporal (Leyes Argon 4): Al cerrarse la sesión en la silla C,
+  // se evalúan las citas históricas previas en la misma silla dentro de una brecha máxima de 8 minutos (480s).
   const currentStartMs = session.startedAtEpoch || (session.startedAt ? new Date(session.startedAt).getTime() : now);
   const minMergeGap = PIPELINE_CONFIG.consolidation?.minMergeGapMs ?? -300000;
+  const MAX_CONSOLIDATION_GAP_MS = 480000; // 8 minutos techo temporal absoluto
   const candidatePrevAppts = [...completedAppointments].reverse().filter(a => {
     if (a.chairId !== session.chairId) return false;
     const aEnd = a.endedAtEpoch || (a.endedAt ? new Date(a.endedAt).getTime() : 0);
     const gap = currentStartMs - aEnd;
-    return gap >= minMergeGap;
+    return gap >= minMergeGap && gap <= MAX_CONSOLIDATION_GAP_MS;
   });
   const prevSameChairAppt = candidatePrevAppts[0] || null;
 
@@ -684,14 +685,14 @@ export async function executeSessionClosurePipeline({
   }
 
   // Consolidación cronológica causal (Capa 13 con Cirugía Argon 4)
-  // Evalúa la cita inmediata previa en la misma silla; si no consolida con ella únicamente porque fue un tramo corto
-  // o de pocas fotos (<= 8 fotos o <= 6 min, ej. cliente ocluido o inclinado), permite evaluar puente con la penúltima cita
-  // siempre que la cita intermedia NO sea una atención larga de otro cliente confirmado.
+  // Evalúa la cita inmediata previa en la misma silla; si no consolida con ella únicamente porque fue una anomalía
+  // ultra-corta y sin fotos (<= 2 min Y <= 3 fotos), permite evaluar puente con la penúltima cita.
+  // Cualquier atención mayor a 2 minutos o con más de 3 fotos SELLA LA SILLA y prohíbe el puente.
   const targetCandidateAppts = [];
   if (candidatePrevAppts.length > 0) {
     targetCandidateAppts.push(candidatePrevAppts[0]);
     const immediatePrev = candidatePrevAppts[0];
-    const isInterveningBridgeable = (immediatePrev.photos?.length || 0) <= 8 || (immediatePrev.durationMinutes || 0) <= 6;
+    const isInterveningBridgeable = (immediatePrev.durationMinutes || 0) <= 2 && (immediatePrev.photos?.length || 0) <= 3;
     if (candidatePrevAppts.length > 1 && isInterveningBridgeable) {
       targetCandidateAppts.push(candidatePrevAppts[1]);
     }
@@ -717,7 +718,7 @@ export async function executeSessionClosurePipeline({
     if (consolidatedAppt) {
       if (cIdx > 0 && targetCandidateAppts[0]) {
         const interAppt = targetCandidateAppts[0];
-        if ((interAppt.photos?.length || 0) <= 10 && (interAppt.durationMinutes || 0) <= 8) {
+        if ((interAppt.photos?.length || 0) <= 3 && (interAppt.durationMinutes || 0) <= 2) {
           bridgedInterveningAppt = interAppt;
         }
       }
@@ -775,8 +776,8 @@ export async function executeSessionClosurePipeline({
       const prevEndEpoch = prevCandidate.endedAtEpoch || (prevCandidate.endedAt ? new Date(prevCandidate.endedAt).getTime() : 0);
       const gapToPrev = curStartEpoch - prevEndEpoch;
 
-      // Evaluar si la brecha es admisible en la misma silla (hasta 20 minutos / 1200s)
-      if (gapToPrev > 1200000 || gapToPrev < minMergeGap) break;
+      // Evaluar si la brecha es admisible en la misma silla (hasta 8 minutos / 480s según consenso Argon 4)
+      if (gapToPrev > 480000 || gapToPrev < minMergeGap) break;
 
       const chainEval = evaluateCausalConsolidation({
         session: consolidatedAppt,
@@ -847,6 +848,52 @@ export async function executeSessionClosurePipeline({
     return consolidatedAppt;
   }
 
+  // Absorción de Cola de Salida (Exit Tail) / Micro-Continuidad (Argon 4 Consensus)
+  // Si una sesión corta (<= 4 min / <= 270s, <= 3 fotos) cierra en la misma silla inmediatamente contigua
+  // (gap <= 30s) a la cita previa confirmada, se absorbe como cola de salida del cliente para no fragmentarlo.
+  const immediateCandidate = candidatePrevAppts[0] || null;
+  const durationSec = session.durationSeconds || (session.startedAtEpoch && session.endedAtEpoch ? Math.round((session.endedAtEpoch - session.startedAtEpoch) / 1000) : durationMinutes * 60);
+
+  if (immediateCandidate && (durationMinutes <= 4 || durationSec <= 270) && (session.photos?.length || 0) <= 3) {
+    const prevEnd = immediateCandidate.endedAtEpoch || (immediateCandidate.endedAt ? new Date(immediateCandidate.endedAt).getTime() : 0);
+    const curStart = session.startedAtEpoch || (session.startedAt ? new Date(session.startedAt).getTime() : now);
+    const tailGapMs = curStart - prevEnd;
+    if (tailGapMs <= 30000 && tailGapMs >= minMergeGap) {
+      logVerbal(`🔗 [ExitTail] Cola de salida de ${durationMinutes} min (${session.photos?.length || 0} fotos, gap=${Math.round(tailGapMs / 1000)}s) absorbida directamente en ${immediateCandidate.clientName} (#${immediateCandidate.trackId}) en ${session.chairName}.`, "success");
+      const sessionEndEpoch = session.endedAtEpoch || now;
+      immediateCandidate.endedAt = new Date(sessionEndEpoch).toISOString();
+      immediateCandidate.endedAtEpoch = sessionEndEpoch;
+      immediateCandidate.durationMinutes = Math.max(
+        (immediateCandidate.durationMinutes || 0) + durationMinutes,
+        Math.round((sessionEndEpoch - (immediateCandidate.startedAtEpoch || new Date(immediateCandidate.startedAt).getTime())) / 60000)
+      );
+      if (session.photos && session.photos.length > 0) {
+        immediateCandidate.photos = [...(immediateCandidate.photos || []), ...session.photos];
+      }
+      const sqlite = sqliteClient || (customerService?.sqliteClient);
+      if (sqlite?.saveAppointment) {
+        try { sqlite.saveAppointment(immediateCandidate); } catch (_) {}
+      }
+      if (db) {
+        try { await db.doc(`camera_catcher_appointments/${immediateCandidate.id}`).set(sanitizeForFirestore(immediateCandidate)); } catch (_) {}
+      }
+      const clientToDelete = session.tempClientId || session.clientId || session.personId;
+      if (clientToDelete && clientToDelete !== immediateCandidate.clientId && !String(clientToDelete).startsWith("staff_")) {
+        await customerService?.deleteCustomer?.(clientToDelete, { db });
+      }
+      trackBlockManager?.updateBlocksBySession?.(session, {
+        status: "fusionado",
+        statusLabel: `Absorbido en ${immediateCandidate.clientName} (#${immediateCandidate.trackId})`,
+        appointmentId: immediateCandidate.id,
+        clientName: immediateCandidate.clientName,
+        mergedWithTrackId: immediateCandidate.trackId,
+        mergedWithLabel: `${immediateCandidate.clientName} (#${immediateCandidate.trackId})`,
+        reason: `Cola de salida (${durationMinutes} min, ${session.photos?.length || 0} fotos) absorbida en ${immediateCandidate.clientName} (#${immediateCandidate.trackId}).`
+      });
+      return immediateCandidate;
+    }
+  }
+
   // Si NO se une al Cliente Anterior: descarte por ruido lateral
   const noiseCheck = await validatePostConsolidationNoise({
     session,
@@ -884,7 +931,7 @@ export async function executeSessionClosurePipeline({
     if (sameClientRecentAppt && !isCapeBarrierSeparating(sameClientRecentAppt, session)) {
       if (sameClientRecentIndex > 0 && targetCandidateAppts[0]) {
         const interAppt = targetCandidateAppts[0];
-        if ((interAppt.photos?.length || 0) <= 6 && (interAppt.durationMinutes || 0) <= 6) {
+        if ((interAppt.photos?.length || 0) <= 3 && (interAppt.durationMinutes || 0) <= 2) {
           const idx = completedAppointments.findIndex(a => a.id === interAppt.id);
           if (idx !== -1) completedAppointments.splice(idx, 1);
           const vIdx = completedVisits.findIndex(a => a.id === interAppt.id);

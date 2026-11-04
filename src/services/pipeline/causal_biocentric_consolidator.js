@@ -125,10 +125,33 @@ export function evaluateCausalConsolidation({
   const isOverlap = rawGapMs < 0;
 
   const minMergeGap = PIPELINE_CONFIG.consolidation?.minMergeGapMs ?? -300000;
+  // Techo temporal físico inviolable: ninguna atención en barbería tolera brechas vacías > 8 minutos (480s)
+  const MAX_CONSOLIDATION_GAP_MS = 480000;
 
-  // Se eliminan límites rígidos de tiempo arbitrarios (45m, 60m): la consolidación es atemporal (timeless) y guiada por biometría
-  if (rawGapMs < minMergeGap) {
-    return { shouldMerge: false, reason: `gap_out_of_bounds_${Math.round(rawGapMs / 1000)}s`, metrics: { gapMs }, repA: null, repB: null };
+  if (rawGapMs < minMergeGap || rawGapMs > MAX_CONSOLIDATION_GAP_MS) {
+    return {
+      shouldMerge: false,
+      reason: rawGapMs > MAX_CONSOLIDATION_GAP_MS ? `gap_exceeds_physical_limit_${Math.round(rawGapMs / 1000)}s` : `gap_out_of_bounds_${Math.round(rawGapMs / 1000)}s`,
+      metrics: { gapMs },
+      repA: null,
+      repB: null
+    };
+  }
+
+  // Principio de Exclusión Mutua / Intervalo Convexo:
+  // Si otra cita confirmada en la misma silla terminó después de prevEndedMs y empezó antes de sessionStartMs,
+  // la silla fue ocupada por otro cliente. La consolidación a través de una cita intermedia está terminantemente PROHIBIDA.
+  const hasInterveningConfirmedAppt = pastAppointments.some(a =>
+    a.chairId === session.chairId &&
+    a.id !== prevSameChairAppt.id &&
+    a.id !== session.id &&
+    (a.startedAtEpoch || (a.startedAt ? new Date(a.startedAt).getTime() : 0)) >= prevEndedMs &&
+    (a.endedAtEpoch || (a.endedAt ? new Date(a.endedAt).getTime() : 0)) <= sessionStartMs &&
+    (a.durationMinutes || 0) >= 3
+  );
+  if (hasInterveningConfirmedAppt) {
+    logVerbal(`[CausalConsolidator] 🛑 Veto Topológico: existe una cita confirmada intermedia en ${session.chairId}. Silla sellada.`);
+    return { shouldMerge: false, reason: "intervening_confirmed_appointment_in_chair", metrics: {}, repA: null, repB: null };
   }
 
   // Vectores y fotos de la cita previa (enriquecidos con base histórica completa si está disponible)
