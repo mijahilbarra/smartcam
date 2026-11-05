@@ -341,7 +341,8 @@ export async function finalizeCustomerAndAppointment({
         db,
         bucket,
         galleryUpdated: false,
-        forceSync: true
+        forceSync: true,
+        forceConfirmSync: true
       });
     }
 
@@ -427,12 +428,15 @@ export async function finalizeCustomerAndAppointment({
     logVerbal(`🆕 Nuevo cliente formalizado: "${finalClient.name}" con galería de ${session.photos.length} fotos.`, "success");
 
     if (customerService) {
+      finalClient.isConfirmed = true;
+      finalClient.status = "new";
       await customerService.saveOrUpdateCustomer(finalClient, {
         db,
         bucket,
-        isNew: false,
+        isNew: true,
         galleryUpdated: true,
-        forceSync: true
+        forceSync: true,
+        forceConfirmSync: true
       });
     }
   }
@@ -528,7 +532,10 @@ export async function finalizeCustomerAndAppointment({
   // Persistir en Firestore en camera_catcher_appointments
   if (db) {
     try {
-      await db.doc(`camera_catcher_appointments/${appointmentRecord.id}`).set(sanitizeForFirestore(appointmentRecord));
+      await Promise.race([
+        db.doc(`camera_catcher_appointments/${appointmentRecord.id}`).set(sanitizeForFirestore(appointmentRecord)),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout guardando cita en Firestore (8s)")), 8000))
+      ]);
       logVerbal(`✅ Atención registrada exitosamente en camera_catcher_appointments/${appointmentRecord.id} (${appointmentRecord.clientName}, ${durationMinutes} min, ${session.photos.length} fotos).`, "success");
     } catch (dbErr) {
       console.error(`[Appointment] Error guardando atención en Firestore:`, dbErr.message);
@@ -630,11 +637,13 @@ export async function executeSessionClosurePipeline({
 
   session.status = "to_verify";
 
-  // Regla Estricta Causal con Techo Temporal (Leyes Argon 4): Al cerrarse la sesión en la silla C,
-  // se evalúan las citas históricas previas en la misma silla dentro de una brecha máxima de 8 minutos (480s).
+  // Regla Causal Topológica (Leyes Argon 4): Al cerrarse la sesión en la silla C,
+  // se evalúan las citas históricas previas en la misma silla dentro de una ventana máxima de 30 minutos (1800s).
+  // Nota: Si hubo cualquier cita confirmada intermedia en la silla (> 2 min o > 3 fotos), el Horizonte de Eventos
+  // sella la silla y prohíbe terminantemente la consolidación retrospectiva.
   const currentStartMs = session.startedAtEpoch || (session.startedAt ? new Date(session.startedAt).getTime() : now);
   const minMergeGap = PIPELINE_CONFIG.consolidation?.minMergeGapMs ?? -300000;
-  const MAX_CONSOLIDATION_GAP_MS = 480000; // 8 minutos techo temporal absoluto
+  const MAX_CONSOLIDATION_GAP_MS = 1800000; // 30 minutos límite físico de servicio continuo
   const candidatePrevAppts = [...completedAppointments].reverse().filter(a => {
     if (a.chairId !== session.chairId) return false;
     const aEnd = a.endedAtEpoch || (a.endedAt ? new Date(a.endedAt).getTime() : 0);
@@ -776,8 +785,8 @@ export async function executeSessionClosurePipeline({
       const prevEndEpoch = prevCandidate.endedAtEpoch || (prevCandidate.endedAt ? new Date(prevCandidate.endedAt).getTime() : 0);
       const gapToPrev = curStartEpoch - prevEndEpoch;
 
-      // Evaluar si la brecha es admisible en la misma silla (hasta 8 minutos / 480s según consenso Argon 4)
-      if (gapToPrev > 480000 || gapToPrev < minMergeGap) break;
+      // Evaluar si la brecha es admisible en la misma silla (hasta 30 minutos / 1800s según modelo causal)
+      if (gapToPrev > 1800000 || gapToPrev < minMergeGap) break;
 
       const chainEval = evaluateCausalConsolidation({
         session: consolidatedAppt,
@@ -875,7 +884,12 @@ export async function executeSessionClosurePipeline({
         try { sqlite.saveAppointment(immediateCandidate); } catch (_) {}
       }
       if (db) {
-        try { await db.doc(`camera_catcher_appointments/${immediateCandidate.id}`).set(sanitizeForFirestore(immediateCandidate)); } catch (_) {}
+        try {
+          await Promise.race([
+            db.doc(`camera_catcher_appointments/${immediateCandidate.id}`).set(sanitizeForFirestore(immediateCandidate)),
+            new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout actualizando cita en Firestore (8s)")), 8000))
+          ]);
+        } catch (_) {}
       }
       const clientToDelete = session.tempClientId || session.clientId || session.personId;
       if (clientToDelete && clientToDelete !== immediateCandidate.clientId && !String(clientToDelete).startsWith("staff_")) {
@@ -983,7 +997,12 @@ export async function executeSessionClosurePipeline({
         try { sqlite.saveAppointment(sameClientRecentAppt); } catch (_) {}
       }
       if (db) {
-        try { await db.doc(`camera_catcher_appointments/${sameClientRecentAppt.id}`).set(sanitizeForFirestore(sameClientRecentAppt)); } catch (_) {}
+        try {
+          await Promise.race([
+            db.doc(`camera_catcher_appointments/${sameClientRecentAppt.id}`).set(sanitizeForFirestore(sameClientRecentAppt)),
+            new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout actualizando cita en Firestore (8s)")), 8000))
+          ]);
+        } catch (_) {}
       }
       if (session.tempClientId && session.tempClientId !== sameClientRecentAppt.clientId) {
         await customerService?.deleteCustomer?.(session.tempClientId, { db });

@@ -22,7 +22,8 @@ export async function acquireFrame({
 
   let buffer = null;
   if (isRealtime) {
-    if (streamServer?.isPaused || streamServer?.mockVideoEnded) {
+    const isMockDraining = streamServer?._mockEndedPendingFlush && (streamServer?.frameQueue?.length || 0) > 0;
+    if (streamServer?.isPaused || (streamServer?.mockVideoEnded && !isMockDraining)) {
       return null;
     }
     buffer = streamServer?.getLatestFrame?.();

@@ -125,8 +125,8 @@ export function evaluateCausalConsolidation({
   const isOverlap = rawGapMs < 0;
 
   const minMergeGap = PIPELINE_CONFIG.consolidation?.minMergeGapMs ?? -300000;
-  // Techo temporal físico inviolable: ninguna atención en barbería tolera brechas vacías > 8 minutos (480s)
-  const MAX_CONSOLIDATION_GAP_MS = 480000;
+  // Ventana temporal máxima de servicio continuo en la misma silla (30 minutos / 1800s)
+  const MAX_CONSOLIDATION_GAP_MS = 1800000;
 
   if (rawGapMs < minMergeGap || rawGapMs > MAX_CONSOLIDATION_GAP_MS) {
     return {
@@ -663,7 +663,8 @@ export async function consolidateChairAppointment({
       db,
       bucket,
       galleryUpdated: true,
-      forceSync: true
+      forceSync: true,
+      forceConfirmSync: true
     });
   }
 
@@ -682,7 +683,12 @@ export async function consolidateChairAppointment({
   }
   // Persistir actualización en Firestore
   if (db) {
-    try { await db.doc(`camera_catcher_appointments/${prevSameChairAppt.id}`).set(sanitizeForFirestore(prevSameChairAppt)); } catch (_) {}
+    try {
+      await Promise.race([
+        db.doc(`camera_catcher_appointments/${prevSameChairAppt.id}`).set(sanitizeForFirestore(prevSameChairAppt)),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout actualizando cita en Firestore (8s)")), 8000))
+      ]);
+    } catch (_) {}
   }
 
   // Exportar auditoría fotográfica

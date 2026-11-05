@@ -503,14 +503,29 @@ export class CustomerService {
     };
     this.profilesCache.set(persisted.id, cachedForComparison);
 
-    // 3. Determinar si requiere reflejo a Firebase
+    // 3. Determinar si requiere reflejo a Firebase:
+    // REGLA CRÍTICA DE COSTOS Y ARQUITECTURA FIRESTORE:
+    // Solo sincronizar perfiles confirmados (Staff o Clientes formalizados con cita/visita confirmada).
+    // Prohibido sincronizar clientes provisorios / en análisis (to_verify / provisional / en_corte) a Firestore.
+    // El cliente en análisis se mantiene en el state en memoria del servidor y se transmite por SSE al frontend.
+    const isActuallyStaff = customerData.id === "staff_barbero" || String(customerData.id).startsWith("staff_") || customerData.isStaff === true;
+    const isProvisionalInAnalysis = resolvedStatus === "to_verify" ||
+                                   resolvedStatus === "provisional" ||
+                                   resolvedStatus === "en_corte" ||
+                                   resolvedStatus === "in_progress" ||
+                                   /^Cliente\s*\(Por verificar\)/i.test(customerData.name || "") ||
+                                   customerData.isConfirmed === false;
+
+    const isConfirmedCustomer = isActuallyStaff || options.forceConfirmSync === true || (!isProvisionalInAnalysis && !String(customerData.id).startsWith("temp_"));
+
     const shouldReflectToFirebase = Boolean(
-      options.db && (
+      options.db && isConfirmedCustomer && (
         options.isNew ||
         options.newAngle ||
         options.higherSharpness ||
         options.galleryUpdated ||
         options.forceSync ||
+        options.forceConfirmSync ||
         (options.sharpnessScore && options.sharpnessScore > (current.bestFaceScore || 0))
       )
     );
@@ -570,6 +585,20 @@ export class CustomerService {
     const isClientName = /^Cliente #\d+$/i.test(customer.name?.trim() || "");
     const isClientExplicit = isClientName || customer.role === "client" || customer.isStaff === false;
     const isActuallyStaff = !isClientExplicit && (customer.isStaff === true && (customer.role === "barber" || String(customer.id).startsWith("staff_")));
+
+    // Guardián estricto: Solo sincronizar a Firestore clientes confirmados o Staff
+    const isProvisional = customer.status === "to_verify" ||
+                          customer.status === "provisional" ||
+                          customer.status === "en_corte" ||
+                          customer.status === "in_progress" ||
+                          /^Cliente\s*\(Por verificar\)/i.test(customer.name || "") ||
+                          customer.isConfirmed === false;
+
+    const isConfirmedCustomer = isActuallyStaff || options.forceConfirmSync === true || (!isProvisional && !String(customer.id).startsWith("temp_"));
+    if (!isConfirmedCustomer) {
+      return; // No escribir clientes provisionales en análisis a Firestore
+    }
+
     const firestoreData = {
       id: customer.id,
       name: customer.name || "Cliente",
@@ -600,11 +629,14 @@ export class CustomerService {
     }
 
     const docRef = db.doc(`camera_catcher_people/${customer.id}`);
+    const setPromise = isNew ? docRef.set(firestoreData) : docRef.set(firestoreData, { merge: true });
+    await Promise.race([
+      setPromise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout sincronizando cliente a Firestore (8s)")), 8000))
+    ]);
     if (isNew) {
-      await docRef.set(firestoreData);
       console.log(`[CustomerService] ✅ Nuevo cliente sincronizado con Firestore: "${customer.name}" (${customer.id})`);
     } else {
-      await docRef.set(firestoreData, { merge: true });
       console.log(`[CustomerService] 🔄 Cliente actualizado en Firestore: "${customer.name}" (${customer.id})`);
     }
   }
@@ -642,7 +674,10 @@ export class CustomerService {
       }
 
       // 2. En Firestore si db o this.db está disponible:
-      const firestoreInstance = options.db || this.db;
+      // Optimización de costos: Solo invocar delete en Firestore si el cliente era confirmado o existía previamente en la nube.
+      // Los clientes provisorios / to_verify nunca se sincronizan a Firestore, por lo que intentar borrarlos es una llamada innecesaria.
+      const isProvisional = !id || id.startsWith("temp_") || (this.profilesCache.get(id)?.status === "to_verify") || (this.sqliteClient?.getCustomerById?.(id)?.status === "to_verify");
+      const firestoreInstance = (!isProvisional && (options.db || this.db)) || null;
       if (firestoreInstance) {
         try {
           let deleted = false;
@@ -651,7 +686,10 @@ export class CustomerService {
             if (col && typeof col.doc === "function") {
               const docRef = col.doc(id);
               if (docRef && typeof docRef.delete === "function") {
-                await docRef.delete();
+                await Promise.race([
+                  docRef.delete(),
+                  new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout eliminando doc de Firestore (5s)")), 5000))
+                ]);
                 deleted = true;
               }
             }
@@ -659,7 +697,10 @@ export class CustomerService {
           if (!deleted && typeof firestoreInstance.doc === "function") {
             const docRef = firestoreInstance.doc(`camera_catcher_people/${id}`);
             if (docRef && typeof docRef.delete === "function") {
-              await docRef.delete();
+              await Promise.race([
+                docRef.delete(),
+                new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout eliminando doc de Firestore (5s)")), 5000))
+              ]);
               deleted = true;
             }
           }
