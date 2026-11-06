@@ -95,8 +95,24 @@ async function cleanDate(dateStr, wipeAll = false) {
   await deleteDocs(peopleToDelete);
   console.log(`[StreamTest] Firestore: ${peopleToDelete.length} clientes sin citas eliminados.`);
 
+  const unitsSnap = await db.collection("camera_catcher_attention_units").get();
+  const unitsToDelete = wipeAll
+    ? unitsSnap.docs
+    : unitsSnap.docs.filter((d) => {
+        const u = d.data();
+        return inRange(u.startedAt || u.startTime || u.createdAt, range);
+      });
+  await deleteDocs(unitsToDelete);
+  console.log(`[StreamTest] Firestore: ${unitsToDelete.length} unidades de atención eliminadas.`);
+
   // SQLite local de test
   const sqlite = new Database(path.join(process.cwd(), "data", "barberia_test.db"));
+  try {
+    sqlite.prepare("CREATE TABLE IF NOT EXISTS attention_units (id TEXT PRIMARY KEY, appointment_id TEXT, chair_id TEXT, chair_name TEXT, client_id TEXT, client_name TEXT, started_at TEXT, ended_at TEXT, started_epoch INTEGER, ended_epoch INTEGER, duration_minutes INTEGER, duration_seconds INTEGER, status TEXT, best_face_score REAL, thumbnail_path TEXT, thumbnail_base64 TEXT, photos_json TEXT, embeddings_count INTEGER, created_at TEXT, updated_at TEXT)").run();
+    if (wipeAll) {
+      sqlite.prepare("DELETE FROM attention_units").run();
+    }
+  } catch (_) {}
   const rows = sqlite.prepare("SELECT id, started_at FROM appointments").all();
   const delAppt = sqlite.prepare("DELETE FROM appointments WHERE id = ?");
   let sqliteAppts = 0;

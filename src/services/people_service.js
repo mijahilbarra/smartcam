@@ -92,6 +92,9 @@ export function enrichPersonAngles(person, { embedding, faceThumbnailBase64, sha
     }];
   }
 
+  const poseClean = pose || 'frontal';
+  const poseLabelClean = poseLabel || (poseClean === 'frontal' ? 'Frontal' : poseClean);
+
   // Candado de anclaje canónico: el nuevo embedding DEBE parecerse al rostro canónico original o al cluster de la persona
   if (embedding && currentGallery.length > 0 && !options.skipCanonicalCheck) {
     const canonicalItem = currentGallery[0];
@@ -130,8 +133,6 @@ export function enrichPersonAngles(person, { embedding, faceThumbnailBase64, sha
     }
   }
 
-  const poseClean = pose || 'frontal';
-  const poseLabelClean = poseLabel || (poseClean === 'frontal' ? 'Frontal' : poseClean);
   const isHighRes = options.isHighRes === true || Boolean(person?.isHighRes);
 
   const newPhoto = {

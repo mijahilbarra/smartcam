@@ -843,9 +843,8 @@ const toVerifyInCust = custService.getCustomerData(liveSession.tempClientId);
 assert.ok(toVerifyInCust, "Debe existir en SQLite el perfil temporal 'to_verify'");
 assert.strictEqual(toVerifyInCust.status, "to_verify", "El status debe ser 'to_verify'");
 assert.strictEqual(toVerifyInCust.name, "Cliente (Por verificar)");
-assert.ok(firestoreDocs[`camera_catcher_people/${liveSession.tempClientId}`], "Debe sincronizarse de inmediato a Firestore");
-assert.strictEqual(firestoreDocs[`camera_catcher_people/${liveSession.tempClientId}`].status, "to_verify");
-console.log("-> Creación en tiempo real de 'to_verify' en SQLite y Firestore validada exitosamente.");
+assert.strictEqual(firestoreDocs[`camera_catcher_people/${liveSession.tempClientId}`], undefined, "NO debe subirse a Firestore en estado provisorio (solo confirmados para ahorro masivo de cuota)");
+console.log("-> Creación en tiempo real de 'to_verify' estrictamente en SQLite y RAM (sin consumo Firestore) validada exitosamente.");
 
 // [23] Blindaje de salida en checkChairTimeouts contra detección fantasma de cabezal vacío (< 0.50)
 console.log("\n[23] Probando que detección fantasma de cabezal (< 0.50) no interrumpe el temporizador de salida...");

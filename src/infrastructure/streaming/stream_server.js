@@ -492,11 +492,11 @@ export class StreamServer {
         if (this.mockVideoPath && !this.mockVideoLoop) {
           console.log(`[Stream] 🎬 Reproducción de video mock finalizada (código: ${code}, una sola pasada). Pausando en el último fotograma.`);
           this.isPersistent = false;
-          this.mockVideoEnded = true;
           if (this.streamFastForward && this.frameQueue && this.frameQueue.length > 0) {
             console.log(`[Stream] ⏳ Drenando últimos ${this.frameQueue.length} cuadros pendientes en cola antes del flush...`);
             this._mockEndedPendingFlush = true;
           } else {
+            this.mockVideoEnded = true;
             this.pauseOnLastFrame();
             if (typeof this.onMockVideoEnd === "function") {
               Promise.resolve(this.onMockVideoEnd(this.getVirtualNow())).catch(err => {
@@ -682,6 +682,7 @@ export class StreamServer {
 
       if (this.frameQueue.length === 0 && this._mockEndedPendingFlush) {
         this._mockEndedPendingFlush = false;
+        this.mockVideoEnded = true;
         this.pauseOnLastFrame();
         if (typeof this.onMockVideoEnd === "function") {
           Promise.resolve(this.onMockVideoEnd(this.getVirtualNow())).catch(err => {

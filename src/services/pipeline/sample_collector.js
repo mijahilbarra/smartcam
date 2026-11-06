@@ -425,13 +425,13 @@ export async function ingestFaceSample({
         embedding: session.embeddings[0] || null
       };
       customerService.saveOrUpdateCustomer(updatedToVerify, {
-        db,
-        bucket,
+        db: null,
+        bucket: null,
         galleryUpdated: true,
-        forceSync: true,
+        forceSync: false,
         backgroundSync: true
       }).catch(err => {
-        console.warn(`[Appointment] Error en live-sync de to_verify:`, err.message);
+        console.warn(`[Appointment] Error en local update de to_verify:`, err.message);
       });
     }
   }

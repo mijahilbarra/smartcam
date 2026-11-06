@@ -9,6 +9,7 @@ import DeleteAppointmentModal from '@/widgets/appointments-calendar/ui/DeleteApp
 import ClientPhotosModal from '@/widgets/people-directory/ui/ClientPhotosModal.vue';
 import { useAppointments } from '@/entities/appointment/model/useAppointments';
 import { usePeople } from '@/entities/person/model/usePeople';
+import { useDaemonState } from '@/entities/daemon/model/useDaemonState';
 import { getBestFaceThumbnail, isValidImageUrl, getPhotoUrl } from '@/shared/lib/photo-utils';
 
 const props = defineProps({
@@ -28,7 +29,8 @@ const props = defineProps({
 
 const emit = defineEmits(['switch-tab']);
 
-const { appointments, loading, deleteAppointment } = useAppointments();
+const { appointments, loading, deleteAppointment, refresh } = useAppointments();
+const { activeBackendUrl } = useDaemonState();
 const { people } = usePeople();
 
 // Filtro de silla: 'all' | 'Silla 1' | 'Silla 2'
@@ -240,14 +242,249 @@ const getClientAppointments = (personId) => {
 const selectedAppointment = ref(null);
 const isDetailModalOpen = ref(false);
 
-const openDetailModal = (apt) => {
+// ============================================================================
+// Unidades de Atención (Service Atoms) y Drag & Drop (Fase 2 & 3)
+// ============================================================================
+const expandedUnitsByAppt = ref({});
+const unitsDataByAppt = ref({});
+const loadingUnitsByAppt = ref({});
+const isDraggingUnit = ref(false);
+const draggedUnitInfo = ref(null);
+const dragOverApptId = ref(null);
+const isProcessingAction = ref(false);
+const actionFeedback = ref(null);
+const targetApptToMerge = ref('');
+
+const showFeedback = (message, type = 'success') => {
+  actionFeedback.value = { message, type };
+  setTimeout(() => {
+    if (actionFeedback.value?.message === message) {
+      actionFeedback.value = null;
+    }
+  }, 4500);
+};
+
+const getBackendUrl = () => {
+  return activeBackendUrl?.value || 'http://localhost:8085';
+};
+
+// Sincronizar unidades reactivamente cuando vienen embebidas desde Firestore
+watch(appointments, (list) => {
+  if (!Array.isArray(list)) return;
+  for (const apt of list) {
+    if (!unitsDataByAppt.value[apt.id]?.length && !loadingUnitsByAppt.value[apt.id] && !apt._unitsFetched) {
+      apt._unitsFetched = true;
+      // microtask: el watcher inmediato corre durante setup, antes de definir loadUnitsForAppointment
+      const id = apt.id;
+      queueMicrotask(() => loadUnitsForAppointment(id));
+    }
+  }
+  for (const apt of list) {
+    // Las unidades embebidas en Firestore pueden estar desactualizadas (se escriben al crear la cita):
+    // nunca pisar datos del backend que tengan más unidades.
+    if (Array.isArray(apt.attentionUnits) && apt.attentionUnits.length > 0) {
+      const current = unitsDataByAppt.value[apt.id];
+      if (!current || current.length < apt.attentionUnits.length) {
+        unitsDataByAppt.value[apt.id] = apt.attentionUnits;
+      }
+    }
+  }
+}, { immediate: true, deep: true });
+
+const loadUnitsForAppointment = async (appointmentId, force = false) => {
+  if (!appointmentId) return [];
+  // Siempre consultar al backend (fuente de verdad en SQLite): el array embebido en Firestore
+  // puede traer solo la primera unidad. Se muestra lo embebido mientras tanto.
+  const apt = appointments.value.find(a => a.id === appointmentId);
+  if (!unitsDataByAppt.value[appointmentId]?.length && Array.isArray(apt?.attentionUnits) && apt.attentionUnits.length > 0) {
+    unitsDataByAppt.value[appointmentId] = apt.attentionUnits;
+  }
+  loadingUnitsByAppt.value[appointmentId] = true;
+  try {
+    const backend = getBackendUrl();
+    const res = await fetch(`${backend}/api/appointments/${appointmentId}/units`);
+    if (res.ok) {
+      const data = await res.json();
+      const fresh = Array.isArray(data.units) ? data.units : [];
+      if (fresh.length > 0 || !unitsDataByAppt.value[appointmentId]?.length) {
+        unitsDataByAppt.value[appointmentId] = fresh;
+      }
+      return unitsDataByAppt.value[appointmentId];
+    }
+  } catch (err) {
+    console.warn(`[TodaySchedule] Error cargando unidades de ${appointmentId}:`, err.message);
+  } finally {
+    loadingUnitsByAppt.value[appointmentId] = false;
+  }
+  return unitsDataByAppt.value[appointmentId] || [];
+};
+
+// Unidades a mostrar en la tarjeta. Toda cita tiene al menos 1 unidad: si aún no llegaron
+// datos de unidades, se muestra una unidad sintética con el rango completo de la cita.
+const getCardUnits = (apt) => {
+  const units = unitsDataByAppt.value[apt.id];
+  if (Array.isArray(units) && units.length > 0) return units;
+  if (Array.isArray(apt.attentionUnits) && apt.attentionUnits.length > 0) return apt.attentionUnits;
+  return [{
+    id: `${apt.id}_unit_1`,
+    startedAt: apt.startedAt || apt.startTime,
+    endedAt: apt.endedAt || apt.endTime,
+    durationMinutes: apt.durationMinutes || 0
+  }];
+};
+
+const toggleUnits = async (apt) => {
+  const current = expandedUnitsByAppt.value[apt.id];
+  expandedUnitsByAppt.value[apt.id] = !current;
+  if (!current) {
+    await loadUnitsForAppointment(apt.id);
+  }
+};
+
+const handleSplitUnit = async (unit, apt) => {
+  if (!unit?.id) return;
+  isProcessingAction.value = true;
+  try {
+    const backend = getBackendUrl();
+    const res = await fetch(`${backend}/api/appointments/split-unit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ unitId: unit.id })
+    });
+    const result = await res.json();
+    if (result.status === 'success') {
+      showFeedback('Unidad separada con éxito en una nueva cita independiente.');
+      if (typeof refresh === 'function') refresh();
+      await loadUnitsForAppointment(apt.id, true);
+      if (selectedAppointment.value?.id === apt.id) {
+        await loadUnitsForAppointment(selectedAppointment.value.id, true);
+      }
+    } else {
+      showFeedback(result.error || 'No se pudo separar la unidad.', 'error');
+    }
+  } catch (err) {
+    showFeedback(`Error separando unidad: ${err.message}`, 'error');
+  } finally {
+    isProcessingAction.value = false;
+  }
+};
+
+const onDragStartUnit = (event, unit, apt) => {
+  isDraggingUnit.value = true;
+  draggedUnitInfo.value = { unitId: unit.id, sourceApptId: apt.id, unitName: unit.clientName || 'Unidad de atención' };
+  event.dataTransfer.effectAllowed = 'move';
+  event.dataTransfer.setData('text/plain', JSON.stringify(draggedUnitInfo.value));
+};
+
+const onDragEndUnit = () => {
+  isDraggingUnit.value = false;
+  draggedUnitInfo.value = null;
+  dragOverApptId.value = null;
+};
+
+const onDragOverAppt = (event, targetAppt) => {
+  if (!draggedUnitInfo.value || draggedUnitInfo.value.sourceApptId === targetAppt.id) return;
+  event.preventDefault();
+  dragOverApptId.value = targetAppt.id;
+};
+
+const onDragLeaveAppt = (targetAppt) => {
+  if (dragOverApptId.value === targetAppt.id) {
+    dragOverApptId.value = null;
+  }
+};
+
+const onDropUnit = async (event, targetAppt) => {
+  dragOverApptId.value = null;
+  isDraggingUnit.value = false;
+  let payload = draggedUnitInfo.value;
+  if (!payload) {
+    try {
+      const raw = event.dataTransfer.getData('text/plain');
+      if (raw) payload = JSON.parse(raw);
+    } catch (_) {}
+  }
+  draggedUnitInfo.value = null;
+
+  if (!payload || !payload.unitId || payload.sourceApptId === targetAppt.id) return;
+
+  isProcessingAction.value = true;
+  try {
+    const backend = getBackendUrl();
+    const res = await fetch(`${backend}/api/appointments/merge-unit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sourceUnitId: payload.unitId,
+        targetAppointmentId: targetAppt.id
+      })
+    });
+    const result = await res.json();
+    if (result.status === 'success') {
+      showFeedback(`Unidad transferida y unificada con ${targetAppt.clientName || 'la cita destino'}.`);
+      if (typeof refresh === 'function') refresh();
+      await loadUnitsForAppointment(targetAppt.id, true);
+      await loadUnitsForAppointment(payload.sourceApptId, true);
+    } else {
+      showFeedback(result.error || 'Error fusionando unidad', 'error');
+    }
+  } catch (err) {
+    showFeedback(`Error en la fusión: ${err.message}`, 'error');
+  } finally {
+    isProcessingAction.value = false;
+  }
+};
+
+const handleMergeWholeAppointments = async (sourceApptId, targetApptId) => {
+  if (!sourceApptId || !targetApptId || sourceApptId === targetApptId) return;
+  isProcessingAction.value = true;
+  try {
+    const backend = getBackendUrl();
+    const res = await fetch(`${backend}/api/appointments/merge-appointments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sourceAppointmentId: sourceApptId, targetAppointmentId: targetApptId })
+    });
+    const result = await res.json();
+    if (result.status === 'success') {
+      showFeedback('Citas fusionadas exitosamente en una sola atención.');
+      if (typeof refresh === 'function') refresh();
+      await loadUnitsForAppointment(targetApptId, true);
+      if (selectedAppointment.value?.id === sourceApptId) {
+        closeDetailModal();
+      }
+    } else {
+      showFeedback(result.error || 'Error al fusionar citas', 'error');
+    }
+  } catch (err) {
+    showFeedback(`Error al fusionar: ${err.message}`, 'error');
+  } finally {
+    isProcessingAction.value = false;
+  }
+};
+
+const otherTodayAppointments = computed(() => {
+  if (!selectedAppointment.value) return [];
+  return todayAppointments.value.filter(a => a.id !== selectedAppointment.value.id);
+});
+
+const mergeWithSelected = async () => {
+  if (!targetApptToMerge.value || !selectedAppointment.value) return;
+  await handleMergeWholeAppointments(selectedAppointment.value.id, targetApptToMerge.value);
+  targetApptToMerge.value = '';
+};
+
+const openDetailModal = async (apt) => {
   selectedAppointment.value = apt;
   isDetailModalOpen.value = true;
+  targetApptToMerge.value = '';
+  await loadUnitsForAppointment(apt.id);
 };
 
 const closeDetailModal = () => {
   isDetailModalOpen.value = false;
   selectedAppointment.value = null;
+  targetApptToMerge.value = '';
 };
 
 const selectedPersonForClientModal = ref(null);
@@ -387,6 +624,25 @@ const handleConfirmDelete = async ({ appointmentId }) => {
             Silla 2
           </button>
         </div>
+      </div>
+
+      <!-- Banner de Feedback para Acciones de Unidades / Fusiones -->
+      <div
+        v-if="actionFeedback"
+        :class="[
+          'mt-1 px-2.5 py-1.5 rounded-lg text-[11px] flex items-center justify-between border transition duration-200',
+          actionFeedback.type === 'error'
+            ? 'bg-rose-950/80 text-rose-300 border-rose-500/40'
+            : 'bg-cyan-950/80 text-cyan-300 border-cyan-500/40'
+        ]"
+      >
+        <span class="flex items-center gap-1.5 truncate">
+          <AppIcon :name="actionFeedback.type === 'error' ? 'error' : 'check_circle'" :size="13" />
+          {{ actionFeedback.message }}
+        </span>
+        <button type="button" @click="actionFeedback = null" class="text-slate-400 hover:text-white cursor-pointer ml-2">
+          &times;
+        </button>
       </div>
     </div>
 
@@ -677,8 +933,26 @@ const handleConfirmDelete = async ({ appointmentId }) => {
       <div
         v-else
         @click="openDetailModal(item.data)"
-        class="group bg-slate-900/90 hover:bg-slate-850 border border-slate-800 hover:border-blue-500/50 rounded-xl p-3 transition-all duration-200 cursor-pointer shadow-xs hover:shadow-md hover:-translate-y-0.5 relative overflow-hidden"
+        @dragover="onDragOverAppt($event, item.data)"
+        @dragleave="onDragLeaveAppt(item.data)"
+        @drop="onDropUnit($event, item.data)"
+        :class="[
+          'group bg-slate-900/90 hover:bg-slate-850 border rounded-xl p-3 transition-all duration-200 cursor-pointer shadow-xs hover:shadow-md hover:-translate-y-0.5 relative overflow-hidden',
+          dragOverApptId === item.data.id
+            ? 'border-dashed border-2 border-cyan-400 bg-cyan-950/60 ring-2 ring-cyan-500/60 scale-[1.02]'
+            : 'border-slate-800 hover:border-blue-500/50'
+        ]"
       >
+        <!-- Overlay al arrastrar sobre la tarjeta -->
+        <div
+          v-if="dragOverApptId === item.data.id"
+          class="absolute inset-0 bg-cyan-950/90 backdrop-blur-xs flex flex-col items-center justify-center z-20 pointer-events-none p-2 text-center"
+        >
+          <AppIcon name="merge_type" :size="24" class="text-cyan-400 animate-bounce mb-1" />
+          <span class="text-xs font-bold text-white">Soltar para anexar a esta cita</span>
+          <span class="text-[10px] text-cyan-300">Se consolidará con {{ getClientDisplayName(item.data) }}</span>
+        </div>
+
         <!-- Tira lateral indicadora de silla -->
         <div
           :class="[
@@ -694,6 +968,19 @@ const handleConfirmDelete = async ({ appointmentId }) => {
             {{ formatTimeOnly(item.data.startTime) }} - {{ formatTimeOnly(item.data.endTime) }}
           </span>
           <div class="flex items-center gap-1.5">
+            <!-- Badge de unidades interactivas -->
+            <button
+              v-if="getCardUnits(item.data).length > 1"
+              type="button"
+              @click.stop="toggleUnits(item.data)"
+              class="text-[9px] font-bold px-1.5 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-500/40 flex items-center gap-1 hover:bg-cyan-900 transition cursor-pointer"
+              title="Cita compuesta por múltiples unidades físicas. Clic para ver y separar."
+            >
+              <AppIcon name="layers" :size="10" class="text-cyan-400" />
+              {{ getCardUnits(item.data).length }} unidades
+              <AppIcon :name="expandedUnitsByAppt[item.data.id] ? 'expand_less' : 'expand_more'" :size="10" />
+            </button>
+
             <span class="text-[10px] bg-slate-950 px-1.5 py-0.5 rounded text-slate-400 border border-slate-800">
               {{ item.data.durationMinutes || 45 }} min
             </span>
@@ -737,6 +1024,98 @@ const handleConfirmDelete = async ({ appointmentId }) => {
                 {{ getClientDisplayBadge(item.data) }}
               </span>
             </div>
+          </div>
+        </div>
+
+        <!-- Mini Tira de Unidades de Atención Conectadas en la Cita -->
+        <div
+          v-if="getCardUnits(item.data).length >= 1"
+          class="mt-2 pt-1.5 border-t border-slate-800/80 flex items-center gap-1.5 overflow-x-auto no-scrollbar pl-1.5"
+          @click.stop="toggleUnits(item.data)"
+          title="Haz clic para desplegar o separar las unidades físicas"
+        >
+          <span class="text-[9px] text-cyan-400 font-mono font-semibold flex items-center gap-0.5 flex-shrink-0">
+            <AppIcon name="layers" :size="10" />
+            Unidades:
+          </span>
+          <div class="flex items-center gap-1 min-w-0 flex-1 overflow-x-auto no-scrollbar">
+            <div
+              v-for="(u, uIdx) in getCardUnits(item.data)"
+              :key="u.id || uIdx"
+              class="text-[9px] px-1.5 py-0.5 rounded bg-cyan-950/70 border border-cyan-500/30 text-cyan-200 font-mono whitespace-nowrap flex items-center gap-1 hover:border-cyan-400 transition"
+              :title="`Unidad #${uIdx + 1}: ${formatTimeOnly(u.startedAt)} - ${formatTimeOnly(u.endedAt)} (${u.durationMinutes} min)`"
+            >
+              <span class="text-cyan-400 font-bold">U{{ uIdx + 1 }}</span>
+              <span class="text-slate-300 font-medium">{{ u.durationMinutes }}m</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Sección Desplegable de Unidades de Atención Atómicas (Drag & Drop) -->
+        <div
+          v-if="expandedUnitsByAppt[item.data.id]"
+          class="mt-2.5 pt-2 border-t border-slate-800/90 space-y-1.5 pl-1.5"
+          @click.stop
+        >
+          <div class="flex items-center justify-between text-[9px] text-slate-400 font-semibold uppercase tracking-wider mb-1">
+            <span class="flex items-center gap-1 text-cyan-400">
+              <AppIcon name="layers" :size="11" />
+              Unidades Físicas (Arrastra para fusionar o separa)
+            </span>
+            <span v-if="loadingUnitsByAppt[item.data.id]" class="text-[9px] text-slate-500">Cargando...</span>
+          </div>
+
+          <!-- Si aún no hay unidades cargadas -->
+          <div
+            v-if="(!unitsDataByAppt[item.data.id] || unitsDataByAppt[item.data.id].length === 0) && (!item.data.attentionUnits || item.data.attentionUnits.length === 0)"
+            class="text-[10px] text-slate-500 py-1"
+          >
+            {{ loadingUnitsByAppt[item.data.id] ? 'Cargando unidades...' : '1 unidad atómica principal' }}
+          </div>
+
+          <!-- Cada unidad de atención draggable -->
+          <div
+            v-for="(unit, uIdx) in (unitsDataByAppt[item.data.id] || item.data.attentionUnits || [])"
+            :key="unit.id"
+            draggable="true"
+            @dragstart="onDragStartUnit($event, unit, item.data)"
+            @dragend="onDragEndUnit"
+            class="flex items-center justify-between gap-1.5 p-1.5 rounded-lg bg-slate-950/90 border border-slate-800 hover:border-cyan-500/50 text-[10px] transition cursor-grab active:cursor-grabbing group/unit"
+            title="Arrastra esta unidad a otra tarjeta de cita para fusionarla"
+          >
+            <div class="flex items-center gap-2 min-w-0">
+              <AppIcon name="drag_indicator" :size="12" class="text-slate-500 group-hover/unit:text-cyan-400 flex-shrink-0" />
+              <div class="w-6 h-6 rounded bg-slate-900 border border-slate-800 overflow-hidden shrink-0 flex items-center justify-center text-cyan-400">
+                <img
+                  v-if="unit.thumbnailPath || unit.thumbnailBase64 || unit.photos?.[0]?.thumbnailBase64"
+                  :src="unit.thumbnailBase64 || unit.photos?.[0]?.thumbnailBase64 || getPhotoSrc(unit)"
+                  alt="U"
+                  class="w-full h-full object-cover"
+                />
+                <AppIcon v-else name="content_cut" :size="11" />
+              </div>
+              <div class="flex flex-col min-w-0">
+                <span class="text-slate-200 font-mono font-medium truncate">
+                  Unidad #{{ uIdx + 1 }}: {{ formatTimeOnly(unit.startedAt) }} - {{ formatTimeOnly(unit.endedAt) }}
+                </span>
+                <span class="text-[9px] text-cyan-400/90 font-mono">
+                  {{ unit.durationMinutes }}m • {{ unit.photos?.length || 0 }} fotos
+                </span>
+              </div>
+            </div>
+
+            <!-- Botón Separar si hay más de 1 unidad -->
+            <button
+              v-if="(unitsDataByAppt[item.data.id] || item.data.attentionUnits || []).length > 1"
+              type="button"
+              @click.stop="handleSplitUnit(unit, item.data)"
+              :disabled="isProcessingAction"
+              class="px-2 py-0.5 rounded text-[9px] font-bold bg-amber-950/80 text-amber-300 border border-amber-500/40 hover:bg-amber-900 transition flex items-center gap-0.5 flex-shrink-0 cursor-pointer"
+              title="Separar esta unidad en su propia cita independiente"
+            >
+              <AppIcon name="call_split" :size="10" />
+              Separar
+            </button>
           </div>
         </div>
 
@@ -844,6 +1223,110 @@ const handleConfirmDelete = async ({ appointmentId }) => {
           <p class="text-xs text-slate-300 leading-relaxed">
             {{ selectedAppointment.notes }}
           </p>
+        </div>
+
+        <!-- Unidades de Atención Atómicas (Service Atoms - Fase 2 & 3) -->
+        <div class="bg-slate-900/70 border border-slate-800 rounded-xl p-3.5 space-y-3">
+          <div class="flex items-center justify-between">
+            <h4 class="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+              <AppIcon name="layers" :size="15" class="text-cyan-400" />
+              Unidades de Atención Atómicas
+              <span v-if="(unitsDataByAppt[selectedAppointment.id] || selectedAppointment.attentionUnits || []).length > 0" class="text-cyan-300 font-mono font-normal">
+                ({{ (unitsDataByAppt[selectedAppointment.id] || selectedAppointment.attentionUnits || []).length }})
+              </span>
+            </h4>
+            <span v-if="(unitsDataByAppt[selectedAppointment.id] || selectedAppointment.attentionUnits || []).length > 1" class="text-[10px] px-2 py-0.5 rounded-full bg-cyan-950 text-cyan-300 border border-cyan-500/30 font-semibold">
+              Cita Compuesta
+            </span>
+          </div>
+
+          <!-- Si está cargando unidades y no hay datos locales -->
+          <div v-if="loadingUnitsByAppt[selectedAppointment.id] && (!unitsDataByAppt[selectedAppointment.id] || unitsDataByAppt[selectedAppointment.id].length === 0) && (!selectedAppointment.attentionUnits || selectedAppointment.attentionUnits.length === 0)" class="text-xs text-slate-500 py-2 text-center">
+            Cargando unidades de atención...
+          </div>
+
+          <!-- Lista de unidades -->
+          <div v-else-if="(unitsDataByAppt[selectedAppointment.id] || selectedAppointment.attentionUnits || []).length > 0" class="space-y-2">
+            <div
+              v-for="(unit, uIdx) in (unitsDataByAppt[selectedAppointment.id] || selectedAppointment.attentionUnits || [])"
+              :key="unit.id"
+              class="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 p-2.5 rounded-lg bg-slate-950/80 border border-slate-800/90"
+            >
+              <div class="flex items-center gap-2.5 min-w-0">
+                <div class="w-8 h-8 rounded-lg bg-slate-900 border border-slate-700 overflow-hidden flex-shrink-0 flex items-center justify-center">
+                  <img
+                    v-if="unit.thumbnailPath || unit.thumbnailBase64 || unit.photos?.[0]?.thumbnailBase64"
+                    :src="unit.thumbnailBase64 || unit.photos?.[0]?.thumbnailBase64 || getPhotoSrc(unit)"
+                    alt="Unidad"
+                    class="w-full h-full object-cover"
+                  />
+                  <AppIcon v-else name="content_cut" :size="16" class="text-cyan-400" />
+                </div>
+                <div class="min-w-0">
+                  <div class="text-xs font-bold text-white flex items-center gap-2">
+                    <span>Unidad #{{ uIdx + 1 }}</span>
+                    <span class="text-[10px] text-cyan-400 font-mono">
+                      {{ formatTimeOnly(unit.startedAt) }} - {{ formatTimeOnly(unit.endedAt) }}
+                    </span>
+                  </div>
+                  <div class="text-[10px] text-slate-400 mt-0.5 flex items-center gap-2">
+                    <span class="text-emerald-400 font-semibold">{{ unit.durationMinutes }} min</span>
+                    <span>•</span>
+                    <span>{{ unit.photos?.length || 0 }} fotos</span>
+                    <span v-if="unit.bestFaceScore">• Nitidez: {{ unit.bestFaceScore }}</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Botón Separar (Split) si hay más de 1 unidad -->
+              <div v-if="(unitsDataByAppt[selectedAppointment.id] || selectedAppointment.attentionUnits || []).length > 1" class="flex items-center gap-2 flex-shrink-0">
+                <button
+                  type="button"
+                  @click="handleSplitUnit(unit, selectedAppointment)"
+                  :disabled="isProcessingAction"
+                  class="px-2.5 py-1 rounded-md text-[11px] font-bold bg-amber-950/80 text-amber-300 border border-amber-500/40 hover:bg-amber-900 transition flex items-center gap-1 cursor-pointer"
+                  title="Separar esta sesión de corte en una cita nueva e independiente"
+                >
+                  <AppIcon name="call_split" :size="13" />
+                  Separar a Cita Nueva
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Si solo hay 1 unidad o aún no hay registradas -->
+          <div v-else class="text-[11px] text-slate-400 py-1 flex items-center gap-1.5">
+            <AppIcon name="info" :size="14" class="text-blue-400" />
+            Esta atención consta de 1 unidad física continua.
+          </div>
+
+          <!-- Fusión rápida con otra cita del día -->
+          <div v-if="otherTodayAppointments.length > 0" class="pt-2 border-t border-slate-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <span class="text-[11px] text-slate-400 flex items-center gap-1">
+              <AppIcon name="merge_type" :size="13" class="text-cyan-400" />
+              Fusionar cita completa con:
+            </span>
+            <div class="flex items-center gap-2">
+              <select
+                v-model="targetApptToMerge"
+                class="bg-slate-950 border border-slate-700 text-slate-200 text-xs rounded-lg px-2 py-1 max-w-[200px] truncate"
+              >
+                <option value="">Seleccionar cita...</option>
+                <option v-for="oApt in otherTodayAppointments" :key="oApt.id" :value="oApt.id">
+                  {{ formatTimeOnly(oApt.startTime) }} - {{ getClientDisplayName(oApt) }} ({{ oApt.durationMinutes }}m)
+                </option>
+              </select>
+              <button
+                type="button"
+                @click="mergeWithSelected"
+                :disabled="!targetApptToMerge || isProcessingAction"
+                class="px-2.5 py-1 rounded-md text-xs font-bold bg-cyan-950 text-cyan-300 border border-cyan-500/40 hover:bg-cyan-900 disabled:opacity-40 transition flex items-center gap-1 cursor-pointer"
+              >
+                <AppIcon name="call_merge" :size="13" />
+                Fusionar
+              </button>
+            </div>
+          </div>
         </div>
 
         <!-- Galería de Fotos Capturadas en esta Sesión -->

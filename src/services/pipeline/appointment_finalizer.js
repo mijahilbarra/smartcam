@@ -14,7 +14,7 @@ import { computeSetToSetMetrics } from "./biometrics_math.js";
 import { mergePhotosAndEmbeddings, deduplicateSessionPhotos, purgeChimeraPairs } from "./gallery_curator.js";
 import { computeFrontalityScore, hasTwoEyesVisible, isValidFaceGeometry } from "../face_quality_service.js";
 import { extractPoseCategory } from "./track_block_manager.js";
-import { sanitizeForFirestore } from "../../infrastructure/firebase/firestore_sanitizer.js";
+import { sanitizeForFirestore, prepareAppointmentForFirestore, prepareAttentionUnitForFirestore } from "../../infrastructure/firebase/firestore_sanitizer.js";
 import {
   findChimeraSplit,
   splitChimeraSession,
@@ -341,7 +341,8 @@ export async function finalizeCustomerAndAppointment({
         db,
         bucket,
         galleryUpdated: false,
-        forceSync: true
+        forceSync: true,
+        forceConfirmSync: true
       });
     }
 
@@ -427,12 +428,15 @@ export async function finalizeCustomerAndAppointment({
     logVerbal(`🆕 Nuevo cliente formalizado: "${finalClient.name}" con galería de ${session.photos.length} fotos.`, "success");
 
     if (customerService) {
+      finalClient.isConfirmed = true;
+      finalClient.status = "new";
       await customerService.saveOrUpdateCustomer(finalClient, {
         db,
         bucket,
-        isNew: false,
+        isNew: true,
         galleryUpdated: true,
-        forceSync: true
+        forceSync: true,
+        forceConfirmSync: true
       });
     }
   }
@@ -520,6 +524,32 @@ export async function finalizeCustomerAndAppointment({
   if (sqlite?.saveAppointment) {
     try {
       sqlite.saveAppointment(appointmentRecord);
+      if (sqlite.saveAttentionUnit) {
+        const uId = session._attentionUnitId || `unit_${appointmentRecord.id}`;
+        const unitRecord = {
+          id: uId,
+          appointmentId: appointmentRecord.id,
+          chairId: appointmentRecord.chairId,
+          chairName: appointmentRecord.chairName,
+          clientId: appointmentRecord.clientId,
+          clientName: appointmentRecord.clientName,
+          startedAt: appointmentRecord.startedAt,
+          endedAt: appointmentRecord.endedAt,
+          startedEpoch: appointmentRecord.startedEpoch,
+          endedEpoch: appointmentRecord.endedEpoch,
+          durationMinutes: appointmentRecord.durationMinutes,
+          durationSeconds: appointmentRecord.durationMinutes * 60,
+          status: appointmentRecord.status,
+          bestFaceScore: appointmentRecord.bestFaceScore,
+          thumbnailPath: appointmentRecord.thumbnailPath,
+          thumbnailBase64: appointmentRecord.thumbnailBase64,
+          photos: appointmentRecord.photos,
+          embeddingsCount: Array.isArray(appointmentRecord.embeddings) ? appointmentRecord.embeddings.length : 0
+        };
+        sqlite.saveAttentionUnit(unitRecord);
+        appointmentRecord.attentionUnits = [unitRecord];
+        appointmentRecord.unitsCount = 1;
+      }
     } catch (sqlErr) {
       console.warn(`[Appointment] Error guardando atención en SQLite:`, sqlErr.message);
     }
@@ -528,7 +558,17 @@ export async function finalizeCustomerAndAppointment({
   // Persistir en Firestore en camera_catcher_appointments
   if (db) {
     try {
-      await db.doc(`camera_catcher_appointments/${appointmentRecord.id}`).set(sanitizeForFirestore(appointmentRecord));
+      await Promise.race([
+        db.doc(`camera_catcher_appointments/${appointmentRecord.id}`).set(prepareAppointmentForFirestore(appointmentRecord)),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout guardando cita en Firestore (8s)")), 8000))
+      ]);
+      if (Array.isArray(appointmentRecord.attentionUnits)) {
+        for (const u of appointmentRecord.attentionUnits) {
+          try {
+            await db.doc(`camera_catcher_attention_units/${u.id}`).set(prepareAttentionUnitForFirestore(u));
+          } catch (_) {}
+        }
+      }
       logVerbal(`✅ Atención registrada exitosamente en camera_catcher_appointments/${appointmentRecord.id} (${appointmentRecord.clientName}, ${durationMinutes} min, ${session.photos.length} fotos).`, "success");
     } catch (dbErr) {
       console.error(`[Appointment] Error guardando atención en Firestore:`, dbErr.message);
@@ -608,6 +648,58 @@ export async function executeSessionClosurePipeline({
     : Math.max(1, Math.round(durationMs / 60000));
   const minMinutes = options.minMinutes !== undefined ? options.minMinutes : minAppointmentMinutes;
 
+  // Regla Causal Topológica (Leyes Argon 4): Al cerrarse la sesión en la silla C,
+  // se evalúan las citas históricas previas en la misma silla dentro de una ventana máxima de 30 minutos (1800s).
+  const currentStartMs = session.startedAtEpoch || (session.startedAt ? new Date(session.startedAt).getTime() : now);
+  const minMergeGap = PIPELINE_CONFIG.consolidation?.minMergeGapMs ?? -300000;
+  const MAX_CONSOLIDATION_GAP_MS = 1800000; // 30 minutos límite físico de servicio continuo
+  const candidatePrevAppts = [...completedAppointments].reverse().filter(a => {
+    if (a.chairId !== session.chairId) return false;
+    const aEnd = a.endedAtEpoch || (a.endedAt ? new Date(a.endedAt).getTime() : 0);
+    const gap = currentStartMs - aEnd;
+    return gap >= minMergeGap && gap <= MAX_CONSOLIDATION_GAP_MS;
+  });
+  const prevSameChairAppt = candidatePrevAppts[0] || null;
+  const prevEndMs = prevSameChairAppt ? (prevSameChairAppt.endedAtEpoch || new Date(prevSameChairAppt.endedAt).getTime()) : 0;
+  const isRecentSameChair = Boolean(prevSameChairAppt && (currentStartMs - prevEndMs) <= 360000);
+
+  // Registro Inmutable de la Unidad de Atención (Service Atom)
+  const sqlite = sqliteClient || (customerService?.sqliteClient);
+  const unitId = `unit_${session.id || session.startedAtEpoch || Date.now()}`;
+  const unitPhotos = (session.photos && session.photos.length > 0) ? session.photos : [];
+  const unitEmbeddings = (session.embeddings && session.embeddings.length > 0) ? session.embeddings : [];
+  const bestFaceScore = session.bestFaceScore || (unitPhotos.reduce((max, p) => Math.max(max, p?.sharpnessScore || 0), 0));
+  const thumbBase64 = session.thumbnailBase64 || unitPhotos[0]?.thumbnailBase64 || null;
+
+  const currentUnit = {
+    id: unitId,
+    appointmentId: null,
+    chairId: session.chairId || "silla_corte_1",
+    chairName: session.chairName || "Silla de Corte",
+    clientId: session.clientId || session.tempClientId || null,
+    clientName: session.clientName || null,
+    startedAt: session.startedAt || new Date(session.startedAtEpoch || now).toISOString(),
+    endedAt: session.endedAt || new Date(now).toISOString(),
+    startedEpoch: session.startedAtEpoch || (session.startedAt ? new Date(session.startedAt).getTime() : now),
+    endedEpoch: now,
+    durationMinutes: durationMinutes,
+    durationSeconds: Math.round(durationMs / 1000),
+    status: "completed",
+    bestFaceScore,
+    thumbnailPath: session.thumbnailPath || null,
+    thumbnailBase64: thumbBase64,
+    photos: unitPhotos,
+    embeddingsCount: unitEmbeddings.length
+  };
+
+  if (sqlite?.saveAttentionUnit && !session.isStaff) {
+    try {
+      sqlite.saveAttentionUnit(currentUnit);
+    } catch (e) {
+      logVerbal(`[AttentionUnit] Error registrando unidad: ${e.message}`, "warn");
+    }
+  }
+
   const prep = await prepareAndFilterSessionForClosure({
     session,
     trackId,
@@ -616,10 +708,17 @@ export async function executeSessionClosurePipeline({
     customerService,
     db,
     stats,
-    options,
+    options: {
+      ...options,
+      hasRecentSameChairAppt: isRecentSameChair
+    },
     logVerbal
   });
   if (prep.shouldDiscard) {
+    if (sqlite?.saveAttentionUnit && !session.isStaff) {
+      currentUnit.status = "transient_turnover";
+      try { sqlite.saveAttentionUnit(currentUnit); } catch (_) {}
+    }
     trackBlockManager?.updateBlocksBySession?.(session, (item) => ({
       status: "eliminado",
       statusLabel: "Eliminado al cerrar",
@@ -629,18 +728,6 @@ export async function executeSessionClosurePipeline({
   }
 
   session.status = "to_verify";
-
-  // Regla Estricta Causal Atemporal: Al cerrarse la sesión en la silla C, se evalúan las citas históricas
-  // previas en la misma silla (t_prev < t_actual, sin límite rígido de tiempo)
-  const currentStartMs = session.startedAtEpoch || (session.startedAt ? new Date(session.startedAt).getTime() : now);
-  const minMergeGap = PIPELINE_CONFIG.consolidation?.minMergeGapMs ?? -300000;
-  const candidatePrevAppts = [...completedAppointments].reverse().filter(a => {
-    if (a.chairId !== session.chairId) return false;
-    const aEnd = a.endedAtEpoch || (a.endedAt ? new Date(a.endedAt).getTime() : 0);
-    const gap = currentStartMs - aEnd;
-    return gap >= minMergeGap;
-  });
-  const prevSameChairAppt = candidatePrevAppts[0] || null;
 
   // Partición Post-Hoc Anti-Quimera
   if (
@@ -684,14 +771,14 @@ export async function executeSessionClosurePipeline({
   }
 
   // Consolidación cronológica causal (Capa 13 con Cirugía Argon 4)
-  // Evalúa la cita inmediata previa en la misma silla; si no consolida con ella únicamente porque fue un tramo corto
-  // o de pocas fotos (<= 8 fotos o <= 6 min, ej. cliente ocluido o inclinado), permite evaluar puente con la penúltima cita
-  // siempre que la cita intermedia NO sea una atención larga de otro cliente confirmado.
+  // Evalúa la cita inmediata previa en la misma silla; si no consolida con ella únicamente porque fue una anomalía
+  // ultra-corta y sin fotos (<= 2 min Y <= 3 fotos), permite evaluar puente con la penúltima cita.
+  // Cualquier atención mayor a 2 minutos o con más de 3 fotos SELLA LA SILLA y prohíbe el puente.
   const targetCandidateAppts = [];
   if (candidatePrevAppts.length > 0) {
     targetCandidateAppts.push(candidatePrevAppts[0]);
     const immediatePrev = candidatePrevAppts[0];
-    const isInterveningBridgeable = (immediatePrev.photos?.length || 0) <= 8 || (immediatePrev.durationMinutes || 0) <= 6;
+    const isInterveningBridgeable = (immediatePrev.durationMinutes || 0) <= 2 && (immediatePrev.photos?.length || 0) <= 3;
     if (candidatePrevAppts.length > 1 && isInterveningBridgeable) {
       targetCandidateAppts.push(candidatePrevAppts[1]);
     }
@@ -717,7 +804,7 @@ export async function executeSessionClosurePipeline({
     if (consolidatedAppt) {
       if (cIdx > 0 && targetCandidateAppts[0]) {
         const interAppt = targetCandidateAppts[0];
-        if ((interAppt.photos?.length || 0) <= 10 && (interAppt.durationMinutes || 0) <= 8) {
+        if ((interAppt.photos?.length || 0) <= 3 && (interAppt.durationMinutes || 0) <= 2) {
           bridgedInterveningAppt = interAppt;
         }
       }
@@ -775,8 +862,8 @@ export async function executeSessionClosurePipeline({
       const prevEndEpoch = prevCandidate.endedAtEpoch || (prevCandidate.endedAt ? new Date(prevCandidate.endedAt).getTime() : 0);
       const gapToPrev = curStartEpoch - prevEndEpoch;
 
-      // Evaluar si la brecha es admisible en la misma silla (hasta 20 minutos / 1200s)
-      if (gapToPrev > 1200000 || gapToPrev < minMergeGap) break;
+      // Evaluar si la brecha es admisible en la misma silla (hasta 30 minutos / 1800s según modelo causal)
+      if (gapToPrev > 1800000 || gapToPrev < minMergeGap) break;
 
       const chainEval = evaluateCausalConsolidation({
         session: consolidatedAppt,
@@ -847,6 +934,71 @@ export async function executeSessionClosurePipeline({
     return consolidatedAppt;
   }
 
+  // Absorción de Cola de Salida (Exit Tail) / Micro-Continuidad (Argon 4 Consensus)
+  // Si una sesión corta (<= 4 min / <= 270s, <= 3 fotos) cierra en la misma silla inmediatamente contigua
+  // (gap <= 30s) a la cita previa confirmada, se absorbe como cola de salida del cliente para no fragmentarlo.
+  const immediateCandidate = candidatePrevAppts[0] || null;
+  const durationSec = session.durationSeconds || (session.startedAtEpoch && session.endedAtEpoch ? Math.round((session.endedAtEpoch - session.startedAtEpoch) / 1000) : durationMinutes * 60);
+
+  if (immediateCandidate && (durationMinutes <= 4 || durationSec <= 270) && (session.photos?.length || 0) <= 3) {
+    const prevEnd = immediateCandidate.endedAtEpoch || (immediateCandidate.endedAt ? new Date(immediateCandidate.endedAt).getTime() : 0);
+    const curStart = session.startedAtEpoch || (session.startedAt ? new Date(session.startedAt).getTime() : now);
+    const tailGapMs = curStart - prevEnd;
+    if (tailGapMs <= 30000 && tailGapMs >= minMergeGap) {
+      logVerbal(`🔗 [ExitTail] Cola de salida de ${durationMinutes} min (${session.photos?.length || 0} fotos, gap=${Math.round(tailGapMs / 1000)}s) absorbida directamente en ${immediateCandidate.clientName} (#${immediateCandidate.trackId}) en ${session.chairName}.`, "success");
+      const sessionEndEpoch = session.endedAtEpoch || now;
+      immediateCandidate.endedAt = new Date(sessionEndEpoch).toISOString();
+      immediateCandidate.endedAtEpoch = sessionEndEpoch;
+      immediateCandidate.durationMinutes = Math.max(
+        (immediateCandidate.durationMinutes || 0) + durationMinutes,
+        Math.round((sessionEndEpoch - (immediateCandidate.startedAtEpoch || new Date(immediateCandidate.startedAt).getTime())) / 60000)
+      );
+      if (session.photos && session.photos.length > 0) {
+        immediateCandidate.photos = [...(immediateCandidate.photos || []), ...session.photos];
+      }
+      const sqlite = sqliteClient || (customerService?.sqliteClient);
+      if (sqlite?.saveAttentionUnit) {
+        currentUnit.appointmentId = immediateCandidate.id;
+        try { sqlite.saveAttentionUnit(currentUnit); } catch (_) {}
+      }
+      if (sqlite?.getAttentionUnitsByAppointmentId) {
+        const units = sqlite.getAttentionUnitsByAppointmentId(immediateCandidate.id);
+        const sumUnitsDuration = units.reduce((acc, u) => acc + (u.durationMinutes || 0), 0);
+        immediateCandidate.durationMinutes = Math.max(sumUnitsDuration, immediateCandidate.durationMinutes);
+        immediateCandidate.unitsCount = units.length;
+        immediateCandidate.attentionUnits = units;
+      }
+      if (sqlite?.saveAppointment) {
+        try { sqlite.saveAppointment(immediateCandidate); } catch (_) {}
+      }
+      if (db) {
+        try {
+          await Promise.race([
+            db.doc(`camera_catcher_appointments/${immediateCandidate.id}`).set(prepareAppointmentForFirestore(immediateCandidate)),
+            new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout actualizando cita en Firestore (8s)")), 8000))
+          ]);
+          try {
+            await db.doc(`camera_catcher_attention_units/${currentUnit.id}`).set(prepareAttentionUnitForFirestore(currentUnit));
+          } catch (_) {}
+        } catch (_) {}
+      }
+      const clientToDelete = session.tempClientId || session.clientId || session.personId;
+      if (clientToDelete && clientToDelete !== immediateCandidate.clientId && !String(clientToDelete).startsWith("staff_")) {
+        await customerService?.deleteCustomer?.(clientToDelete, { db });
+      }
+      trackBlockManager?.updateBlocksBySession?.(session, {
+        status: "fusionado",
+        statusLabel: `Absorbido en ${immediateCandidate.clientName} (#${immediateCandidate.trackId})`,
+        appointmentId: immediateCandidate.id,
+        clientName: immediateCandidate.clientName,
+        mergedWithTrackId: immediateCandidate.trackId,
+        mergedWithLabel: `${immediateCandidate.clientName} (#${immediateCandidate.trackId})`,
+        reason: `Cola de salida (${durationMinutes} min, ${session.photos?.length || 0} fotos) absorbida en ${immediateCandidate.clientName} (#${immediateCandidate.trackId}).`
+      });
+      return immediateCandidate;
+    }
+  }
+
   // Si NO se une al Cliente Anterior: descarte por ruido lateral
   const noiseCheck = await validatePostConsolidationNoise({
     session,
@@ -858,6 +1010,10 @@ export async function executeSessionClosurePipeline({
     logVerbal
   });
   if (noiseCheck.isNoise) {
+    if (sqlite?.saveAttentionUnit && !session.isStaff) {
+      currentUnit.status = "transient_turnover";
+      try { sqlite.saveAttentionUnit(currentUnit); } catch (_) {}
+    }
     trackBlockManager?.updateBlocksBySession?.(session, {
       status: "eliminado",
       statusLabel: "Eliminado (Ruido no consolidado)",
@@ -884,7 +1040,7 @@ export async function executeSessionClosurePipeline({
     if (sameClientRecentAppt && !isCapeBarrierSeparating(sameClientRecentAppt, session)) {
       if (sameClientRecentIndex > 0 && targetCandidateAppts[0]) {
         const interAppt = targetCandidateAppts[0];
-        if ((interAppt.photos?.length || 0) <= 6 && (interAppt.durationMinutes || 0) <= 6) {
+        if ((interAppt.photos?.length || 0) <= 3 && (interAppt.durationMinutes || 0) <= 2) {
           const idx = completedAppointments.findIndex(a => a.id === interAppt.id);
           if (idx !== -1) completedAppointments.splice(idx, 1);
           const vIdx = completedVisits.findIndex(a => a.id === interAppt.id);
@@ -932,11 +1088,30 @@ export async function executeSessionClosurePipeline({
         sameClientRecentAppt.thumbnailBase64 = session.thumbnailBase64 || sameClientRecentAppt.thumbnailBase64;
       }
       const sqlite = sqliteClient || (customerService?.sqliteClient);
+      if (sqlite?.saveAttentionUnit) {
+        currentUnit.appointmentId = sameClientRecentAppt.id;
+        try { sqlite.saveAttentionUnit(currentUnit); } catch (_) {}
+      }
+      if (sqlite?.getAttentionUnitsByAppointmentId) {
+        const units = sqlite.getAttentionUnitsByAppointmentId(sameClientRecentAppt.id);
+        const sumUnitsDuration = units.reduce((acc, u) => acc + (u.durationMinutes || 0), 0);
+        sameClientRecentAppt.durationMinutes = Math.max(sumUnitsDuration, sameClientRecentAppt.durationMinutes);
+        sameClientRecentAppt.unitsCount = units.length;
+        sameClientRecentAppt.attentionUnits = units;
+      }
       if (sqlite?.saveAppointment) {
         try { sqlite.saveAppointment(sameClientRecentAppt); } catch (_) {}
       }
       if (db) {
-        try { await db.doc(`camera_catcher_appointments/${sameClientRecentAppt.id}`).set(sanitizeForFirestore(sameClientRecentAppt)); } catch (_) {}
+        try {
+          await Promise.race([
+            db.doc(`camera_catcher_appointments/${sameClientRecentAppt.id}`).set(prepareAppointmentForFirestore(sameClientRecentAppt)),
+            new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout actualizando cita en Firestore (8s)")), 8000))
+          ]);
+          try {
+            await db.doc(`camera_catcher_attention_units/${currentUnit.id}`).set(prepareAttentionUnitForFirestore(currentUnit));
+          } catch (_) {}
+        } catch (_) {}
       }
       if (session.tempClientId && session.tempClientId !== sameClientRecentAppt.clientId) {
         await customerService?.deleteCustomer?.(session.tempClientId, { db });
@@ -955,6 +1130,7 @@ export async function executeSessionClosurePipeline({
     }
   }
 
+  session._attentionUnitId = currentUnit.id;
   const appointmentRecord = await finalizeCustomerAndAppointment({
     session,
     matchedClient,

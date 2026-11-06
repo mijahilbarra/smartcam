@@ -368,14 +368,14 @@ export async function initChairSession({
 
     try {
       await customerService.saveOrUpdateCustomer(provisionalCustomer, {
-        db,
-        bucket,
+        db: null,
+        bucket: null,
         isNew: true,
-        forceSync: true,
+        forceSync: false,
         backgroundSync: true
       });
     } catch (err) {
-      console.warn(`[Appointment] Aviso al crear cliente to_verify inicial:`, err.message);
+      console.warn(`[Appointment] Aviso al crear cliente to_verify local inicial:`, err.message);
     }
   }
 

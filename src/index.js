@@ -17,6 +17,7 @@ export { parseTimeToMinutes, isWithinWorkingHours, WorkingHoursManager } from ".
 
 import { initLogger } from "./infrastructure/logging/logger.js";
 import { initFirebaseAdmin } from "./infrastructure/firebase/firebase_admin.js";
+import { sanitizeForFirestore, prepareAppointmentForFirestore, prepareAttentionUnitForFirestore } from "./infrastructure/firebase/firestore_sanitizer.js";
 import { daemonReporter } from "./daemon_reporter.js";
 import { customerService } from "./services/customer_service.js";
 import { cleanupZombies, startNeolinkDaemon, stopNeolinkDaemon } from "./infrastructure/camera/neolink_client.js";
@@ -214,6 +215,147 @@ app.post(["/api/session/close", "/api/appointments/close"], async (req, res) => 
       results.push(appt);
     }
     return res.json({ status: "closed", appointments: results });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================================
+// Endpoints de Unidades de Atención y Citas (Fase 2 & 3)
+// ============================================================================
+
+async function syncAppointmentToFirestore(appt) {
+  if (!db || !appt?.id) return;
+  try {
+    const sqlite = customerService?.sqliteClient;
+    if (!appt.attentionUnits && sqlite?.getAttentionUnitsByAppointmentId) {
+      appt.attentionUnits = sqlite.getAttentionUnitsByAppointmentId(appt.id);
+      appt.unitsCount = appt.attentionUnits.length;
+    }
+    await db.doc(`camera_catcher_appointments/${appt.id}`).set(prepareAppointmentForFirestore(appt));
+    if (Array.isArray(appt.attentionUnits)) {
+      for (const u of appt.attentionUnits) {
+        try {
+          await db.doc(`camera_catcher_attention_units/${u.id}`).set(prepareAttentionUnitForFirestore(u));
+        } catch (_) {}
+      }
+    }
+  } catch (err) {
+    console.warn(`[FirestoreSync] Error sincronizando cita ${appt.id}:`, err.message);
+  }
+}
+
+async function syncAttentionUnitToFirestore(unit) {
+  if (!db || !unit?.id) return;
+  try {
+    await db.doc(`camera_catcher_attention_units/${unit.id}`).set(prepareAttentionUnitForFirestore(unit));
+  } catch (err) {
+    console.warn(`[FirestoreSync] Error sincronizando unidad ${unit.id}:`, err.message);
+  }
+}
+
+async function deleteAppointmentFromFirestore(apptId) {
+  if (!db || !apptId) return;
+  try {
+    await db.doc(`camera_catcher_appointments/${apptId}`).delete();
+  } catch (err) {
+    console.warn(`[FirestoreSync] Error eliminando cita ${apptId}:`, err.message);
+  }
+}
+
+app.get("/api/appointments", (req, res) => {
+  try {
+    const sqlite = customerService.sqliteClient;
+    if (!sqlite) return res.status(503).json({ error: "SQLite no disponible" });
+    const appointments = sqlite.getAppointments(req.query);
+    return res.json({ appointments });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/appointments/:id/units", (req, res) => {
+  try {
+    const sqlite = customerService.sqliteClient;
+    if (!sqlite) return res.status(503).json({ error: "SQLite no disponible" });
+    const units = sqlite.getAttentionUnitsByAppointmentId(req.params.id);
+    return res.json({ units });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/attention-units", (req, res) => {
+  try {
+    const sqlite = customerService.sqliteClient;
+    if (!sqlite) return res.status(503).json({ error: "SQLite no disponible" });
+    const units = sqlite.getAttentionUnits(req.query);
+    return res.json({ units });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/appointments/split-unit", async (req, res) => {
+  try {
+    const { unitId } = req.body || {};
+    if (!unitId) return res.status(400).json({ error: "unitId es requerido" });
+    const sqlite = customerService.sqliteClient;
+    if (!sqlite) return res.status(503).json({ error: "SQLite no disponible" });
+
+    const result = sqlite.splitAttentionUnit(unitId);
+    if (!result.alreadySingle) {
+      if (result.oldAppointment) await syncAppointmentToFirestore(result.oldAppointment);
+      if (result.newAppointment) await syncAppointmentToFirestore(result.newAppointment);
+    }
+    return res.json({ status: "success", ...result });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/appointments/merge-unit", async (req, res) => {
+  try {
+    const { sourceUnitId, targetAppointmentId } = req.body || {};
+    if (!sourceUnitId || !targetAppointmentId) {
+      return res.status(400).json({ error: "sourceUnitId y targetAppointmentId son requeridos" });
+    }
+    const sqlite = customerService.sqliteClient;
+    if (!sqlite) return res.status(503).json({ error: "SQLite no disponible" });
+
+    const unitBefore = sqlite.getAttentionUnitById(sourceUnitId);
+    const oldApptId = unitBefore?.appointmentId;
+
+    const result = sqlite.mergeAttentionUnits(sourceUnitId, targetAppointmentId);
+
+    if (result.targetAppointment) await syncAppointmentToFirestore(result.targetAppointment);
+    if (result.oldAppointment) {
+      await syncAppointmentToFirestore(result.oldAppointment);
+    } else if (oldApptId && oldApptId !== targetAppointmentId) {
+      await deleteAppointmentFromFirestore(oldApptId);
+    }
+
+    return res.json({ status: "success", ...result });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/appointments/merge-appointments", async (req, res) => {
+  try {
+    const { sourceAppointmentId, targetAppointmentId } = req.body || {};
+    if (!sourceAppointmentId || !targetAppointmentId) {
+      return res.status(400).json({ error: "sourceAppointmentId y targetAppointmentId son requeridos" });
+    }
+    const sqlite = customerService.sqliteClient;
+    if (!sqlite) return res.status(503).json({ error: "SQLite no disponible" });
+
+    const result = sqlite.mergeAppointments(sourceAppointmentId, targetAppointmentId);
+
+    if (result.targetAppointment) await syncAppointmentToFirestore(result.targetAppointment);
+    await deleteAppointmentFromFirestore(sourceAppointmentId);
+
+    return res.json({ status: "success", ...result });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }

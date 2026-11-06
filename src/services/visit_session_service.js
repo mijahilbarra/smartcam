@@ -361,10 +361,13 @@ export class VisitSessionService {
         ? computeCosineSimilarity(cleanCentroidPrev, cleanCentroidBlock)
         : 0;
 
-      const vacancyMs = session.emptySinceEpoch
-        ? (now - session.emptySinceEpoch)
-        : (session.lastClientSeenEpoch && block.startedAtEpoch ? Math.max(0, block.startedAtEpoch - session.lastClientSeenEpoch) : 0);
-      const isPhysicalContinuity = vacancyMs < 10000;
+      // Continuidad Física y Detección de Vacancia Real de Silla (Argon 4 Consensus):
+      // Si session.emptySinceEpoch es nulo, el cuerpo humano NUNCA abandonó la silla física.
+      // La falta de rostro frontal durante el corte es una simple oclusión (inclinación de nuca, tijera, barbero tapando).
+      // Prohibido confundir "ausencia de rostro" con "vacancia de silla".
+      const isChairActuallyEmpty = Boolean(session.emptySinceEpoch);
+      const vacancyMs = isChairActuallyEmpty ? Math.max(0, now - session.emptySinceEpoch) : 0;
+      const isPhysicalContinuity = !isChairActuallyEmpty || vacancyMs < 15000;
 
       // Comparación Homóloga Grupo-a-Grupo entre session.representatives y block.representatives
       const homologousSims = {};
@@ -397,12 +400,12 @@ export class VisitSessionService {
       // se anula CUALQUIER veto por vacancia temporal o discrepancia homóloga sintética.
       const hasOverwhelmingBiometricProof = (maxGallerySim >= 0.65 || centroidSim >= 0.60);
 
-      const isProlongedVacancy = vacancyMs >= 30000;
+      const isProlongedVacancy = isChairActuallyEmpty && vacancyMs >= 45000;
       if (hasOverwhelmingBiometricProof) {
         isVeto = false;
         this.logVerbal(`🛡️ Inmunidad Biocéntrica en ${chairName}: Coincidencia masiva (centroidSim=${centroidSim.toFixed(3)}, maxGallerySim=${maxGallerySim.toFixed(3)}). Veto homólogo por vacancia anulado.`, "process");
       } else if (isProlongedVacancy) {
-        // Tras >= 30s de silla vacía, exigir confirmación biométrica con la sesión previa (incluyendo pose homóloga si existe) para no unir al siguiente cliente tras un cambio de silla
+        // Tras >= 45s de silla físicamente vacía, exigir confirmación biométrica con la sesión previa para no unir al siguiente cliente tras un cambio de silla
         const hasHomologousContradiction = hasHomologousComparison && maxHomologousSim < 0.22 && matchedHomologousCategory !== 'tilted';
         const hasPostVacancyMatch = !hasHomologousContradiction && (
           maxHomologousSim >= 0.42 ||
@@ -412,11 +415,15 @@ export class VisitSessionService {
         );
         if (!hasPostVacancyMatch) {
           isVeto = true;
-          vetoReason = `cambio de cliente o vacancia prolongada (${(vacancyMs / 1000).toFixed(1)}s >= 30s) sin confirmación biométrica fuerte (maxHomologousSim=${maxHomologousSim.toFixed(3)}, centroidSim=${centroidSim.toFixed(3)}, maxGallerySim=${maxGallerySim.toFixed(3)})`;
+          vetoReason = `cambio de cliente o vacancia prolongada (${(vacancyMs / 1000).toFixed(1)}s >= 45s) sin confirmación biométrica fuerte (maxHomologousSim=${maxHomologousSim.toFixed(3)}, centroidSim=${centroidSim.toFixed(3)}, maxGallerySim=${maxGallerySim.toFixed(3)})`;
         } else {
           isVeto = false;
           this.logVerbal(`🛡️ Retorno confirmado tras vacancia (${(vacancyMs / 1000).toFixed(1)}s) en ${chairName} (maxHomologousSim=${maxHomologousSim.toFixed(3)}, centroidSim=${centroidSim.toFixed(3)}, maxGallerySim=${maxGallerySim.toFixed(3)}).`, "process");
         }
+      } else if (isPhysicalContinuity) {
+        // La silla sigue físicamente ocupada: la atención continúa ininterrumpida
+        isVeto = false;
+        this.logVerbal(`🛡️ Continuidad de Ocupación Física en ${chairName}: Cuerpo presente en la silla de corte. Sesión preservada frente a oclusiones faciales (maxGallerySim=${maxGallerySim.toFixed(3)}, centroidSim=${centroidSim.toFixed(3)}).`, "process");
       } else if (hasHomologousComparison) {
         // Verificar si las poses homólogas comparadas son de alta confiabilidad (2 ojos visibles sin oclusión y pose erguida, NO tilted)
         const matchedRepS = session.representatives[matchedHomologousCategory];
@@ -769,14 +776,14 @@ export class VisitSessionService {
       };
       try {
         await this.customerService.saveOrUpdateCustomer(provisionalCustomer, {
-          db: this.db,
-          bucket: this.bucket,
+          db: null,
+          bucket: null,
           isNew: true,
-          forceSync: true,
+          forceSync: false,
           backgroundSync: true
         });
       } catch (err) {
-        console.warn(`[Appointment] Aviso al crear cliente to_verify inicial:`, err.message);
+        console.warn(`[Appointment] Aviso al crear cliente to_verify local inicial:`, err.message);
       }
     }
 
