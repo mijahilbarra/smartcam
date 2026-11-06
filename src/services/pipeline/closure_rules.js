@@ -298,7 +298,7 @@ export function validateSpatialChairAnchor(sessionOrBlock, chairZone = null, opt
     // 1. insideRatio >= 0.50 (o >= 0.22 cuando el cuerpo está anclado a la base de la silla y2 >= 612 y el barbero ensancha la caja de YOLO)
     // 2. y2 >= minY2 (o y2 / frameHeight >= (minY2 / frameHeight))
     // 3. Validación de rostro y postura de cabeza dentro del marco de cabeza dinámico:
-    const isAnchoredAtChairBase = y2 >= 612 || (y2 / frameHeight >= 0.85);
+    const isAnchoredAtChairBase = y2 >= 550 || (y2 / frameHeight >= 0.76);
     const effectiveMinRatio = (hasConfirmedClientFaces && isAnchoredAtChairBase) ? Math.min(minOverlapRatio, 0.22) : minOverlapRatio;
     const isRatioOk = ratio >= effectiveMinRatio;
     const isY2Ok = y2 >= minY2 || (y2 / frameHeight >= (minY2 / frameHeight));
@@ -323,7 +323,7 @@ export function validateSpatialChairAnchor(sessionOrBlock, chairZone = null, opt
   const overlapRatio = totalBoxes > 0 ? insideCount / totalBoxes : 0;
   const avgInsideRatio = totalBoxes > 0 ? totalInsideRatio / totalBoxes : 0;
   const avgY2 = totalBoxes > 0 ? totalY2 / totalBoxes : 0;
-  const effectiveAvgMinRatio = (hasConfirmedClientFaces && avgY2 >= 612) ? Math.min(minOverlapRatio, 0.22) : minOverlapRatio;
+  const effectiveAvgMinRatio = (hasConfirmedClientFaces && avgY2 >= 550) ? Math.min(minOverlapRatio, 0.22) : minOverlapRatio;
 
   // Si la sesión o bloque tiene un promedio de insideRatio < effectiveAvgMinRatio o y2 < 550,
   // se descarta formalmente con motivo fuera_de_caja_silla_firebase.
@@ -826,7 +826,7 @@ export async function prepareAndFilterSessionForClosure({
     : ((customerService?.getCustomerData?.(session.personId)?.photos) ||
        (customerService?.getCustomerData?.(session.tempClientId)?.photos) || []);
 
-  const hasAnatomicalFace = candidatePhotos.some(p => {
+  let hasAnatomicalFace = candidatePhotos.some(p => {
     const isAnatomicalPose = isUnitTest || ['frontal', 'semi_left', 'semi_right', 'tilted_down', 'tilted_down_left', 'tilted_down_right', 'tilted_up', 'tilted_up_left', 'tilted_up_right'].includes(p?.pose || (p && !p.pose ? 'frontal' : ''));
     const hasTwoEyes = p?.hasTwoEyes !== undefined
       ? Boolean(p.hasTwoEyes)
@@ -835,6 +835,11 @@ export async function prepareAndFilterSessionForClosure({
           : Boolean(isUnitTest));
     return isAnatomicalPose && hasTwoEyes;
   });
+
+  // Si no tiene dos ojos frontales pero la silla tiene una atención reciente en curso (afeitado de nuca, lavado, remate):
+  if (!hasAnatomicalFace && options?.hasRecentSameChairAppt && candidatePhotos.length > 0) {
+    hasAnatomicalFace = true;
+  }
 
   // Si una atención jamás mostró un rostro anatómico con 2 ojos (ej. nuca siendo afeitada), se descarta siempre
   if (!hasAnatomicalFace) {

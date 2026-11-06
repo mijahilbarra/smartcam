@@ -20,7 +20,7 @@ import { mergePhotosAndEmbeddings, deduplicateSessionPhotos, purgeChimeraPairs }
 import { getRepresentativeFace, getMultiPoseRepresentativeBank, isVector } from "./appointment_finalizer.js";
 import { isCapeBarrierSeparating } from "./closure_rules.js";
 import { hasTwoEyesVisible } from "../face_quality_service.js";
-import { sanitizeForFirestore } from "../../infrastructure/firebase/firestore_sanitizer.js";
+import { sanitizeForFirestore, prepareAppointmentForFirestore, prepareAttentionUnitForFirestore } from "../../infrastructure/firebase/firestore_sanitizer.js";
 
 /**
  * Calcula el percentil p de un array numérico
@@ -274,9 +274,21 @@ export function evaluateCausalConsolidation({
   const prevDurationMinutes = prevSameChairAppt.durationMinutes || (prevSameChairAppt.duration ? Math.round(prevSameChairAppt.duration / 60) : 0);
   const sessionDurationMinutes = session.durationMinutes || (session.startedAtEpoch && session.endedAtEpoch ? Math.round((session.endedAtEpoch - session.startedAtEpoch) / 60000) : 0);
   logVerbal(`[DEBUG-CONSOLIDATOR] sessionDurationMinutes=${sessionDurationMinutes}, prevDurationMinutes=${prevDurationMinutes}, rawGapMs=${rawGapMs}, centroidSim=${centroidSim.toFixed(3)}, maxGallerySim=${maxGallerySim.toFixed(3)}`);
-  const isFinishingPhase = (rawGapMs <= 60000 && rawGapMs >= minMergeGap) &&
-    (sessionDurationMinutes <= 4) &&
-    (prevDurationMinutes >= 20);
+  
+  // Principio de Continuidad en Silla No-Contestada (UCTC - Argon 4):
+  // En una barbería real, un cliente puede levantarse 2 a 5 minutos (lavado de cabello, sacudida de capa)
+  // y volver a la misma silla para remate/acabado final (1 a 8 min).
+  // Criterios Causal-Topológicos Invariantes:
+  // 1. Silla no disputada: cero citas intermedias confirmadas (!hasInterveningConfirmedAppt)
+  // 2. Brecha temporal física admisible (rawGapMs <= 360000 ms = 6 min)
+  // 3. Tramo entrante es un remate funcional corto (sessionDurationMinutes <= 8 min)
+  // 4. Sesión previa fue un servicio sustancial (prevDurationMinutes >= 10 min)
+  // 5. Duración total combinada no excede un turno estándar (prevDurationMinutes + sessionDurationMinutes <= 75 min)
+  const isFinishingPhase = !hasInterveningConfirmedAppt &&
+    (rawGapMs <= 360000 && rawGapMs >= minMergeGap) &&
+    (sessionDurationMinutes <= 8) &&
+    (prevDurationMinutes >= 10) &&
+    (prevDurationMinutes + sessionDurationMinutes <= 75);
 
   // Invariante Físico de Continuidad en Silla (<= 3 segundos):
   // Si rawGapMs <= 3000 ms, es físicamente imposible que un cliente haya salido y entrado otro.
@@ -287,12 +299,10 @@ export function evaluateCausalConsolidation({
   // CANDADO BIOMÉTRICO UNIVERSAL (Argon 4):
   // Si no hay compatibilidad biométrica demostrada, la fusión está TERMINANTEMENTE PROHIBIDA.
   // Protege contra micro-gaps espurios y artefactos de streaming.
-  const isBiometricallyIncompatible = isFinishingPhase
-    ? (centroidSim < 0.35 && maxGallerySim < 0.42)
-    : (centroidSim < 0.48 && maxGallerySim < 0.48);
+  const isBiometricallyIncompatible = (centroidSim < 0.45 && maxGallerySim < 0.48);
 
   if (isBiometricallyIncompatible) {
-    logVerbal(`[CausalConsolidator] 🛑 Veto Biométrico Universal: incompatibilidad biométrica (centroidSim=${centroidSim.toFixed(3)} < ${isFinishingPhase ? '0.35' : '0.48'} && maxGallerySim=${maxGallerySim.toFixed(3)} < ${isFinishingPhase ? '0.42' : '0.48'}). Fusión PROHIBIDA.`);
+    logVerbal(`[CausalConsolidator] 🛑 Veto Biométrico Universal: incompatibilidad biométrica (centroidSim=${centroidSim.toFixed(3)} < 0.45 && maxGallerySim=${maxGallerySim.toFixed(3)} < 0.48). Fusión PROHIBIDA.`);
     return {
       shouldMerge: false,
       reason: "universal_biometric_veto",
@@ -317,7 +327,7 @@ export function evaluateCausalConsolidation({
 
   // Proteger los vetos por representante de foto única: si la galería acumulada ya tiene
   // coincidencia o no hay contradicción biológica evidente, NO vetar por un solo fotograma de discrepancia.
-  const hasStrongGalleryMatch = isMicroGapSameChair || maxBiometric >= 0.52 || robustSim >= 0.48 || centroidSim >= 0.48 || maxGallerySim >= 0.48 || maxHomologousSim >= 0.50 || (isFinishingPhase && centroidSim >= 0.35 && maxGallerySim >= 0.40) || (isContinuousSameChair && (centroidSim >= 0.48 || maxGallerySim >= 0.48));
+  const hasStrongGalleryMatch = isMicroGapSameChair || maxBiometric >= 0.52 || robustSim >= 0.48 || centroidSim >= 0.48 || maxGallerySim >= 0.48 || maxHomologousSim >= 0.50 || (isContinuousSameChair && (centroidSim >= 0.48 || maxGallerySim >= 0.48));
 
   if (isOpposite) {
     logVerbal(`[CausalConsolidator] 🛡️ Veto omitido: poses opuestas detectadas (${poseA} vs ${poseB}). Evaluación atemporal basada en evidencia acumulada.`);
@@ -423,7 +433,7 @@ export function evaluateCausalConsolidation({
     isSamePerson = true;
     mergeReason = `highConfidenceGalleryIdentity (maxGallery=${maxGallerySim.toFixed(3)}, centroid=${centroidSim.toFixed(3)} >= 0.40)`;
   } else if (isFinishingPhase && (
-    (centroidSim >= 0.48 && maxGallerySim >= 0.55) ||
+    (maxGallerySim >= 0.50 && centroidSim >= 0.45) ||
     maxHomologousSim >= 0.52
   )) {
     isSamePerson = true;
@@ -676,18 +686,103 @@ export async function consolidateChairAppointment({
     await customerService?.deleteCustomer?.(session.personId, { db });
   }
 
-  // Persistir actualización en SQLite
+  // Persistir actualización en SQLite y registrar Unidad de Atención (Fase 2)
   const sqlite = sqliteClient || (customerService?.sqliteClient);
   if (sqlite?.saveAppointment) {
-    try { sqlite.saveAppointment(prevSameChairAppt); } catch (_) {}
+    try {
+      if (sqlite.saveAttentionUnit) {
+        // Asegurar que la cita previa tenga su unidad base registrada
+        if (sqlite.getAttentionUnitsByAppointmentId) {
+          const existingUnits = sqlite.getAttentionUnitsByAppointmentId(prevSameChairAppt.id);
+          if (existingUnits.length === 0) {
+            sqlite.saveAttentionUnit({
+              id: `unit_${prevSameChairAppt.id}`,
+              appointmentId: prevSameChairAppt.id,
+              chairId: prevSameChairAppt.chairId,
+              chairName: prevSameChairAppt.chairName,
+              clientId: prevSameChairAppt.clientId,
+              clientName: prevSameChairAppt.clientName,
+              startedAt: prevSameChairAppt.startedAt,
+              endedAt: prevSameChairAppt.endedAt,
+              startedEpoch: prevSameChairAppt.startedEpoch || new Date(prevSameChairAppt.startedAt).getTime(),
+              endedEpoch: prevSameChairAppt.endedEpoch || (prevSameChairAppt.endedAt ? new Date(prevSameChairAppt.endedAt).getTime() : Date.now()),
+              durationMinutes: prevSameChairAppt.durationMinutes || 0,
+              durationSeconds: (prevSameChairAppt.durationMinutes || 0) * 60,
+              status: prevSameChairAppt.status || "completed",
+              bestFaceScore: prevSameChairAppt.bestFaceScore || 0,
+              thumbnailPath: prevSameChairAppt.thumbnailPath || null,
+              thumbnailBase64: prevSameChairAppt.thumbnailBase64 || null,
+              photos: prevSameChairAppt.photos || []
+            });
+          }
+        }
+
+        // Registrar el nuevo tramo como una unidad de atención atómica e inmutable
+        const unitId = `unit_${session.id || session.startedAtEpoch || Date.now()}`;
+        sqlite.saveAttentionUnit({
+          id: unitId,
+          appointmentId: prevSameChairAppt.id,
+          chairId: prevSameChairAppt.chairId,
+          chairName: prevSameChairAppt.chairName,
+          clientId: prevSameChairAppt.clientId,
+          clientName: prevSameChairAppt.clientName,
+          startedAt: session.startedAt || new Date(session.startedAtEpoch || now).toISOString(),
+          endedAt: session.endedAt || new Date(sessionEndMs).toISOString(),
+          startedEpoch: session.startedAtEpoch || (session.startedAt ? new Date(session.startedAt).getTime() : now),
+          endedEpoch: sessionEndMs,
+          durationMinutes: durationMinutes,
+          durationSeconds: durationMinutes * 60,
+          status: "completed",
+          bestFaceScore: session.bestFaceScore || 0,
+          thumbnailPath: session.thumbnailPath || null,
+          thumbnailBase64: session.thumbnailBase64 || null,
+          photos: filteredNewPhotos,
+          embeddingsCount: filteredNewEmbeddings.length
+        });
+
+        if (sqlite.getAttentionUnitsByAppointmentId) {
+          const currentUnits = sqlite.getAttentionUnitsByAppointmentId(prevSameChairAppt.id);
+          const sumUnitsDuration = currentUnits.reduce((acc, u) => acc + (u.durationMinutes || 0), 0);
+          prevSameChairAppt.durationMinutes = Math.max(sumUnitsDuration, consolidatedDurationMin);
+          prevSameChairAppt.unitsCount = currentUnits.length;
+          prevSameChairAppt.attentionUnits = currentUnits;
+        }
+      }
+
+      sqlite.saveAppointment(prevSameChairAppt);
+    } catch (sqlErr) {
+      logVerbal(`[CausalConsolidator] Error guardando unidad de atención en SQLite: ${sqlErr.message}`);
+    }
   }
   // Persistir actualización en Firestore
   if (db) {
     try {
       await Promise.race([
-        db.doc(`camera_catcher_appointments/${prevSameChairAppt.id}`).set(sanitizeForFirestore(prevSameChairAppt)),
+        db.doc(`camera_catcher_appointments/${prevSameChairAppt.id}`).set(prepareAppointmentForFirestore(prevSameChairAppt)),
         new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout actualizando cita en Firestore (8s)")), 8000))
       ]);
+      try {
+        await db.doc(`camera_catcher_attention_units/${unitId}`).set(prepareAttentionUnitForFirestore({
+          id: unitId,
+          appointmentId: prevSameChairAppt.id,
+          chairId: prevSameChairAppt.chairId,
+          chairName: prevSameChairAppt.chairName,
+          clientId: prevSameChairAppt.clientId,
+          clientName: prevSameChairAppt.clientName,
+          startedAt: session.startedAt || new Date(session.startedAtEpoch || now).toISOString(),
+          endedAt: session.endedAt || new Date(sessionEndMs).toISOString(),
+          startedEpoch: session.startedAtEpoch || (session.startedAt ? new Date(session.startedAt).getTime() : now),
+          endedEpoch: sessionEndMs,
+          durationMinutes: durationMinutes,
+          durationSeconds: durationMinutes * 60,
+          status: "completed",
+          bestFaceScore: session.bestFaceScore || 0,
+          thumbnailPath: session.thumbnailPath || null,
+          thumbnailBase64: session.thumbnailBase64 || null,
+          photos: filteredNewPhotos,
+          embeddingsCount: filteredNewEmbeddings.length
+        }));
+      } catch (_) {}
     } catch (_) {}
   }
 

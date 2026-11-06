@@ -10,7 +10,6 @@ import { useQuadrants } from '@/entities/quadrant/model/useQuadrants';
 import { hexToRgba, toPointObject, ensureNorm01, boxNormToPolygonNorm } from '@/shared/lib/geometry';
 import { IS_LOCAL_ENV } from '@/shared/api/firebase';
 import TodayScheduleWidget from '@/widgets/today-schedule/ui/TodayScheduleWidget.vue';
-import TrackBlocksTimelineWidget from '@/widgets/track-blocks-bar/ui/TrackBlocksTimelineWidget.vue';
 
 const emit = defineEmits(['open-settings', 'open-calibrator', 'switch-tab']);
 
@@ -24,7 +23,6 @@ const {
   activeBackendUrl,
   canvasImageData,
   activeChairSessions,
-  allTrackBlocks,
   clientsInCut,
   clientsWaiting,
   activeBarbers,
@@ -910,15 +908,8 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- Center Column: Barra de Todos los TrackBlocks (Sin Borrar) -->
-      <div class="lg:col-span-6 xl:col-span-3 flex flex-col">
-        <TrackBlocksTimelineWidget
-          :all-track-blocks="allTrackBlocks"
-        />
-      </div>
-
-      <!-- Right Column: Lateral - Calendario de Atención del Día -->
-      <div class="lg:col-span-6 xl:col-span-3 flex flex-col">
+      <!-- Right Column: Calendario de Atención y Unidades del Día (Misma UI enriquecida) -->
+      <div class="lg:col-span-12 xl:col-span-6 flex flex-col">
         <TodayScheduleWidget
           :clients-in-cut="clientsInCut"
           :active-barbers="activeBarbers"

@@ -14,7 +14,7 @@ import { computeSetToSetMetrics } from "./biometrics_math.js";
 import { mergePhotosAndEmbeddings, deduplicateSessionPhotos, purgeChimeraPairs } from "./gallery_curator.js";
 import { computeFrontalityScore, hasTwoEyesVisible, isValidFaceGeometry } from "../face_quality_service.js";
 import { extractPoseCategory } from "./track_block_manager.js";
-import { sanitizeForFirestore } from "../../infrastructure/firebase/firestore_sanitizer.js";
+import { sanitizeForFirestore, prepareAppointmentForFirestore, prepareAttentionUnitForFirestore } from "../../infrastructure/firebase/firestore_sanitizer.js";
 import {
   findChimeraSplit,
   splitChimeraSession,
@@ -524,6 +524,32 @@ export async function finalizeCustomerAndAppointment({
   if (sqlite?.saveAppointment) {
     try {
       sqlite.saveAppointment(appointmentRecord);
+      if (sqlite.saveAttentionUnit) {
+        const uId = session._attentionUnitId || `unit_${appointmentRecord.id}`;
+        const unitRecord = {
+          id: uId,
+          appointmentId: appointmentRecord.id,
+          chairId: appointmentRecord.chairId,
+          chairName: appointmentRecord.chairName,
+          clientId: appointmentRecord.clientId,
+          clientName: appointmentRecord.clientName,
+          startedAt: appointmentRecord.startedAt,
+          endedAt: appointmentRecord.endedAt,
+          startedEpoch: appointmentRecord.startedEpoch,
+          endedEpoch: appointmentRecord.endedEpoch,
+          durationMinutes: appointmentRecord.durationMinutes,
+          durationSeconds: appointmentRecord.durationMinutes * 60,
+          status: appointmentRecord.status,
+          bestFaceScore: appointmentRecord.bestFaceScore,
+          thumbnailPath: appointmentRecord.thumbnailPath,
+          thumbnailBase64: appointmentRecord.thumbnailBase64,
+          photos: appointmentRecord.photos,
+          embeddingsCount: Array.isArray(appointmentRecord.embeddings) ? appointmentRecord.embeddings.length : 0
+        };
+        sqlite.saveAttentionUnit(unitRecord);
+        appointmentRecord.attentionUnits = [unitRecord];
+        appointmentRecord.unitsCount = 1;
+      }
     } catch (sqlErr) {
       console.warn(`[Appointment] Error guardando atención en SQLite:`, sqlErr.message);
     }
@@ -533,9 +559,16 @@ export async function finalizeCustomerAndAppointment({
   if (db) {
     try {
       await Promise.race([
-        db.doc(`camera_catcher_appointments/${appointmentRecord.id}`).set(sanitizeForFirestore(appointmentRecord)),
+        db.doc(`camera_catcher_appointments/${appointmentRecord.id}`).set(prepareAppointmentForFirestore(appointmentRecord)),
         new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout guardando cita en Firestore (8s)")), 8000))
       ]);
+      if (Array.isArray(appointmentRecord.attentionUnits)) {
+        for (const u of appointmentRecord.attentionUnits) {
+          try {
+            await db.doc(`camera_catcher_attention_units/${u.id}`).set(prepareAttentionUnitForFirestore(u));
+          } catch (_) {}
+        }
+      }
       logVerbal(`✅ Atención registrada exitosamente en camera_catcher_appointments/${appointmentRecord.id} (${appointmentRecord.clientName}, ${durationMinutes} min, ${session.photos.length} fotos).`, "success");
     } catch (dbErr) {
       console.error(`[Appointment] Error guardando atención en Firestore:`, dbErr.message);
@@ -615,32 +648,8 @@ export async function executeSessionClosurePipeline({
     : Math.max(1, Math.round(durationMs / 60000));
   const minMinutes = options.minMinutes !== undefined ? options.minMinutes : minAppointmentMinutes;
 
-  const prep = await prepareAndFilterSessionForClosure({
-    session,
-    trackId,
-    durationMinutes,
-    minMinutes,
-    customerService,
-    db,
-    stats,
-    options,
-    logVerbal
-  });
-  if (prep.shouldDiscard) {
-    trackBlockManager?.updateBlocksBySession?.(session, (item) => ({
-      status: "eliminado",
-      statusLabel: "Eliminado al cerrar",
-      reason: `Sesión descartada al cerrar (${durationMinutes} min): ${prep.reason || "No superó validación inicial de cierre"}. (Antes: ${item.initialReason || item.reason})`
-    }));
-    return null;
-  }
-
-  session.status = "to_verify";
-
   // Regla Causal Topológica (Leyes Argon 4): Al cerrarse la sesión en la silla C,
   // se evalúan las citas históricas previas en la misma silla dentro de una ventana máxima de 30 minutos (1800s).
-  // Nota: Si hubo cualquier cita confirmada intermedia en la silla (> 2 min o > 3 fotos), el Horizonte de Eventos
-  // sella la silla y prohíbe terminantemente la consolidación retrospectiva.
   const currentStartMs = session.startedAtEpoch || (session.startedAt ? new Date(session.startedAt).getTime() : now);
   const minMergeGap = PIPELINE_CONFIG.consolidation?.minMergeGapMs ?? -300000;
   const MAX_CONSOLIDATION_GAP_MS = 1800000; // 30 minutos límite físico de servicio continuo
@@ -651,6 +660,74 @@ export async function executeSessionClosurePipeline({
     return gap >= minMergeGap && gap <= MAX_CONSOLIDATION_GAP_MS;
   });
   const prevSameChairAppt = candidatePrevAppts[0] || null;
+  const prevEndMs = prevSameChairAppt ? (prevSameChairAppt.endedAtEpoch || new Date(prevSameChairAppt.endedAt).getTime()) : 0;
+  const isRecentSameChair = Boolean(prevSameChairAppt && (currentStartMs - prevEndMs) <= 360000);
+
+  // Registro Inmutable de la Unidad de Atención (Service Atom)
+  const sqlite = sqliteClient || (customerService?.sqliteClient);
+  const unitId = `unit_${session.id || session.startedAtEpoch || Date.now()}`;
+  const unitPhotos = (session.photos && session.photos.length > 0) ? session.photos : [];
+  const unitEmbeddings = (session.embeddings && session.embeddings.length > 0) ? session.embeddings : [];
+  const bestFaceScore = session.bestFaceScore || (unitPhotos.reduce((max, p) => Math.max(max, p?.sharpnessScore || 0), 0));
+  const thumbBase64 = session.thumbnailBase64 || unitPhotos[0]?.thumbnailBase64 || null;
+
+  const currentUnit = {
+    id: unitId,
+    appointmentId: null,
+    chairId: session.chairId || "silla_corte_1",
+    chairName: session.chairName || "Silla de Corte",
+    clientId: session.clientId || session.tempClientId || null,
+    clientName: session.clientName || null,
+    startedAt: session.startedAt || new Date(session.startedAtEpoch || now).toISOString(),
+    endedAt: session.endedAt || new Date(now).toISOString(),
+    startedEpoch: session.startedAtEpoch || (session.startedAt ? new Date(session.startedAt).getTime() : now),
+    endedEpoch: now,
+    durationMinutes: durationMinutes,
+    durationSeconds: Math.round(durationMs / 1000),
+    status: "completed",
+    bestFaceScore,
+    thumbnailPath: session.thumbnailPath || null,
+    thumbnailBase64: thumbBase64,
+    photos: unitPhotos,
+    embeddingsCount: unitEmbeddings.length
+  };
+
+  if (sqlite?.saveAttentionUnit && !session.isStaff) {
+    try {
+      sqlite.saveAttentionUnit(currentUnit);
+    } catch (e) {
+      logVerbal(`[AttentionUnit] Error registrando unidad: ${e.message}`, "warn");
+    }
+  }
+
+  const prep = await prepareAndFilterSessionForClosure({
+    session,
+    trackId,
+    durationMinutes,
+    minMinutes,
+    customerService,
+    db,
+    stats,
+    options: {
+      ...options,
+      hasRecentSameChairAppt: isRecentSameChair
+    },
+    logVerbal
+  });
+  if (prep.shouldDiscard) {
+    if (sqlite?.saveAttentionUnit && !session.isStaff) {
+      currentUnit.status = "transient_turnover";
+      try { sqlite.saveAttentionUnit(currentUnit); } catch (_) {}
+    }
+    trackBlockManager?.updateBlocksBySession?.(session, (item) => ({
+      status: "eliminado",
+      statusLabel: "Eliminado al cerrar",
+      reason: `Sesión descartada al cerrar (${durationMinutes} min): ${prep.reason || "No superó validación inicial de cierre"}. (Antes: ${item.initialReason || item.reason})`
+    }));
+    return null;
+  }
+
+  session.status = "to_verify";
 
   // Partición Post-Hoc Anti-Quimera
   if (
@@ -880,15 +957,29 @@ export async function executeSessionClosurePipeline({
         immediateCandidate.photos = [...(immediateCandidate.photos || []), ...session.photos];
       }
       const sqlite = sqliteClient || (customerService?.sqliteClient);
+      if (sqlite?.saveAttentionUnit) {
+        currentUnit.appointmentId = immediateCandidate.id;
+        try { sqlite.saveAttentionUnit(currentUnit); } catch (_) {}
+      }
+      if (sqlite?.getAttentionUnitsByAppointmentId) {
+        const units = sqlite.getAttentionUnitsByAppointmentId(immediateCandidate.id);
+        const sumUnitsDuration = units.reduce((acc, u) => acc + (u.durationMinutes || 0), 0);
+        immediateCandidate.durationMinutes = Math.max(sumUnitsDuration, immediateCandidate.durationMinutes);
+        immediateCandidate.unitsCount = units.length;
+        immediateCandidate.attentionUnits = units;
+      }
       if (sqlite?.saveAppointment) {
         try { sqlite.saveAppointment(immediateCandidate); } catch (_) {}
       }
       if (db) {
         try {
           await Promise.race([
-            db.doc(`camera_catcher_appointments/${immediateCandidate.id}`).set(sanitizeForFirestore(immediateCandidate)),
+            db.doc(`camera_catcher_appointments/${immediateCandidate.id}`).set(prepareAppointmentForFirestore(immediateCandidate)),
             new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout actualizando cita en Firestore (8s)")), 8000))
           ]);
+          try {
+            await db.doc(`camera_catcher_attention_units/${currentUnit.id}`).set(prepareAttentionUnitForFirestore(currentUnit));
+          } catch (_) {}
         } catch (_) {}
       }
       const clientToDelete = session.tempClientId || session.clientId || session.personId;
@@ -919,6 +1010,10 @@ export async function executeSessionClosurePipeline({
     logVerbal
   });
   if (noiseCheck.isNoise) {
+    if (sqlite?.saveAttentionUnit && !session.isStaff) {
+      currentUnit.status = "transient_turnover";
+      try { sqlite.saveAttentionUnit(currentUnit); } catch (_) {}
+    }
     trackBlockManager?.updateBlocksBySession?.(session, {
       status: "eliminado",
       statusLabel: "Eliminado (Ruido no consolidado)",
@@ -993,15 +1088,29 @@ export async function executeSessionClosurePipeline({
         sameClientRecentAppt.thumbnailBase64 = session.thumbnailBase64 || sameClientRecentAppt.thumbnailBase64;
       }
       const sqlite = sqliteClient || (customerService?.sqliteClient);
+      if (sqlite?.saveAttentionUnit) {
+        currentUnit.appointmentId = sameClientRecentAppt.id;
+        try { sqlite.saveAttentionUnit(currentUnit); } catch (_) {}
+      }
+      if (sqlite?.getAttentionUnitsByAppointmentId) {
+        const units = sqlite.getAttentionUnitsByAppointmentId(sameClientRecentAppt.id);
+        const sumUnitsDuration = units.reduce((acc, u) => acc + (u.durationMinutes || 0), 0);
+        sameClientRecentAppt.durationMinutes = Math.max(sumUnitsDuration, sameClientRecentAppt.durationMinutes);
+        sameClientRecentAppt.unitsCount = units.length;
+        sameClientRecentAppt.attentionUnits = units;
+      }
       if (sqlite?.saveAppointment) {
         try { sqlite.saveAppointment(sameClientRecentAppt); } catch (_) {}
       }
       if (db) {
         try {
           await Promise.race([
-            db.doc(`camera_catcher_appointments/${sameClientRecentAppt.id}`).set(sanitizeForFirestore(sameClientRecentAppt)),
+            db.doc(`camera_catcher_appointments/${sameClientRecentAppt.id}`).set(prepareAppointmentForFirestore(sameClientRecentAppt)),
             new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout actualizando cita en Firestore (8s)")), 8000))
           ]);
+          try {
+            await db.doc(`camera_catcher_attention_units/${currentUnit.id}`).set(prepareAttentionUnitForFirestore(currentUnit));
+          } catch (_) {}
         } catch (_) {}
       }
       if (session.tempClientId && session.tempClientId !== sameClientRecentAppt.clientId) {
@@ -1021,6 +1130,7 @@ export async function executeSessionClosurePipeline({
     }
   }
 
+  session._attentionUnitId = currentUnit.id;
   const appointmentRecord = await finalizeCustomerAndAppointment({
     session,
     matchedClient,

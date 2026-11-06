@@ -37,3 +37,74 @@ export function sanitizeForFirestore(val) {
   }
   return cleanObj;
 }
+
+/**
+ * Prepara y aligera un documento de cita para Firestore asegurando que nunca exceda
+ * el límite estricto de 1,048,576 bytes (1 MB) de Firestore.
+ * @param {object} doc
+ * @returns {object}
+ */
+export function prepareAppointmentForFirestore(doc) {
+  if (!doc) return doc;
+  const clone = { ...doc };
+
+  // 1. Conservar thumbnailBase64 principal
+  const mainThumb = clone.thumbnailBase64 || clone.photos?.[0]?.thumbnailBase64 || null;
+  clone.thumbnailBase64 = mainThumb;
+
+  // 2. Limitar el array photos de la cita a máx 3 fotos y aligerar base64
+  if (Array.isArray(clone.photos)) {
+    clone.photos = clone.photos.slice(0, 3).map((p, idx) => ({
+      sharpnessScore: p.sharpnessScore || 0,
+      pose: p.pose || "frontal",
+      poseLabel: p.poseLabel || "Frontal",
+      capturedAt: p.capturedAt || clone.startedAt,
+      thumbnailBase64: idx === 0 ? (p.thumbnailBase64 || mainThumb) : undefined
+    }));
+  }
+
+  // 3. Aligerar las attentionUnits embebidas
+  if (Array.isArray(clone.attentionUnits)) {
+    clone.attentionUnits = clone.attentionUnits.map((u) => {
+      const uThumb = u.thumbnailBase64 || u.photos?.[0]?.thumbnailBase64 || mainThumb;
+      return {
+        ...u,
+        thumbnailBase64: uThumb,
+        photos: Array.isArray(u.photos) ? u.photos.slice(0, 2).map((up, upIdx) => ({
+          sharpnessScore: up.sharpnessScore || 0,
+          pose: up.pose || "frontal",
+          capturedAt: up.capturedAt || u.startedAt,
+          thumbnailBase64: upIdx === 0 ? uThumb : undefined
+        })) : []
+      };
+    });
+  }
+
+  // 4. Remover embeddings pesados del documento
+  delete clone.embeddings;
+  delete clone.representatives;
+
+  return sanitizeForFirestore(clone);
+}
+
+/**
+ * Prepara y aligera un documento de unidad de atención individual para Firestore.
+ * @param {object} uDoc
+ * @returns {object}
+ */
+export function prepareAttentionUnitForFirestore(uDoc) {
+  if (!uDoc) return uDoc;
+  const clone = { ...uDoc };
+  const uThumb = clone.thumbnailBase64 || clone.photos?.[0]?.thumbnailBase64 || null;
+  clone.thumbnailBase64 = uThumb;
+  if (Array.isArray(clone.photos)) {
+    clone.photos = clone.photos.slice(0, 3).map((p, idx) => ({
+      sharpnessScore: p.sharpnessScore || 0,
+      pose: p.pose || "frontal",
+      capturedAt: p.capturedAt || clone.startedAt,
+      thumbnailBase64: idx === 0 ? uThumb : undefined
+    }));
+  }
+  delete clone.embeddings;
+  return sanitizeForFirestore(clone);
+}

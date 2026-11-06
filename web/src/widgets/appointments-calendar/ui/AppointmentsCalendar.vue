@@ -444,6 +444,31 @@ const handleConfirmDelete = async ({ appointmentId }) => {
   }
 };
 
+// Separación de Unidades de Atención Atómicas
+const isSplittingUnit = ref(false);
+const handleSplitUnitInCalendar = async (unit) => {
+  if (!unit?.id) return;
+  isSplittingUnit.value = true;
+  try {
+    const res = await fetch('/api/appointments/split-unit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ unitId: unit.id })
+    });
+    const result = await res.json();
+    if (result.status === 'success') {
+      if (typeof refresh === 'function') refresh();
+      closeDetailPanel();
+    } else {
+      alert(result.error || 'No se pudo separar la unidad.');
+    }
+  } catch (err) {
+    alert(`Error separando unidad: ${err.message}`);
+  } finally {
+    isSplittingUnit.value = false;
+  }
+};
+
 const formatTimeOnly = (isoString) => {
   if (!isoString) return '';
   try {
@@ -759,11 +784,22 @@ const getClientAppointments = (personId) => {
                         </div>
                       </div>
 
-                      <!-- 2. Chip de tiempo a la derecha -->
-                      <span class="inline-flex items-center gap-0.5 text-[9px] font-mono font-bold bg-slate-800/90 text-blue-300 px-1 py-0.5 rounded border border-slate-700/70 shrink-0 whitespace-nowrap leading-none ml-auto">
-                        <AppIcon name="timer" :size="9" class="text-blue-400" />
-                        {{ apt.durationMinutes || 45 }}m
-                      </span>
+                      <!-- 2. Chips a la derecha: Unidades + Duración -->
+                      <div class="flex items-center gap-1 shrink-0 ml-auto">
+                        <span
+                          v-if="(apt.unitsCount || 1) > 1"
+                          class="inline-flex items-center gap-0.5 text-[8px] font-mono font-bold bg-cyan-950 text-cyan-300 px-1 py-0.5 rounded border border-cyan-500/40 shrink-0 whitespace-nowrap leading-none"
+                          :title="`${apt.unitsCount} unidades físicas consolidadas`"
+                        >
+                          <AppIcon name="layers" :size="8" class="text-cyan-400" />
+                          {{ apt.unitsCount }}u
+                        </span>
+
+                        <span class="inline-flex items-center gap-0.5 text-[9px] font-mono font-bold bg-slate-800/90 text-blue-300 px-1 py-0.5 rounded border border-slate-700/70 shrink-0 whitespace-nowrap leading-none">
+                          <AppIcon name="timer" :size="9" class="text-blue-400" />
+                          {{ apt.durationMinutes || 45 }}m
+                        </span>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -874,6 +910,74 @@ const getClientAppointments = (personId) => {
             <p class="text-xs text-slate-300 leading-relaxed">
               {{ selectedAppointment.notes }}
             </p>
+          </div>
+
+          <!-- Unidades de Atención Atómicas -->
+          <div class="bg-slate-950/70 border border-slate-800 rounded-xl p-3.5 space-y-3">
+            <div class="flex items-center justify-between">
+              <h4 class="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                <AppIcon name="layers" :size="15" class="text-cyan-400" />
+                <span>Unidades de Atención</span>
+                <span class="text-cyan-300 font-mono font-normal text-xs">
+                  ({{ (selectedAppointment.attentionUnits || []).length || selectedAppointment.unitsCount || 1 }})
+                </span>
+              </h4>
+              <span v-if="(selectedAppointment.unitsCount || 1) > 1" class="text-[9px] px-2 py-0.5 rounded-full bg-cyan-950 text-cyan-300 border border-cyan-500/30 font-semibold">
+                Cita Compuesta
+              </span>
+            </div>
+
+            <!-- Lista de unidades -->
+            <div v-if="(selectedAppointment.attentionUnits || []).length > 0" class="space-y-2">
+              <div
+                v-for="(unit, uIdx) in selectedAppointment.attentionUnits"
+                :key="unit.id || uIdx"
+                class="flex items-center justify-between gap-2 p-2 rounded-lg bg-slate-900 border border-slate-800/90 text-[11px]"
+              >
+                <div class="flex items-center gap-2 min-w-0">
+                  <div class="w-7 h-7 rounded bg-slate-800 border border-slate-700 flex items-center justify-center shrink-0 overflow-hidden text-cyan-400">
+                    <img
+                      v-if="unit.thumbnailPath || unit.thumbnailBase64 || unit.photos?.[0]?.thumbnailBase64"
+                      :src="unit.thumbnailBase64 || unit.photos?.[0]?.thumbnailBase64 || getPhotoSrc(unit)"
+                      alt="U"
+                      class="w-full h-full object-cover"
+                    />
+                    <AppIcon v-else name="content_cut" :size="13" />
+                  </div>
+                  <div class="min-w-0">
+                    <div class="font-bold text-white flex items-center gap-1.5">
+                      <span>Unidad #{{ uIdx + 1 }}</span>
+                      <span class="text-[10px] text-cyan-400 font-mono">
+                        {{ formatTimeOnly(unit.startedAt) }} - {{ formatTimeOnly(unit.endedAt) }}
+                      </span>
+                    </div>
+                    <div class="text-[10px] text-slate-400 font-mono mt-0.5">
+                      <span class="text-emerald-400 font-semibold">{{ unit.durationMinutes }} min</span>
+                      <span> • </span>
+                      <span>{{ unit.photos?.length || 0 }} fotos</span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Botón Separar si la cita tiene más de 1 unidad -->
+                <button
+                  v-if="selectedAppointment.attentionUnits.length > 1"
+                  type="button"
+                  @click="handleSplitUnitInCalendar(unit)"
+                  :disabled="isSplittingUnit"
+                  class="px-2.5 py-1 rounded text-[10px] font-bold bg-amber-950/80 text-amber-300 border border-amber-500/40 hover:bg-amber-900 transition flex items-center gap-1 shrink-0 cursor-pointer"
+                  title="Separar este tramo en su propia cita independiente"
+                >
+                  <AppIcon name="call_split" :size="11" />
+                  Separar
+                </button>
+              </div>
+            </div>
+
+            <div v-else class="text-[11px] text-slate-400 py-1 flex items-center gap-1.5">
+              <AppIcon name="info" :size="13" class="text-blue-400 shrink-0" />
+              <span>1 unidad física continua ({{ selectedAppointment.durationMinutes || 45 }} min).</span>
+            </div>
           </div>
 
           <!-- Galería de Fotos Capturadas en esta Sesión -->

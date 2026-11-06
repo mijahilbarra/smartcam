@@ -379,43 +379,53 @@ console.log("\n[6] Probando findVideoChunks...");
 console.log("\n[7] Probando ejecución CLI completa vía proceso secundario...");
 async function testCliExecution() {
   const scriptPath = path.join(PROJECT_ROOT, "scripts", "query-incident.js");
+  const mockRecordingsDir = path.join(PROJECT_ROOT, "test", "fixtures", "mock_incident_recordings");
+  const mockDayDir = path.join(mockRecordingsDir, "2026-10-24");
+  fs.mkdirSync(mockDayDir, { recursive: true });
+  fs.writeFileSync(path.join(mockDayDir, "chunk_20261024_201746.mp4"), "dummy-mp4");
 
-  // Test 1: Salida estructurada JSON
-  const { stdout: stdoutJson } = await execFileAsync("node", [
-    scriptPath,
-    "--date", "2026-10-24",
-    "--from", "15:20",
-    "--to", "16:10",
-    "--db", "test",
-    "--json"
-  ]);
+  try {
+    // Test 1: Salida estructurada JSON
+    const { stdout: stdoutJson } = await execFileAsync("node", [
+      scriptPath,
+      "--date", "2026-10-24",
+      "--from", "15:20",
+      "--to", "16:10",
+      "--db", "test",
+      "--recordings-dir", mockRecordingsDir,
+      "--json"
+    ]);
 
-  const parsedJson = JSON.parse(stdoutJson);
-  assert.ok(parsedJson.windowInfo);
-  assert.strictEqual(parsedJson.windowInfo.date, "2026-10-24");
-  assert.strictEqual(parsedJson.windowInfo.tz, "America/Lima");
-  assert.ok(Array.isArray(parsedJson.appointments));
-  assert.ok(Array.isArray(parsedJson.logs.lines));
-  assert.ok(Array.isArray(parsedJson.recordings.chunks));
+    const parsedJson = JSON.parse(stdoutJson);
+    assert.ok(parsedJson.windowInfo);
+    assert.strictEqual(parsedJson.windowInfo.date, "2026-10-24");
+    assert.strictEqual(parsedJson.windowInfo.tz, "America/Lima");
+    assert.ok(Array.isArray(parsedJson.appointments));
+    assert.ok(Array.isArray(parsedJson.logs.lines));
+    assert.ok(Array.isArray(parsedJson.recordings.chunks));
 
-  // Test 2: Salida por consola formateada
-  const { stdout: stdoutText } = await execFileAsync("node", [
-    scriptPath,
-    "--date", "2026-10-24",
-    "--from", "15:20",
-    "--to", "16:10",
-    "--db", "test",
-    "--no-color"
-  ]);
+    // Test 2: Salida por consola formateada
+    const { stdout: stdoutText } = await execFileAsync("node", [
+      scriptPath,
+      "--date", "2026-10-24",
+      "--from", "15:20",
+      "--to", "16:10",
+      "--db", "test",
+      "--recordings-dir", mockRecordingsDir,
+      "--no-color"
+    ]);
 
-  assert.ok(stdoutText.includes("CONSULTA DE INCIDENTES - BARBERÍA"));
-  assert.ok(stdoutText.includes("[1] CITAS Y ATENCIONES"));
-  assert.ok(stdoutText.includes("[2] EVENTOS CLAVE EN BITÁCORA"));
-  assert.ok(stdoutText.includes("[3] CHUNKS DE VIDEO DE GRABACIÓN"));
-  assert.ok(stdoutText.includes("appt_1792875586681_156"));
-  assert.ok(stdoutText.includes("chunk_20261024_201746.mp4"));
+    assert.ok(stdoutText.includes("CONSULTA DE INCIDENTES - BARBERÍA"));
+    assert.ok(stdoutText.includes("[1] CITAS Y ATENCIONES"));
+    assert.ok(stdoutText.includes("[2] EVENTOS CLAVE EN BITÁCORA"));
+    assert.ok(stdoutText.includes("[3] CHUNKS DE VIDEO DE GRABACIÓN"));
+    assert.ok(stdoutText.includes("appt_1792875586681_156"));
+    assert.ok(stdoutText.includes("chunk_20261024_201746.mp4"));
 
-  console.log("  ✓ Ejecución CLI produce JSON y texto formateado con tablas y eventos esperados");
+    console.log("  ✓ Ejecución CLI produce JSON y texto formateado con tablas y eventos esperados");
+  } finally {
+    fs.rmSync(mockRecordingsDir, { recursive: true, force: true });
+  }
 }
 await testCliExecution();
 

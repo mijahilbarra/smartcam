@@ -86,6 +86,7 @@ db.exec(`
   DROP TABLE IF EXISTS experiment_appointments;
   DROP TABLE IF EXISTS experiment_customer_embeddings;
   DROP TABLE IF EXISTS experiment_customers;
+  DROP TABLE IF EXISTS experiment_attention_units;
 `);
 
 // Limpiar auditorías transitorias previas
@@ -102,7 +103,8 @@ if (fs.existsSync(auditDir)) {
 const experimentSqliteClient = new SQLiteClient(dbPath, {
   customersTable: "experiment_customers",
   customerEmbeddingsTable: "experiment_customer_embeddings",
-  appointmentsTable: "experiment_appointments"
+  appointmentsTable: "experiment_appointments",
+  attentionUnitsTable: "experiment_attention_units"
 });
 
 // Cargar cuadrantes espaciales de Firebase desde data/quadrants.json
