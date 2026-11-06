@@ -133,12 +133,15 @@ export function enrichPersonAngles(person, { embedding, faceThumbnailBase64, sha
     }
   }
 
+  const isHighRes = options.isHighRes === true || Boolean(person?.isHighRes);
+
   const newPhoto = {
     thumbnailBase64: faceThumbnailBase64 || person?.thumbnailBase64,
     sharpnessScore: sharpnessScore || 0,
     capturedAt: new Date().toISOString(),
     pose: poseClean,
-    poseLabel: poseLabelClean
+    poseLabel: poseLabelClean,
+    isHighRes
   };
 
   // Deduplicación por fotograma idéntico (misma miniatura base64 o vector congelado >= 0.985)
@@ -435,12 +438,12 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
       const embedding = await extractFaceEmbedding(faceBuffer);
       console.log(`[FaceRecognition] Embedding extraído en ${Date.now() - t0} ms (Nitidez: ${quality.sharpnessScore}).`);
 
-      // Generar miniatura JPEG ultra-ligera (120x120) para el frontend
+      // Generar miniatura JPEG de alta nitidez (240x240) para el frontend
       let faceThumbnailBase64 = null;
       try {
         const thumbBuf = await sharp(faceBuffer)
-          .resize(120, 120, { fit: "cover" })
-          .jpeg({ quality: 82 })
+          .resize(240, 240, { fit: "cover" })
+          .jpeg({ quality: 85, mozjpeg: true })
           .toBuffer();
         faceThumbnailBase64 = `data:image/jpeg;base64,${thumbBuf.toString("base64")}`;
       } catch (_) {
@@ -543,7 +546,8 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
             sharpnessScore: quality.sharpnessScore || activeSession.bestFaceScore || 0,
             capturedAt: new Date(options.nowEpoch || Date.now()).toISOString(),
             pose: quality.pose || 'frontal',
-            poseLabel: quality.poseLabel || 'Frontal'
+            poseLabel: quality.poseLabel || 'Frontal',
+            isHighRes: Boolean(crop?.isHighRes || record?.isHighRes)
           };
           p = {
             id: activeSession.personId,
@@ -699,7 +703,8 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
                 sharpnessScore: quality.sharpnessScore,
                 pose: quality.pose,
                 poseLabel: quality.poseLabel,
-                nowEpoch
+                nowEpoch,
+                isHighRes: Boolean(crop?.isHighRes || record?.isHighRes)
               }, {
                 minCanonicalSimilarity: isAntipodalTransition ? 0.20 : 0.35,
                 skipCanonicalCheck: isAntipodalTransition,
@@ -878,7 +883,8 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
               sharpnessScore: quality.sharpnessScore,
               pose: quality.pose,
               poseLabel: quality.poseLabel,
-              nowEpoch
+              nowEpoch,
+              isHighRes: Boolean(crop?.isHighRes || record?.isHighRes)
             }, { minCanonicalSimilarity: 0.48, enforceCooldown: !canAddMorePhotos && !hasMissingPhotos });
 
             if (!enriched.rejected && !enriched.duplicate) {
@@ -1040,7 +1046,8 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
               sharpnessScore: quality.sharpnessScore,
               pose: quality.pose,
               poseLabel: quality.poseLabel,
-              nowEpoch: candidateNow
+              nowEpoch: candidateNow,
+              isHighRes: Boolean(crop?.isHighRes || record?.isHighRes)
             }, { minCanonicalSimilarity: 0.48 });
             candidate.embeddings = enriched.embeddings;
             candidate.photos = enriched.photos;
@@ -1108,7 +1115,8 @@ export async function processPeopleRecognition(db, clientRecords, clientCrops, a
             sharpnessScore: quality?.sharpnessScore || 0,
             capturedAt: new Date(candidateNow).toISOString(),
             pose: quality?.pose || 'frontal',
-            poseLabel: quality?.poseLabel || 'Frontal'
+            poseLabel: quality?.poseLabel || 'Frontal',
+            isHighRes: Boolean(crop?.isHighRes || record?.isHighRes)
           };
           pendingNewClients.set(candidateKey, {
             tempId,

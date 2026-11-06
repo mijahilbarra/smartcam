@@ -73,8 +73,8 @@ export async function ingestFaceSample({
   if (!finalThumbnailBase64 && faceBuffer) {
     try {
       const thumbBuf = await sharp(faceBuffer)
-        .resize(120, 120, { fit: "cover" })
-        .jpeg({ quality: 82 })
+        .resize(240, 240, { fit: "cover" })
+        .jpeg({ quality: 85, mozjpeg: true })
         .toBuffer();
       finalThumbnailBase64 = `data:image/jpeg;base64,${thumbBuf.toString("base64")}`;
     } catch (_) {
@@ -177,7 +177,8 @@ export async function ingestFaceSample({
     pitchScore: sample.pitchScore ?? 0,
     landmarks: sample.landmarks || null,
     box: sample.box || session.lastBox || null,
-    boxNorm: sample.boxNorm || sample.faceBoxNorm || null
+    boxNorm: sample.boxNorm || sample.faceBoxNorm || null,
+    isHighRes: Boolean(sample.isHighRes || sample.crop?.isHighRes)
   };
 
   // 2b. Verificación por miniatura idéntica en base64

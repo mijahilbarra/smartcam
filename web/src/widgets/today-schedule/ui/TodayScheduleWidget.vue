@@ -1353,6 +1353,14 @@ const handleConfirmDelete = async ({ appointmentId }) => {
               :key="idx"
               class="group relative bg-slate-900 border border-slate-700/80 rounded-xl overflow-hidden shadow-sm hover:border-blue-500/60 transition"
             >
+              <!-- Badge HD para fotos de alta resolución -->
+              <span
+                v-if="photo.isHighRes"
+                class="absolute top-2 left-2 z-10 px-1.5 py-0.5 rounded text-[9px] font-bold bg-blue-600/90 text-white shadow font-mono"
+                title="Capturado en Alta Resolución (Stream Clear HD)"
+              >
+                HD
+              </span>
               <div class="aspect-[4/3] w-full bg-slate-800 overflow-hidden">
                 <img
                   v-if="getPhotoSrc(photo)"
